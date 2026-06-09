@@ -1,0 +1,85 @@
+# sqlc.yaml
+# =============================================================================
+# sqlc configuration file for the expenses module.
+#
+# sqlc reads this file to know:
+#   - which database engine we're targeting (postgresql)
+#   - where our schema DDL lives (db/schema/schema.sql)
+#   - where our queries live (db/queries/query.sql)
+#   - what Go package to generate into, and where to put it
+#
+# Run `sqlc generate` from the project root after any change to schema or queries.
+# Run `sqlc vet` to catch common query mistakes before generating.
+# =============================================================================
+
+version: "2"
+
+sql:
+  - engine: "postgresql"
+
+    # Path to the DDL schema file — the CREATE TABLE statements.
+    # sqlc parses this to know column names and types so it can generate
+    # correctly typed Go structs and function parameters.
+    schema: "db/schema/schema.sql"
+
+    # Path to the query file — the annotated SQL queries.
+    queries: "db/queries/query.sql"
+
+    gen:
+      go:
+        # The Go package name used in the generated files.
+        # Import path will be: github.com/yourorg/yourapp/db/expenses
+        package: "expenses"
+
+        # Directory where generated .go files will be written.
+        # sqlc creates this directory if it doesn't exist.
+        out: "db/expenses"
+
+        # Use pgx/v5 instead of database/sql.
+        # pgx is the modern PostgreSQL driver for Go — it's faster, handles
+        # more PostgreSQL-native types (UUID, JSONB, arrays), and has better
+        # context/cancellation support. Always prefer this over lib/pq.
+        sql_package: "pgx/v5"
+
+        # Emit the Querier interface.
+        # sqlc generates both a concrete *Queries struct and an interface.
+        # The interface is very useful for testing — your handler tests can
+        # use a mock that implements Querier instead of hitting a real database.
+        emit_interface: true
+
+        # Emit JSON tags on generated structs.
+        # Adds `json:"field_name"` to every struct field so you can serialise
+        # the generated structs directly in your HTTP handlers.
+        emit_json_tags: true
+
+        # Use pgtype for nullable columns instead of sql.NullString etc.
+        # pgtype.Text, pgtype.UUID, pgtype.Int4 etc. are more ergonomic and
+        # work natively with pgx without conversion.
+        emit_pointers_for_null_types: false
+
+        # Override how specific PostgreSQL types map to Go types.
+        # Without overrides, sqlc uses pgtype.* for most things. These
+        # overrides give us cleaner Go types where appropriate.
+        overrides:
+          # Map PostgreSQL UUID to google/uuid.UUID — the standard Go UUID type.
+          # Much cleaner than pgtype.UUID in your business logic.
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+
+          # Map JSONB columns to json.RawMessage ([]byte under the hood).
+          # Your service layer then unmarshals this into a concrete struct.
+          # Alternatively you could map to map[string]interface{} but
+          # json.RawMessage defers parsing to the point where you know the shape.
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+
+          # Map NUMERIC/DECIMAL to string to preserve exact precision.
+          # Never use float64 for financial values — floating-point arithmetic
+          # is not exact. Store as string and parse with a decimal library
+          # (e.g. shopspring/decimal) in your service layer.
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"

@@ -1,0 +1,19 @@
+# Binaries
+*.exe
+*.out
+/bin/
+
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# Go build cache
+vendor/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
