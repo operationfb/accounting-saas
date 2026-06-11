@@ -17,13 +17,16 @@ import (
 	"context"
 	"log"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
-	// This import path matches the `out` directory in sqlc.yaml.
+	// These import paths match the `out` directories in sqlc.yaml.
 	// After running `sqlc generate`, the generated files live here.
+	"github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	"github.com/operationfb/accounting-saas/token"
 )
 
 func main() {
@@ -90,7 +93,38 @@ func main() {
 	// -------------------------------------------------------------------------
 	queries := expenses.New(pool)
 	service := NewExpenseService(pool, queries)
-	server := NewServer(service)
+
+	// -------------------------------------------------------------------------
+	// Auth wiring.
+	//
+	// token.NewPasetoMaker builds the maker that signs/encrypts PASETO auth
+	// tokens. It needs a 32-byte symmetric key from PASETO_SYMMETRIC_KEY
+	// (generate one with: openssl rand -hex 16).
+	// -------------------------------------------------------------------------
+	symmetricKey := os.Getenv("PASETO_SYMMETRIC_KEY")
+	if symmetricKey == "" {
+		log.Fatal("PASETO_SYMMETRIC_KEY environment variable is required")
+	}
+	tokenMaker, err := token.NewPasetoMaker([]byte(symmetricKey))
+	if err != nil {
+		log.Fatalf("cannot create token maker: %v", err)
+	}
+
+	// How long an issued access token stays valid. Override with
+	// ACCESS_TOKEN_DURATION (a Go duration string, e.g. "30m", "24h").
+	accessTokenDuration := 15 * time.Minute
+	if v := os.Getenv("ACCESS_TOKEN_DURATION"); v != "" {
+		parsed, parseErr := time.ParseDuration(v)
+		if parseErr != nil {
+			log.Fatalf("invalid ACCESS_TOKEN_DURATION %q: %v", v, parseErr)
+		}
+		accessTokenDuration = parsed
+	}
+
+	authQueries := auth.New(pool)
+	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration)
+
+	server := NewServer(service, authHandler)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

@@ -35,11 +35,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	"github.com/operationfb/accounting-saas/token"
 	util "github.com/operationfb/accounting-saas/util"
 )
 
@@ -51,9 +54,15 @@ import (
 // We build it once in TestMain and reuse it — opening a DB pool is expensive
 // and we don't want to do it for every individual test case.
 type testServer struct {
-	server *Server
-	pool   *pgxpool.Pool
+	server     *Server
+	pool       *pgxpool.Pool
+	tokenMaker token.Maker
 }
+
+// testSymmetricKey is a fixed 32-byte key used only by tests to build a PASETO
+// token maker. The login tests only check that a token is issued and round-trips,
+// so the key value is irrelevant — it just has to be the right length.
+const testSymmetricKey = "12345678901234567890123456789012"
 
 // newTestServer connects to the real database and builds a Server instance
 // configured for testing. It mirrors what main() does, but reads from .env
@@ -85,11 +94,23 @@ func newTestServer(t *testing.T) *testServer {
 
 	queries := expenses.New(pool)
 	service := NewExpenseService(pool, queries)
-	server := NewServer(service)
+
+	// Build a real auth handler so the /auth/* routes work (used by the login
+	// tests). The token maker uses a fixed test key — these tests only check that
+	// a token is issued and round-trips, not that it was signed with the
+	// production key.
+	authQueries := auth.New(pool)
+	tokenMaker, err := token.NewPasetoMaker([]byte(testSymmetricKey))
+	if err != nil {
+		t.Fatalf("failed to create token maker: %v", err)
+	}
+	authHandler := NewAuthHandler(authQueries, tokenMaker, time.Minute)
+	server := NewServer(service, authHandler)
 
 	return &testServer{
-		server: server,
-		pool:   pool,
+		server:     server,
+		pool:       pool,
+		tokenMaker: tokenMaker,
 	}
 }
 
@@ -356,5 +377,118 @@ func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
 	// TODO: once AppError is implemented this should assert 422.
 	if recorder.Code == http.StatusCreated {
 		t.Error("expected a non-201 status for invalid gross_value, got 201")
+	}
+}
+
+// =============================================================================
+// AUTH — LOGIN
+// =============================================================================
+
+// TestHandleLoginUser tests POST /api/v1/auth/login with the seeded dev user.
+// It verifies:
+//   - HTTP status is 200 OK
+//   - A non-empty PASETO access token is returned and round-trips through the
+//     same token maker, carrying the user's id
+//   - The user object echoes the right email and a non-empty id
+//   - The user object does NOT leak sensitive fields (password_hash, timestamps,
+//     security counters, ...)
+func TestHandleLoginUser(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	const (
+		devEmail    = "dev@example.com"
+		devPassword = "devpassword123"
+	)
+	/*
+		// Arrange: the seed row for dev@example.com ships with a PLACEHOLDER hash
+		// that does not actually match devpassword123. Set a correct bcrypt hash
+		// (cost 12, as the schema documents) so the documented dev credentials work.
+		// This is idempotent and safe to run on every test invocation.
+		hashed, err := bcrypt.GenerateFromPassword([]byte(devPassword), 12)
+		if err != nil {
+			t.Fatalf("failed to hash dev password: %v", err)
+		}
+		if _, err := ts.pool.Exec(context.Background(),
+			"UPDATE users SET password_hash = $1 WHERE email = $2", string(hashed), devEmail); err != nil {
+			t.Fatalf("failed to set dev user password: %v", err)
+		}
+	*/
+	// Act: send the login request through the router.
+	bodyBytes, _ := json.Marshal(map[string]string{"email": devEmail, "password": devPassword})
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	ts.server.router.ServeHTTP(recorder, req)
+
+	// Assert: 200 OK.
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d — body: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Decode the typed response.
+	var got loginUserResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode login response: %v", err)
+	}
+
+	// Token must be present and must verify against the same maker, carrying the
+	// returned user's id.
+	if got.AccessToken == "" {
+		t.Fatal("access_token: expected a non-empty token")
+	}
+	payload, err := ts.tokenMaker.VerifyToken(got.AccessToken)
+	if err != nil {
+		t.Fatalf("returned token failed verification: %v", err)
+	}
+	if payload.UserID.String() != got.User.ID {
+		t.Errorf("token user_id: got %q, want %q", payload.UserID.String(), got.User.ID)
+	}
+
+	// User fields.
+	if got.User.Email != devEmail {
+		t.Errorf("user.email: got %q, want %q", got.User.Email, devEmail)
+	}
+	if got.User.ID == "" {
+		t.Error("user.id: expected a non-empty UUID")
+	}
+
+	// The user object must not leak sensitive fields.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode response envelope: %v", err)
+	}
+	var userObj map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["user"], &userObj); err != nil {
+		t.Fatalf("failed to decode user object: %v", err)
+	}
+	for _, banned := range []string{
+		"password", "password_hash", "created_at", "updated_at", "deleted_at",
+		"failed_login_count", "locked_until", "last_login_ip", "last_login_at",
+		"email_verification_token", "password_reset_token",
+	} {
+		if _, leaked := userObj[banned]; leaked {
+			t.Errorf("login response leaks sensitive user field %q", banned)
+		}
+	}
+}
+
+// TestHandleLoginUser_WrongPassword verifies a bad password is rejected with
+// 401 Unauthorized (no token issued).
+func TestHandleLoginUser_WrongPassword(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	bodyBytes, _ := json.Marshal(map[string]string{
+		"email":    "dev@example.com",
+		"password": "definitely-the-wrong-password",
+	})
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	ts.server.router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d — body: %s", recorder.Code, recorder.Body.String())
 	}
 }

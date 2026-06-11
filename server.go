@@ -32,13 +32,15 @@ import (
 type Server struct {
 	router         *gin.Engine
 	expenseService *ExpenseService
+	authHandler    *AuthHandler
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService) *Server {
+func NewServer(expenseService *ExpenseService, authHandler *AuthHandler) *Server {
 	s := &Server{
 		expenseService: expenseService,
+		authHandler:    authHandler,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -68,6 +70,14 @@ func (s *Server) registerRoutes() {
 	// without breaking existing clients.
 	v1 := s.router.Group("/api/v1")
 	{
+		// Authentication routes. These are deliberately NOT behind auth
+		// middleware — login is how a client obtains its token in the first place.
+		authRoutes := v1.Group("/auth")
+		{
+			// POST /api/v1/auth/login → verify credentials, return a PASETO token
+			authRoutes.POST("/login", s.authHandler.LoginUser)
+		}
+
 		expenses := v1.Group("/expenses")
 		{
 			// POST   /api/v1/expenses       → create a new expense

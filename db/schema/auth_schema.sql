@@ -392,7 +392,7 @@ VALUES (
     '00000000-0000-0000-0000-000000000002',
     'dev@example.com',
     -- bcrypt hash of 'devpassword123' at cost 12
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4tbCEAUTuW',
+    '$2a$12$tKnyY/tBMSf0.NiyGZRxFeblsneOt2LgqlLQSNgPLdbQF7cKHVaEW',
     'Dev',
     'User',
     now(),                     -- mark as already verified so login works immediately
