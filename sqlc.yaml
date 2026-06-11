@@ -23,7 +23,7 @@ sql:
     schema: "db/schema/schema.sql"
 
     # Path to the query file — the annotated SQL queries.
-    queries: "db/queries/query.sql"
+    queries: "db/queries"
 
     gen:
       go:
