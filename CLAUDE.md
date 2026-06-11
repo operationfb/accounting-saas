@@ -26,7 +26,7 @@ The developer (Aydin) is a **novice programmer who reads and wants to understand
 - **Money handling:** shopspring/decimal — all monetary values are stored as **integers in minor units (pence)** in the database and converted to/from decimal strings at API boundaries. **Never use float for money.**
 
 ### Frontend (separate concern, referenced for context)
-- Vue.js / Nuxt 4, TypeScript
+- Vue.js (Vite SPA), TypeScript
 - Dinero.js for money arithmetic
 - TanStack Query, Vee-Validate + Zod, openapi-typescript
 

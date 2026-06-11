@@ -39,6 +39,9 @@ _Last updated: 2026-06-11_
   token for another org the user belongs to (use `ListOrganisationsForUser`).
   _File: `auth_handler.go`._
 
+- **List filtering & pagination for `GET /api/v1/expenses`.** Today the endpoint returns the full set the caller may see (owner/admin: whole org; others: own) with no filters or paging. Add query-param filtering (date range, status, project) and pagination (limit/offset or cursor), preserving the existing owner/admin-vs-own scoping in `ListExpenses`. Reuse the existing org-scoped sqlc queries `ListExpensesByDateRange` / `ListExpensesByStatus` / `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered variants would need new queries. _Files: `expense_service.go`, `server.go`, `db/queries/query.sql`._
+
+
 ## Cleanups (also flagged as background tasks)
 
 - **Strip `[DEBUG]` token logging.** `token/paseto_maker.go` `VerifyToken` logs
