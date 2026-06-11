@@ -22,8 +22,12 @@ package main
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+
+	"github.com/operationfb/accounting-saas/token"
 )
 
 // Server holds the Gin engine and all the services it needs to handle requests.
@@ -33,14 +37,16 @@ type Server struct {
 	router         *gin.Engine
 	expenseService *ExpenseService
 	authHandler    *AuthHandler
+	tokenMaker     token.Maker
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, authHandler *AuthHandler) *Server {
+func NewServer(expenseService *ExpenseService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService: expenseService,
 		authHandler:    authHandler,
+		tokenMaker:     tokenMaker,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -49,6 +55,21 @@ func NewServer(expenseService *ExpenseService, authHandler *AuthHandler) *Server
 	// For production you'd replace these with structured logging middleware,
 	// but Default() is the right starting point.
 	s.router = gin.Default()
+
+	// CORS must be registered globally and BEFORE the routes/auth middleware.
+	// A browser sends a preflight OPTIONS request (with no Authorization header)
+	// before any cross-origin call that carries the bearer token; CORS has to
+	// answer that preflight (204) before authMiddleware can reject it for the
+	// missing token. Registering here (before registerRoutes) also puts CORS in
+	// Gin's NoRoute/NoMethod chains so bare OPTIONS preflights are handled.
+	s.router.Use(cors.New(cors.Config{
+		AllowOrigins:     corsOrigins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: false, // Bearer-token auth only; no cookies. Keep false.
+		MaxAge:           12 * time.Hour,
+	}))
 
 	s.registerRoutes()
 
@@ -78,10 +99,15 @@ func (s *Server) registerRoutes() {
 			authRoutes.POST("/login", s.authHandler.LoginUser)
 		}
 
+		// Expense routes require a valid login. authMiddleware verifies the
+		// bearer token and puts the user id + organisation id in the context.
 		expenses := v1.Group("/expenses")
+		expenses.Use(authMiddleware(s.tokenMaker))
 		{
-			// POST   /api/v1/expenses       → create a new expense
+			// GET    /api/v1/expenses       → list expenses the caller may see
+			// POST   /api/v1/expenses       → create a new expense (for the caller)
 			// GET    /api/v1/expenses/:id   → fetch one expense by UUID
+			expenses.GET("", s.handleListExpenses)
 			expenses.POST("", s.handleCreateExpense)
 			expenses.GET("/:id", s.handleGetExpense)
 		}
@@ -112,7 +138,6 @@ func (s *Server) registerRoutes() {
 // Only the fields a client should supply are here. Internal fields (id,
 // created_at, status, etc.) are set by the service, not the client.
 type CreateExpenseRequest struct {
-	UserID           string `json:"user_id"          binding:"required,uuid"`
 	CategoryID       string `json:"category_id"      binding:"required,uuid"`
 	DatedOn          string `json:"dated_on"          binding:"required"` // YYYY-MM-DD
 	Description      string `json:"description"       binding:"required,min=1"`
@@ -183,17 +208,16 @@ func (s *Server) handleCreateExpense(c *gin.Context) {
 		return
 	}
 
-	// Step 2: Get the organisation ID.
-	// In a real system this comes from a JWT token validated by auth middleware.
-	// The middleware decodes the token and sets "organisation_id" in the Gin
-	// context (c.Set("organisation_id", id)). Here we stub it with a fixed
-	// value so the code compiles and runs without auth built yet.
-	// TODO: replace with real auth middleware
-	orgID := "00000000-0000-0000-0000-000000000001"
+	// Step 2: Identify the caller from the authenticated token (set by
+	// authMiddleware). The claimant and organisation come from here — never from
+	// the request body — so a user can only create expenses for themselves.
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
 
 	// Step 3: Call the service layer.
-	// The service handles business logic, unit conversion, and database writes.
-	expense, err := s.expenseService.CreateExpense(c.Request.Context(), orgID, req)
+	// The service handles authorisation, business logic, unit conversion, and
+	// database writes.
+	expense, err := s.expenseService.CreateExpense(c.Request.Context(), userID, orgID, req)
 	/*if err != nil {
 		// 500 Internal Server Error — something went wrong on our side.
 		// In production you'd inspect the error type and return 422/409/etc.
@@ -227,10 +251,10 @@ func (s *Server) handleGetExpense(c *gin.Context) {
 	// e.g. GET /api/v1/expenses/abc-123 → id = "abc-123"
 	id := c.Param("id")
 
-	// Stub org ID — same note as above
-	orgID := "00000000-0000-0000-0000-000000000001"
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
 
-	expense, err := s.expenseService.GetExpense(c.Request.Context(), id, orgID)
+	expense, err := s.expenseService.GetExpense(c.Request.Context(), userID, orgID, id)
 
 	/*if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -247,4 +271,25 @@ func (s *Server) handleGetExpense(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"expense": expense})
+}
+
+// handleListExpenses handles GET /api/v1/expenses
+//
+// Returns the expenses the caller is allowed to see: owners/admins get every
+// expense in their organisation; everyone else gets only their own.
+func (s *Server) handleListExpenses(c *gin.Context) {
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	list, err := s.expenseService.ListExpenses(c.Request.Context(), userID, orgID)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"expenses": list})
 }

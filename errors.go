@@ -52,6 +52,10 @@ const (
 	// ErrCodeInternal — an unexpected error we didn't anticipate.
 	// Maps to HTTP 500. We never send internal error details to the client.
 	ErrCodeInternal ErrorCode = "internal_error"
+
+	// ErrCodeForbidden — the caller is authenticated but not allowed to perform
+	// this action or access this resource. Maps to HTTP 403.
+	ErrCodeForbidden ErrorCode = "forbidden"
 )
 
 // AppError is the structured error type returned by the service layer.
@@ -96,6 +100,8 @@ func (e *AppError) HTTPStatus() int {
 		return http.StatusUnprocessableEntity // 422
 	case ErrCodeConflict:
 		return http.StatusConflict // 409
+	case ErrCodeForbidden:
+		return http.StatusForbidden // 403
 	case ErrCodeInternal:
 		return http.StatusInternalServerError // 500
 	default:
@@ -136,6 +142,15 @@ func ErrValidation(msg string, cause error) *AppError {
 func ErrConflict(msg string) *AppError {
 	return &AppError{
 		Code:    ErrCodeConflict,
+		Message: msg,
+	}
+}
+
+// ErrForbidden constructs a "forbidden" AppError.
+// msg explains what was denied, e.g. "you do not have access to this expense".
+func ErrForbidden(msg string) *AppError {
+	return &AppError{
+		Code:    ErrCodeForbidden,
 		Message: msg,
 	}
 }

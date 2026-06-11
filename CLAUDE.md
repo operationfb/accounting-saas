@@ -168,3 +168,4 @@ These are the guiding principles for this codebase. Apply them pragmatically —
 - **After implementing a feature:** propose the corresponding tests (or write them) — don't treat tests as a follow-up "if there's time."
 - **Keep commits/changes scoped** to the feature or module being discussed. Flag (but don't make) unrelated improvements you notice.
 - **Ask before introducing new architectural patterns** (new middleware style, new package layout convention, etc.) — consistency matters more than local optimization in a learning-first codebase.
+- **Track deferred work in [BACKLOG.md](BACKLOG.md).** When you intentionally defer something (or notice a TODO worth not losing), add it there instead of relying on commit messages or chat. Remove items as they're done.

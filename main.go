@@ -17,6 +17,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,7 +93,8 @@ func main() {
 	//    NewServer wires the service into a Gin router — defined in server.go.
 	// -------------------------------------------------------------------------
 	queries := expenses.New(pool)
-	service := NewExpenseService(pool, queries)
+	authQueries := auth.New(pool)
+	service := NewExpenseService(pool, queries, authQueries)
 
 	// -------------------------------------------------------------------------
 	// Auth wiring.
@@ -121,10 +123,13 @@ func main() {
 		accessTokenDuration = parsed
 	}
 
-	authQueries := auth.New(pool)
 	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration)
 
-	server := NewServer(service, authHandler)
+	// Allowed CORS origins for the browser SPA. Comma-separated in
+	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
+	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
+
+	server := NewServer(service, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.
@@ -133,4 +138,24 @@ func main() {
 	if err := server.Run(":" + port); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// parseCORSOrigins turns a comma-separated CORS_ALLOWED_ORIGINS value into a
+// slice of trimmed origins. When empty it defaults to the local Nuxt dev server
+// so the app works out of the box in development.
+func parseCORSOrigins(raw string) []string {
+	const devDefault = "http://localhost:3000"
+	if strings.TrimSpace(raw) == "" {
+		return []string{devDefault}
+	}
+	var origins []string
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			origins = append(origins, o)
+		}
+	}
+	if len(origins) == 0 {
+		return []string{devDefault}
+	}
+	return origins
 }

@@ -21,15 +21,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	//"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 )
 
@@ -48,16 +50,54 @@ import (
 //     expenses.New(tx) to get a *Queries that runs inside that transaction.
 //     See the withTransaction helper below for the full picture.
 type ExpenseService struct {
-	pool    *pgxpool.Pool
-	queries *expenses.Queries
+	pool        *pgxpool.Pool
+	queries     *expenses.Queries
+	authQueries auth.Querier
 }
 
 // NewExpenseService is the constructor. Called once in main.go.
-func NewExpenseService(pool *pgxpool.Pool, queries *expenses.Queries) *ExpenseService {
+// authQueries is the auth module's query interface — the service uses it to
+// resolve the caller's organisation membership/role for authorisation.
+func NewExpenseService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier) *ExpenseService {
 	return &ExpenseService{
-		pool:    pool,
-		queries: queries,
+		pool:        pool,
+		queries:     queries,
+		authQueries: authQueries,
 	}
+}
+
+// =============================================================================
+// AUTHORIZATION
+// =============================================================================
+
+// authorize confirms the caller is an ACTIVE member of the organisation and
+// returns their role. Every expense operation runs this first so that a user
+// who isn't an active member of the org is refused (403), and the role can
+// drive what they're allowed to see (owner/admin read all).
+//
+// GetMembership does not filter by status, so we check status == "active" here.
+func (s *ExpenseService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
+	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
+		OrganisationID: orgID,
+		UserID:         userID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrForbidden("you are not a member of this organisation")
+		}
+		return "", ErrInternal(err)
+	}
+	if m.Status != "active" {
+		return "", ErrForbidden("your organisation membership is not active")
+	}
+	return m.Role, nil
+}
+
+// isOrgAdmin reports whether a role may read ALL expenses in the organisation.
+// Per product decision this is owner and admin only; member/accountant/read_only
+// are limited to their own expenses.
+func isOrgAdmin(role auth.OrganisationRole) bool {
+	return role == auth.OrganisationRoleOwner || role == auth.OrganisationRoleAdmin
 }
 
 // =============================================================================
@@ -130,7 +170,8 @@ func (s *ExpenseService) withTransaction(ctx context.Context, fn func(*expenses.
 // conversion between "what the API sees" and "what the database stores".
 func (s *ExpenseService) CreateExpense(
 	ctx context.Context,
-	orgID string,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
 	req CreateExpenseRequest,
 ) (*ExpenseResponse, error) {
 
@@ -138,18 +179,17 @@ func (s *ExpenseService) CreateExpense(
 	// Step 1: Parse and validate inputs
 	// -------------------------------------------------------------------------
 
-	// Parse orgID string into a UUID type.
-	// uuid.Parse returns an error if the string is not a valid UUID format.
-	organisationUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		//return nil, fmt.Errorf("invalid organisation_id: %w", err)
-		return nil, ErrValidation("organisation_id is not a valid UUID", err)
+	// Authorisation: the caller must be an active member of the organisation.
+	// We don't use the role for creation (everyone creates only for themselves),
+	// but this refuses non-members and deactivated members.
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
 	}
 
-	userUUID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		return nil, ErrValidation("user_id is not a valid UUID", err)
-	}
+	// The claimant and the organisation come from the authenticated token, not
+	// from the request body — a user can only create expenses for themselves.
+	organisationUUID := authOrgID
+	userUUID := authUserID
 
 	categoryUUID, err := uuid.Parse(req.CategoryID)
 	if err != nil {
@@ -292,25 +332,74 @@ func (s *ExpenseService) CreateExpense(
 // No transaction needed here — it's a single read.
 func (s *ExpenseService) GetExpense(
 	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
 	id string,
-	orgID string,
 ) (*ExpenseResponse, error) {
 	expenseUUID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, ErrValidation("id is not a valid UUID", err)
 	}
 
-	organisationUUID, err := uuid.Parse(orgID)
+	// Confirm the caller is an active member and get their role.
+	role, err := s.authorize(ctx, authUserID, authOrgID)
 	if err != nil {
-		return nil, ErrValidation("organisation_id is not a valid UUID", err)
+		return nil, err
 	}
-	// expenseUUID, organisationUUID
-	row, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{ID: expenseUUID, OrganisationID: organisationUUID})
+
+	row, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{ID: expenseUUID, OrganisationID: authOrgID})
+	if err != nil {
+		// No row for this id within the org → 404 (previously surfaced as 500).
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound("expense", id)
+		}
+		return nil, ErrInternal(err)
+	}
+
+	// Ownership: a user may read only their own expense, unless they are an
+	// owner/admin of the organisation (who may read all).
+	if row.UserID != authUserID && !isOrgAdmin(role) {
+		return nil, ErrForbidden("you do not have access to this expense")
+	}
+
+	return expenseToResponse(row), nil
+}
+
+// =============================================================================
+// LISTEXPENSES
+// =============================================================================
+
+// ListExpenses returns the expenses the caller is allowed to see:
+//   - owner/admin: every expense in the organisation
+//   - everyone else: only their own expenses
+func (s *ExpenseService) ListExpenses(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]*ExpenseResponse, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []expenses.Expense
+	if isOrgAdmin(role) {
+		rows, err = s.queries.ListExpenses(ctx, authOrgID)
+	} else {
+		rows, err = s.queries.ListExpensesByUser(ctx, expenses.ListExpensesByUserParams{
+			OrganisationID: authOrgID,
+			UserID:         authUserID,
+		})
+	}
 	if err != nil {
 		return nil, ErrInternal(err)
 	}
 
-	return expenseToResponse(row), nil
+	out := make([]*ExpenseResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, expenseToResponse(row))
+	}
+	return out, nil
 }
 
 // =============================================================================

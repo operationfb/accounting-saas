@@ -2,7 +2,6 @@ package token
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,10 +35,6 @@ func NewPayload(userID uuid.UUID, orgID uuid.UUID, duration time.Duration) (*Pay
 func (p *Payload) Valid() error {
 	now := time.Now().UTC()
 	expires := p.ExpiresAt.UTC()
-	fmt.Printf("[DEBUG] now       = %s\n", now.Format(time.RFC3339Nano))
-	fmt.Printf("[DEBUG] ExpiresAt = %s\n", expires.Format(time.RFC3339Nano))
-	fmt.Printf("[DEBUG] IsZero    = %v\n", p.ExpiresAt.IsZero())
-	fmt.Printf("[DEBUG] expired   = %v\n", now.After(expires))
 
 	if now.After(expires) {
 		return ErrExpiredToken

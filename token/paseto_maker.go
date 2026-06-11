@@ -116,14 +116,10 @@ func (maker *PasetoMaker) CreateToken(userID uuid.UUID, orgID uuid.UUID, duratio
 func (maker *PasetoMaker) VerifyToken(token string) (*Payload, error) {
 	payload := &Payload{}
 
-	fmt.Printf("[DEBUG] tokestring    = %s\n", token)
 	err := maker.paseto.Decrypt(token, maker.symmetricKey, payload, nil)
 	if err != nil {
 		return nil, ErrInvalidToken
 	}
-	fmt.Printf("[DEBUG] payload.ExpiresAt = %s\n", payload.ExpiresAt.Format(time.RFC3339Nano))
-	fmt.Printf("[DEBUG] payload.UserID    = %s\n", payload.UserID)
-	fmt.Printf("[DEBUG] payload.OrgID     = %s\n", payload.OrganisationID)
 	if time.Now().After(payload.ExpiresAt) {
 		return nil, ErrExpiredToken
 	}
