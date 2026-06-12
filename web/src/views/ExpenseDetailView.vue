@@ -45,83 +45,28 @@ const rows = [
 
 <template>
   <AppLayout>
-    <div class="page-head">
-      <div class="page-head__title">
-        <h1 class="page-title">Expense</h1>
+    <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <h1 class="text-[22px] font-bold">Expense</h1>
         <StatusTag :status="expense.status" />
       </div>
-      <div class="page-actions">
+      <div class="flex gap-2.5">
         <Button label="Edit" icon="pi pi-pencil" />
         <Button label="Back to list" severity="secondary" outlined />
       </div>
     </div>
 
     <FaCard title="Expense details">
-      <dl class="detail">
-        <div v-for="row in rows" :key="row.label" class="drow">
-          <dt class="drow__label">{{ row.label }}</dt>
-          <dd class="drow__value">{{ row.value }}</dd>
+      <dl>
+        <div
+          v-for="row in rows"
+          :key="row.label"
+          class="grid grid-cols-1 gap-0.5 border-b border-[#eef1f4] py-[9px] last:border-b-0 sm:grid-cols-[190px_minmax(0,1fr)] sm:gap-4"
+        >
+          <dt class="text-sm text-fa-muted sm:text-right">{{ row.label }}</dt>
+          <dd class="text-sm text-fa-text">{{ row.value }}</dd>
         </div>
       </dl>
     </FaCard>
   </AppLayout>
 </template>
-
-<style scoped>
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.page-head__title {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.page-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 700;
-}
-.page-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.detail {
-  margin: 0;
-}
-.drow {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
-  gap: 16px;
-  padding: 9px 0;
-  border-bottom: 1px solid #eef1f4;
-}
-.drow:last-child {
-  border-bottom: 0;
-}
-.drow__label {
-  text-align: right;
-  font-size: 14px;
-  color: var(--fa-muted);
-}
-.drow__value {
-  margin: 0;
-  font-size: 14px;
-  color: var(--fa-text);
-}
-
-@media (max-width: 640px) {
-  .drow {
-    grid-template-columns: 1fr;
-    gap: 2px;
-  }
-  .drow__label {
-    text-align: left;
-  }
-}
-</style>

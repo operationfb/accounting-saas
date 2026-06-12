@@ -1,48 +1,29 @@
 <script setup lang="ts">
-// Small coloured pill for an expense status. Colours map to the backend's
-// status values (DRAFT / SUBMITTED / APPROVED / REJECTED / PAID).
-defineProps<{
+// Small coloured pill for an expense status. Variant classes map to the
+// backend's status values (DRAFT / SUBMITTED / APPROVED / REJECTED / PAID).
+// These are tag-specific one-off colours, so they stay as arbitrary values
+// here rather than in the shared @theme tokens.
+import { computed } from 'vue'
+
+const props = defineProps<{
   status: string
 }>()
+
+const variants: Record<string, string> = {
+  DRAFT: 'bg-[#eef1f4] text-[#5b6772] border-[#dde2e8]',
+  SUBMITTED: 'bg-[#e8f1fb] text-[#1f6fd0] border-[#cfe2f7]',
+  APPROVED: 'bg-[#eaf7e6] text-[#3f8038] border-[#cfe9c7]',
+  REJECTED: 'bg-[#fdecec] text-[#c0392b] border-[#f6d3d0]',
+  PAID: 'bg-[#e6f5f3] text-[#167d6e] border-[#c8e9e4]',
+}
+
+const variantClass = computed(() => variants[props.status] ?? variants.DRAFT)
 </script>
 
 <template>
-  <span class="tag" :data-status="status">{{ status }}</span>
+  <span
+    class="inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
+    :class="variantClass"
+    >{{ status }}</span
+  >
 </template>
-
-<style scoped>
-.tag {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  border: 1px solid transparent;
-}
-.tag[data-status='DRAFT'] {
-  background: #eef1f4;
-  color: #5b6772;
-  border-color: #dde2e8;
-}
-.tag[data-status='SUBMITTED'] {
-  background: #e8f1fb;
-  color: #1f6fd0;
-  border-color: #cfe2f7;
-}
-.tag[data-status='APPROVED'] {
-  background: #eaf7e6;
-  color: #3f8038;
-  border-color: #cfe9c7;
-}
-.tag[data-status='REJECTED'] {
-  background: #fdecec;
-  color: #c0392b;
-  border-color: #f6d3d0;
-}
-.tag[data-status='PAID'] {
-  background: #e6f5f3;
-  color: #167d6e;
-  border-color: #c8e9e4;
-}
-</style>

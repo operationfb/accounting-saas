@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Reusable "card" panel matching FreeAgent's sections: a white box with a
-// light-grey header strip (bold title + optional right-aligned note) and a body.
+// Reusable "card" panel matching FA's sections: a white box with a light-grey
+// header strip (bold title + optional right-aligned note) and a body.
 //
 //   <FaCard title="Expense details" note="Required fields *">…</FaCard>
 //
@@ -12,46 +12,17 @@ defineProps<{
 </script>
 
 <template>
-  <section class="card">
-    <header v-if="title || $slots.header" class="card__header">
-      <h2 v-if="title" class="card__title">{{ title }}</h2>
+  <section class="mb-5 overflow-hidden rounded-[5px] border border-fa-border bg-white">
+    <header
+      v-if="title || $slots.header"
+      class="flex items-center justify-between gap-3 border-b border-fa-border bg-fa-card-header px-5 py-3"
+    >
+      <h2 v-if="title" class="text-[15px] font-bold text-fa-text">{{ title }}</h2>
       <slot name="header" />
-      <span v-if="note" class="card__note">{{ note }}</span>
+      <span v-if="note" class="text-[13px] text-fa-muted">{{ note }}</span>
     </header>
-    <div class="card__body">
+    <div class="px-5 py-[22px]">
       <slot />
     </div>
   </section>
 </template>
-
-<style scoped>
-.card {
-  background: #fff;
-  border: 1px solid var(--fa-border);
-  border-radius: 5px;
-  margin-bottom: 20px;
-  overflow: hidden;
-}
-.card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 20px;
-  background: var(--fa-card-header);
-  border-bottom: 1px solid var(--fa-border);
-}
-.card__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--fa-text);
-}
-.card__note {
-  font-size: 13px;
-  color: var(--fa-muted);
-}
-.card__body {
-  padding: 22px 20px;
-}
-</style>

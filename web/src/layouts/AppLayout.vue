@@ -7,30 +7,13 @@ import AppFooter from '@/components/AppFooter.vue'
 </script>
 
 <template>
-  <div class="layout">
+  <div class="flex min-h-screen flex-col bg-white">
     <AppTopBar />
-    <main class="layout__main">
-      <div class="layout__container">
+    <main class="flex-1">
+      <div class="mx-auto max-w-[1200px] px-4 py-6">
         <slot />
       </div>
     </main>
     <AppFooter />
   </div>
 </template>
-
-<style scoped>
-.layout {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #ffffff;
-}
-.layout__main {
-  flex: 1 0 auto;
-}
-.layout__container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 24px 16px;
-}
-</style>

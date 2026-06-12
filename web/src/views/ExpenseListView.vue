@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// Expenses list — the "expense view". STATIC scaffolding: the rows, filters and
-// buttons are placeholders with no behaviour. Styled after FreeAgent's
-// out-of-pocket expenses table.
+// Expenses list — the "expense view". STATIC scaffolding: rows, filters and
+// buttons are placeholders with no behaviour. Styled after FA's out-of-pocket
+// expenses table.
 import { ref } from 'vue'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
@@ -13,6 +13,13 @@ const claimant = ref('Sinem Soydar Gunal')
 const claimantOptions = ['Sinem Soydar Gunal']
 const range = ref('10 Most Recent')
 const rangeOptions = ['10 Most Recent', 'This month', 'This quarter', 'All']
+
+const headers = [
+  { label: 'Date', num: false },
+  { label: 'Description', num: false },
+  { label: 'Status', num: false },
+  { label: 'Amount', num: true },
+]
 
 // Placeholder rows — NOT real data.
 const rows = [
@@ -29,122 +36,52 @@ const rows = [
 
 <template>
   <AppLayout>
-    <div class="page-head">
-      <h1 class="page-title">Out-of-Pocket Expenses</h1>
-      <div class="page-actions">
+    <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
+      <h1 class="text-[22px] font-bold">Out-of-Pocket Expenses</h1>
+      <div class="flex gap-2.5">
         <Button label="Import expenses" severity="secondary" outlined />
         <Button label="Add new" icon="pi pi-angle-down" icon-pos="right" />
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel__filters">
+    <div class="overflow-hidden rounded-[5px] border border-fa-border bg-white">
+      <div class="flex flex-wrap gap-3 border-b border-fa-border px-4 py-3.5">
         <Select v-model="claimant" :options="claimantOptions" />
         <Select v-model="range" :options="rangeOptions" />
       </div>
 
-      <table class="exp-table">
+      <table class="w-full border-collapse text-sm">
         <thead>
           <tr>
-            <th>Date</th>
-            <th>Description</th>
-            <th>Status</th>
-            <th class="num">Amount</th>
+            <th
+              v-for="h in headers"
+              :key="h.label"
+              class="border-b border-fa-border px-4 py-3 text-[13px] font-semibold text-fa-muted"
+              :class="h.num ? 'text-right' : 'text-left'"
+            >
+              {{ h.label }}
+            </th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in rows" :key="row.id" class="exp-row">
-            <td class="exp-date">
-              <i class="pi pi-paperclip exp-clip" />
+          <tr v-for="row in rows" :key="row.id" class="cursor-pointer hover:bg-[#f7fafc]">
+            <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+              <i class="pi pi-paperclip mr-2 text-[13px] text-fa-muted" />
               <span>{{ row.date }}</span>
             </td>
-            <td>
-              <a href="#" class="fa-link exp-desc">{{ row.desc }}</a>
-              <span class="exp-cat">{{ row.category }}</span>
+            <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+              <a href="#" class="mr-2 font-semibold text-fa-blue hover:underline">{{ row.desc }}</a>
+              <span class="text-fa-muted">{{ row.category }}</span>
             </td>
-            <td><StatusTag :status="row.status" /></td>
-            <td class="num">£{{ row.amount }}</td>
+            <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+              <StatusTag :status="row.status" />
+            </td>
+            <td class="border-b border-[#eef1f4] px-4 py-3.5 text-right align-middle tabular-nums">
+              £{{ row.amount }}
+            </td>
           </tr>
         </tbody>
       </table>
     </div>
   </AppLayout>
 </template>
-
-<style scoped>
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.page-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 700;
-}
-.page-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.panel {
-  background: #fff;
-  border: 1px solid var(--fa-border);
-  border-radius: 5px;
-  overflow: hidden;
-}
-.panel__filters {
-  display: flex;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--fa-border);
-  flex-wrap: wrap;
-}
-
-.exp-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.exp-table thead th {
-  text-align: left;
-  padding: 12px 16px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fa-muted);
-  border-bottom: 1px solid var(--fa-border);
-}
-.exp-table th.num,
-.exp-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.exp-row td {
-  padding: 14px 16px;
-  border-bottom: 1px solid #eef1f4;
-  vertical-align: middle;
-}
-.exp-row:hover {
-  background: #f7fafc;
-  cursor: pointer;
-}
-.exp-date {
-  white-space: nowrap;
-  color: var(--fa-text);
-}
-.exp-clip {
-  color: var(--fa-muted);
-  font-size: 13px;
-  margin-right: 8px;
-}
-.exp-desc {
-  font-weight: 600;
-  margin-right: 8px;
-}
-.exp-cat {
-  color: var(--fa-muted);
-}
-</style>
