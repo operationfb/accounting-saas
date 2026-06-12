@@ -1,0 +1,55 @@
+/* Tailwind v4 + PrimeVue.
+   - @import "tailwindcss" pulls in Tailwind's base/utilities.
+   - tailwindcss-primeui adds PrimeUI-aware utilities and keeps Tailwind and
+     PrimeVue's styled theme from fighting each other. */
+@import 'tailwindcss';
+@plugin 'tailwindcss-primeui';
+
+/* -------------------------------------------------------------------------
+   FA-inspired design tokens (captured from the live app).
+   Used by the hand-styled "chrome" (nav bar, cards, footer, login) so the
+   look stays consistent and is easy to tweak in one place.
+   ------------------------------------------------------------------------- */
+:root {
+  --fa-bg: #f5f9ff; /* pale-blue page background (login) */
+  --fa-nav: #3f6fad; /* top navigation bar */
+  --fa-nav-active: #2f5a91; /* active/hovered nav item */
+  --fa-green: #79cc6e; /* primary action */
+  --fa-green-hover: #69bf5e;
+  --fa-blue: #0069bf; /* links / brand */
+  --fa-text: #181a1b; /* default text */
+  --fa-muted: #6b7785; /* secondary text */
+  --fa-border: #d6dce3; /* card / table borders */
+  --fa-input-border: #b4bcc1; /* input borders */
+  --fa-card-header: #f6f8fa; /* card header strip */
+  --fa-footer: #eaf0fa; /* footer background */
+  --fa-required: #d64545; /* required-field asterisk */
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, 'Helvetica Neue', Arial, Helvetica, sans-serif;
+  color: var(--fa-text);
+  background: #ffffff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Small shared helpers used across the templates. */
+.fa-link {
+  color: var(--fa-blue);
+  text-decoration: none;
+}
+.fa-link:hover {
+  text-decoration: underline;
+}
+.fa-required {
+  color: var(--fa-required);
+  margin-left: 2px;
+}
