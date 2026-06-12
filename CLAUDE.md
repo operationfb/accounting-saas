@@ -60,6 +60,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 │   ├── queries/         # Annotated SQL = sqlc input (one file per domain)
 │   │   ├── query.sql         # expenses queries
 │   │   └── auth.sql          # auth queries (CreateUser, GetUserByEmail, memberships, ...)
+│   ├── seeds/           # Reproducible seed data (e.g. expense_categories.sql)
 │   ├── expenses/        # GENERATED (package expenses) — never hand-edit
 │   └── auth/            # GENERATED (package auth) — never hand-edit
 │

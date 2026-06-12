@@ -102,6 +102,7 @@ type ExpenseCategory struct {
 	NominalCode     string             `json:"nominal_code"`
 	Name            string             `json:"name"`
 	Description     pgtype.Text        `json:"description"`
+	CategoryGroup   pgtype.Text        `json:"category_group"`
 	IsMileage       bool               `json:"is_mileage"`
 	IsCapitalAsset  bool               `json:"is_capital_asset"`
 	IsStockPurchase bool               `json:"is_stock_purchase"`

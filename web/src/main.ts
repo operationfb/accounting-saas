@@ -8,10 +8,18 @@ import 'primeicons/primeicons.css'
 import App from './App.vue'
 import router from './router'
 import FreeAgentPreset from './theme/preset'
+import { useAuthStore } from './stores/auth'
 
 const app = createApp(App)
 
-app.use(createPinia())
+const pinia = createPinia()
+app.use(pinia)
+
+// Restore any saved session BEFORE the router is installed, so the very first
+// navigation guard already knows whether the user is authenticated (and a
+// page refresh keeps them logged in).
+useAuthStore().loadFromStorage()
+
 app.use(router)
 app.use(PrimeVue, {
   theme: {

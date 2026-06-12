@@ -59,6 +59,11 @@ CREATE TABLE expense_categories (
     nominal_code    VARCHAR(20) NOT NULL,               -- e.g. '7400' for travel, '8200' for computer equipment
     name            VARCHAR(100) NOT NULL,              -- human-readable: 'Travel & Subsistence'
     description     TEXT,
+    -- High-level chart-of-accounts grouping: 'COS' (Cost of Sales),
+    -- 'ADMIN' (Admin expenses), 'ASSETS' (Assets and stock / capital purchases).
+    -- Nullable — not every category is grouped. Used to section categories in
+    -- reports and the expense category picker.
+    category_group  VARCHAR(30),
     is_mileage      BOOLEAN     NOT NULL DEFAULT FALSE, -- TRUE for the special Mileage category
     is_capital_asset BOOLEAN    NOT NULL DEFAULT FALSE, -- TRUE triggers depreciation schedule requirement
     is_stock_purchase BOOLEAN   NOT NULL DEFAULT FALSE, -- TRUE requires stock_item_id

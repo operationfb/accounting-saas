@@ -1,15 +1,43 @@
 <script setup lang="ts">
 // Login screen — standalone full-page (no app chrome), modelled on FA's login.
-// STATIC: nothing is wired up. The local refs only exist so the PrimeVue inputs
-// render; there is no submit/auth logic yet.
+// Wired to the real POST /api/v1/auth/login via the auth store.
 import { ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
+import { useAuthStore } from '@/stores/auth'
+import type { ApiError } from '@/lib/api'
+
+const router = useRouter()
+const route = useRoute()
+const auth = useAuthStore()
 
 const email = ref('')
 const password = ref('')
 const keepLoggedIn = ref(false)
+const showPassword = ref(false)
+
+const pending = ref(false)
+const errorMessage = ref('')
+
+async function onSubmit() {
+  if (pending.value) return
+  errorMessage.value = ''
+  pending.value = true
+  try {
+    await auth.login(email.value, password.value, keepLoggedIn.value)
+    // Return to wherever the guard sent us from, else the list.
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/expenses'
+    await router.replace(redirect)
+  } catch (err) {
+    // ApiError.message carries the backend's "invalid email or password" /
+    // "account is temporarily locked…" text.
+    errorMessage.value = (err as ApiError)?.message ?? 'Something went wrong. Please try again.'
+  } finally {
+    pending.value = false
+  }
+}
 </script>
 
 <template>
@@ -19,7 +47,15 @@ const keepLoggedIn = ref(false)
     <div class="w-full max-w-[380px] rounded-md bg-white p-7 shadow-[0_1px_3px_rgba(20,40,80,0.12)]">
       <h1 class="mb-[22px] text-xl font-bold">Ready to take care of business?</h1>
 
-      <form class="flex flex-col" @submit.prevent>
+      <div
+        v-if="errorMessage"
+        class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-sm text-[#c0392b]"
+        role="alert"
+      >
+        {{ errorMessage }}
+      </div>
+
+      <form class="flex flex-col" @submit.prevent="onSubmit">
         <div>
           <label class="mb-1.5 block text-sm" for="email">Email address</label>
           <InputText id="email" v-model="email" class="w-full" autocomplete="username" />
@@ -31,15 +67,16 @@ const keepLoggedIn = ref(false)
             <InputText
               id="password"
               v-model="password"
-              type="password"
+              :type="showPassword ? 'text' : 'password'"
               class="w-full"
               autocomplete="current-password"
             />
             <button
               type="button"
               class="absolute right-0 top-0 h-full border-l border-fa-input-border px-3.5 text-sm font-semibold text-fa-blue"
+              @click="showPassword = !showPassword"
             >
-              Show
+              {{ showPassword ? 'Hide' : 'Show' }}
             </button>
           </div>
         </div>
@@ -53,7 +90,7 @@ const keepLoggedIn = ref(false)
           <a href="#" class="text-fa-blue hover:underline">Reset my password</a>
         </div>
 
-        <Button label="Log in" class="w-full font-semibold" />
+        <Button type="submit" label="Log in" :loading="pending" class="w-full font-semibold" />
       </form>
     </div>
 
