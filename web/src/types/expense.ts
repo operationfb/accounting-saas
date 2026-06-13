@@ -68,3 +68,41 @@ export type ExpenseDetail = z.infer<typeof ExpenseDetailSchema>
 export const GetExpenseResponseSchema = z.object({
   expense: ExpenseDetailSchema,
 })
+
+// GET /api/v1/expense-categories → { "expense_categories": [...] } — the
+// reference data for the entry form's category picker.
+export const ExpenseCategorySchema = z.object({
+  id: z.string(),
+  nominal_code: z.string(),
+  name: z.string(),
+  category_group: z.string().nullish(),
+  description: z.string().nullish(),
+  is_mileage: z.boolean(),
+  is_capital_asset: z.boolean(),
+  is_stock_purchase: z.boolean(),
+})
+export type ExpenseCategory = z.infer<typeof ExpenseCategorySchema>
+
+export const ListCategoriesResponseSchema = z.object({
+  expense_categories: z.array(ExpenseCategorySchema).nullish(),
+})
+
+// POST /api/v1/expenses body. Money is a pound STRING ("42.50"), never a float.
+// Optional fields are omitted (not sent as "") when empty.
+export interface CreateExpenseRequest {
+  category_id: string
+  dated_on: string // YYYY-MM-DD
+  description: string
+  gross_value: string
+  currency?: string
+  supplier_name?: string
+  supplier_vat_number?: string
+  invoice_number?: string
+  receipt_reference?: string
+}
+
+// POST /api/v1/expenses → 201 { "expense": <lean ExpenseResponse> }. We only
+// need the new id (to navigate), so reuse the lean ExpenseSchema.
+export const CreateExpenseResponseSchema = z.object({
+  expense: ExpenseSchema,
+})

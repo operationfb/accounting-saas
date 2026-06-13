@@ -37,3 +37,12 @@ export function formatDateTime(iso: string): string {
     minute: '2-digit',
   }).format(d)
 }
+
+// Local YYYY-MM-DD for a Date (used for the `dated_on` payload). Uses the local
+// date parts so the day doesn't shift across timezones.
+export function toISODate(d: Date): string {
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
