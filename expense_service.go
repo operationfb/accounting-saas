@@ -328,14 +328,15 @@ func (s *ExpenseService) CreateExpense(
 // GETEXPENSE
 // =============================================================================
 
-// GetExpense fetches a single expense by ID, scoped to an organisation.
-// No transaction needed here — it's a single read.
-func (s *ExpenseService) GetExpense(
+// GetExpenseDetail fetches one expense with all its joined detail (category,
+// VAT, FX, mileage) from the v_expenses_full view, scoped to an organisation.
+// Single read — no transaction needed.
+func (s *ExpenseService) GetExpenseDetail(
 	ctx context.Context,
 	authUserID uuid.UUID,
 	authOrgID uuid.UUID,
 	id string,
-) (*ExpenseResponse, error) {
+) (*ExpenseDetailResponse, error) {
 	expenseUUID, err := uuid.Parse(id)
 	if err != nil {
 		return nil, ErrValidation("id is not a valid UUID", err)
@@ -347,9 +348,14 @@ func (s *ExpenseService) GetExpense(
 		return nil, err
 	}
 
-	row, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{ID: expenseUUID, OrganisationID: authOrgID})
+	// v_expenses_full joins the category (and mileage) so one read returns far
+	// more than the lean list response — category name, VAT rate/status, FX, etc.
+	row, err := s.queries.GetExpenseWithDetails(ctx, expenses.GetExpenseWithDetailsParams{
+		ID:             expenseUUID,
+		OrganisationID: authOrgID,
+	})
 	if err != nil {
-		// No row for this id within the org → 404 (previously surfaced as 500).
+		// No row for this id within the org → 404.
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound("expense", id)
 		}
@@ -362,7 +368,7 @@ func (s *ExpenseService) GetExpense(
 		return nil, ErrForbidden("you do not have access to this expense")
 	}
 
-	return expenseToResponse(row), nil
+	return expenseDetailToResponse(row), nil
 }
 
 // =============================================================================
@@ -398,6 +404,36 @@ func (s *ExpenseService) ListExpenses(
 	out := make([]*ExpenseResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, expenseToResponse(row))
+	}
+	return out, nil
+}
+
+// =============================================================================
+// LISTEXPENSECATEGORIES
+// =============================================================================
+
+// ListExpenseCategories returns the active expense categories for the caller's
+// organisation (for the category picker). Authorisation: any ACTIVE member of
+// the organisation may read its categories — they are shared reference data
+// needed to file expenses — so we authorise on membership, not role. The org
+// scope comes from the authenticated token, never the request body.
+func (s *ExpenseService) ListExpenseCategories(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]*ExpenseCategoryResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.queries.ListExpenseCategories(ctx, authOrgID)
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+
+	out := make([]*ExpenseCategoryResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, expenseCategoryToResponse(row))
 	}
 	return out, nil
 }
@@ -448,6 +484,120 @@ func expenseToResponse(e expenses.Expense) *ExpenseResponse {
 		SupplierVATNumber: nullTextToPtr(e.SupplierVatNumber),
 		InvoiceNumber:     nullTextToPtr(e.InvoiceNumber),
 	}
+}
+
+// expenseCategoryToResponse maps a generated ExpenseCategory row to the API
+// shape (UUID → string, nullable pgtype.Text → *string via nullTextToPtr).
+func expenseCategoryToResponse(c expenses.ExpenseCategory) *ExpenseCategoryResponse {
+	return &ExpenseCategoryResponse{
+		ID:              c.ID.String(),
+		NominalCode:     c.NominalCode,
+		Name:            c.Name,
+		CategoryGroup:   nullTextToPtr(c.CategoryGroup),
+		Description:     nullTextToPtr(c.Description),
+		IsMileage:       c.IsMileage,
+		IsCapitalAsset:  c.IsCapitalAsset,
+		IsStockPurchase: c.IsStockPurchase,
+	}
+}
+
+// expenseDetailToResponse maps a rich v_expenses_full row to the detail DTO.
+// Money minors → pound strings; VAT basis points → a percentage; nullable
+// NUMERIC / timestamp / UUID columns → optional strings (nil when NULL).
+func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
+	return &ExpenseDetailResponse{
+		ID:          e.ID.String(),
+		Status:      e.Status,
+		DatedOn:     e.DatedOn.Time.Format("2006-01-02"),
+		Description: e.Description,
+
+		CategoryName:        e.CategoryName,
+		CategoryNominalCode: e.CategoryNominalCode,
+
+		Currency:   e.Currency,
+		GrossValue: minorToPounds(e.GrossValueMinor),
+
+		VATRate:   bpsToPercentPtr(e.VatRateBps),
+		VATStatus: e.VatStatus,
+		VATValue:  minorToPounds(e.VatValueMinor),
+
+		NativeCurrency:   e.NativeCurrency,
+		NativeGrossValue: minorToPounds(e.NativeGrossValueMinor),
+		NativeVATValue:   minorToPounds(e.NativeVatValueMinor),
+		ExchangeRate:     numericToStringPtr(e.ExchangeRate),
+
+		ECStatus: e.EcStatus,
+
+		SupplierName:      nullTextToPtr(e.SupplierName),
+		SupplierVATNumber: nullTextToPtr(e.SupplierVatNumber),
+		InvoiceNumber:     nullTextToPtr(e.InvoiceNumber),
+		ReceiptReference:  nullTextToPtr(e.ReceiptReference),
+
+		ProjectID:    uuidToStringPtr(e.ProjectID),
+		RebillType:   nullTextToPtr(e.RebillType),
+		RebillFactor: numericToStringPtr(e.RebillFactor),
+
+		SubmittedAt: timestampToStringPtr(e.SubmittedAt),
+		ApprovedAt:  timestampToStringPtr(e.ApprovedAt),
+		PaidAt:      timestampToStringPtr(e.PaidAt),
+
+		CreatedAt: e.CreatedAt.Time.Format(time.RFC3339),
+		UpdatedAt: e.UpdatedAt.Time.Format(time.RFC3339),
+	}
+}
+
+// minorToPounds converts integer pence to a 2dp pound string ("4250" → "42.50").
+func minorToPounds(minor int32) string {
+	return decimal.NewFromInt(int64(minor)).Div(decimal.NewFromInt(100)).StringFixed(2)
+}
+
+// bpsToPercentPtr turns a nullable VAT rate in basis points into a percentage
+// string (2000 → "20%", 1750 → "17.5%"); nil when no rate is set.
+func bpsToPercentPtr(b pgtype.Int4) *string {
+	if !b.Valid {
+		return nil
+	}
+	s := decimal.NewFromInt(int64(b.Int32)).Div(decimal.NewFromInt(100)).String() + "%"
+	return &s
+}
+
+// numericToStringPtr renders a nullable NUMERIC (exchange_rate, rebill_factor)
+// as a display string; nil when NULL.
+func numericToStringPtr(n pgtype.Numeric) *string {
+	if !n.Valid {
+		return nil
+	}
+	v, err := n.Value()
+	if err != nil {
+		return nil
+	}
+	if s, ok := v.(string); ok {
+		return &s
+	}
+	s := fmt.Sprintf("%v", v)
+	return &s
+}
+
+// timestampToStringPtr renders a nullable timestamp as RFC3339; nil when NULL.
+func timestampToStringPtr(t pgtype.Timestamptz) *string {
+	if !t.Valid {
+		return nil
+	}
+	s := t.Time.Format(time.RFC3339)
+	return &s
+}
+
+// uuidToStringPtr renders a nullable UUID as a string; nil when NULL.
+func uuidToStringPtr(u pgtype.UUID) *string {
+	if !u.Valid {
+		return nil
+	}
+	id, err := uuid.FromBytes(u.Bytes[:])
+	if err != nil {
+		return nil
+	}
+	s := id.String()
+	return &s
 }
 
 // =============================================================================

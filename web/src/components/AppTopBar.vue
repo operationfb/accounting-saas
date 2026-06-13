@@ -1,7 +1,17 @@
 <script setup lang="ts">
 // Top navigation bar (the navy strip), mirroring FA's app chrome.
-// Static for now — items are not wired to routes. "My Money" is the active
-// section because expenses live under it.
+// The company button on the right opens an account dropdown with Logout.
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import Menu from 'primevue/menu'
+import type { MenuItem } from 'primevue/menuitem'
+import { useAuthStore } from '@/stores/auth'
+
+const router = useRouter()
+const auth = useAuthStore()
+
+// Static nav items mirroring FreeAgent's top navigation. "My Money" is shown as
+// the active section because expenses live under it.
 const navItems = [
   { label: 'Overview', caret: false, active: false },
   { label: 'Contacts', caret: false, active: false },
@@ -12,6 +22,21 @@ const navItems = [
   { label: 'Taxes', caret: true, active: false },
   { label: 'Accounting', caret: true, active: false },
 ]
+
+// Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
+const accountMenu = ref()
+const accountItems = ref<MenuItem[]>([
+  { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
+])
+
+function toggleAccountMenu(event: Event) {
+  accountMenu.value?.toggle(event)
+}
+
+function logout() {
+  auth.logout()
+  router.push('/login')
+}
 </script>
 
 <template>
@@ -45,13 +70,29 @@ const navItems = [
           <i class="pi pi-bell" />
           <span class="absolute right-[7px] top-[7px] h-2 w-2 rounded-full bg-fa-green" />
         </button>
+
+        <!-- Company button → account dropdown (Logout) -->
         <button
+          id="account-menu-button"
           type="button"
-          class="inline-flex h-[34px] items-center gap-1.5 rounded px-2 text-[13px] font-semibold text-white hover:bg-fa-nav-active"
+          class="inline-flex h-[34px] items-center gap-1.5 rounded px-2 text-[13px] font-semibold uppercase text-white hover:bg-fa-nav-active"
+          aria-haspopup="true"
+          aria-controls="account-menu"
+          @click="toggleAccountMenu"
         >
-          AXION LONDON LIMITED
+          {{ auth.organisation?.name || 'Organisation' }}
           <i class="pi pi-angle-down text-[11px] opacity-[0.85]" />
         </button>
+        <Menu id="account-menu" ref="accountMenu" :model="accountItems" :popup="true">
+          <template #start>
+            <div v-if="auth.user" class="border-b border-fa-border px-3 py-2">
+              <div class="text-sm font-semibold text-fa-text">
+                {{ auth.user.first_name }} {{ auth.user.last_name }}
+              </div>
+              <div class="text-xs text-fa-muted">{{ auth.user.email }}</div>
+            </div>
+          </template>
+        </Menu>
       </div>
     </nav>
   </header>

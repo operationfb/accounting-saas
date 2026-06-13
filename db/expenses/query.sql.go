@@ -928,6 +928,57 @@ func (q *Queries) ListExpenseAttachments(ctx context.Context, expenseID uuid.UUI
 	return items, nil
 }
 
+const listExpenseCategories = `-- name: ListExpenseCategories :many
+
+SELECT id, organisation_id, nominal_code, name, description, category_group, is_mileage, is_capital_asset, is_stock_purchase, is_active, created_at, updated_at FROM expense_categories
+WHERE organisation_id = $1
+  AND is_active = TRUE
+ORDER BY category_group, nominal_code
+`
+
+// =============================================================================
+// SECTION 6: EXPENSE CATEGORIES (reference data)
+// =============================================================================
+// -----------------------------------------------------------------------------
+// ListExpenseCategories
+// All ACTIVE categories for an organisation, for the expense category picker.
+// Scoped by organisation_id — categories are per-tenant reference data.
+// Ordered by category_group then nominal_code so the UI can render stable
+// sections (Admin expenses / Assets and stock / Cost of Sales).
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExpenseCategories(ctx context.Context, organisationID uuid.UUID) ([]ExpenseCategory, error) {
+	rows, err := q.db.Query(ctx, listExpenseCategories, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ExpenseCategory
+	for rows.Next() {
+		var i ExpenseCategory
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.NominalCode,
+			&i.Name,
+			&i.Description,
+			&i.CategoryGroup,
+			&i.IsMileage,
+			&i.IsCapitalAsset,
+			&i.IsStockPurchase,
+			&i.IsActive,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpenses = `-- name: ListExpenses :many
 SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1

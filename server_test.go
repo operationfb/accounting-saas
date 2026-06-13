@@ -783,3 +783,88 @@ func TestCORS(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// EXPENSE CATEGORIES
+// =============================================================================
+
+// TestHandleListExpenseCategories covers GET /api/v1/expense-categories:
+//   - authenticated → 200 with the org's ACTIVE categories, each carrying its
+//     category_group; spot-checks one category per group and the capital-asset
+//     flag; confirms a deactivated legacy category is excluded.
+//   - no token → 401.
+func TestHandleListExpenseCategories(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("authenticated lists active grouped categories", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/api/v1/expense-categories", nil)
+		req.Header.Set("Authorization", bearer(t, ts, devUserID, devOrgID))
+		ts.server.router.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", recorder.Code, recorder.Body.String())
+		}
+
+		var resp struct {
+			ExpenseCategories []ExpenseCategoryResponse `json:"expense_categories"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.ExpenseCategories) == 0 {
+			t.Fatal("expected a non-empty category list")
+		}
+
+		// Index by name; every active category must be grouped and identified.
+		byName := make(map[string]ExpenseCategoryResponse, len(resp.ExpenseCategories))
+		for _, c := range resp.ExpenseCategories {
+			byName[c.Name] = c
+			if c.CategoryGroup == nil || *c.CategoryGroup == "" {
+				t.Errorf("category %q has no category_group", c.Name)
+			}
+			if c.ID == "" || c.NominalCode == "" {
+				t.Errorf("category %q missing id/nominal_code", c.Name)
+			}
+		}
+
+		// Spot-check one category per group, including the capital-asset flag.
+		checks := []struct {
+			name      string
+			group     string
+			isCapital bool
+		}{
+			{"Cost of Sales", "COS", false},
+			{"Accommodation and Meals", "ADMIN", false},
+			{"Computer Equipment Purchase", "ASSETS", true},
+		}
+		for _, ck := range checks {
+			c, ok := byName[ck.name]
+			if !ok {
+				t.Errorf("expected category %q in the list", ck.name)
+				continue
+			}
+			if c.CategoryGroup == nil || *c.CategoryGroup != ck.group {
+				t.Errorf("%q: category_group = %v, want %q", ck.name, c.CategoryGroup, ck.group)
+			}
+			if c.IsCapitalAsset != ck.isCapital {
+				t.Errorf("%q: is_capital_asset = %v, want %v", ck.name, c.IsCapitalAsset, ck.isCapital)
+			}
+		}
+
+		// Deactivated legacy categories must NOT appear.
+		if _, found := byName["Travel & Subsistence"]; found {
+			t.Error("deactivated category 'Travel & Subsistence' should not be listed")
+		}
+	})
+
+	t.Run("requires auth", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/api/v1/expense-categories", nil)
+		ts.server.router.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d — body: %s", recorder.Code, recorder.Body.String())
+		}
+	})
+}

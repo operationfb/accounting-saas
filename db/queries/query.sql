@@ -623,3 +623,22 @@ FROM expenses
 WHERE organisation_id = $1
   AND deleted_at IS NULL
 GROUP BY status;
+
+
+-- =============================================================================
+-- SECTION 6: EXPENSE CATEGORIES (reference data)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- ListExpenseCategories
+-- All ACTIVE categories for an organisation, for the expense category picker.
+-- Scoped by organisation_id — categories are per-tenant reference data.
+-- Ordered by category_group then nominal_code so the UI can render stable
+-- sections (Admin expenses / Assets and stock / Cost of Sales).
+-- -----------------------------------------------------------------------------
+-- name: ListExpenseCategories :many
+SELECT * FROM expense_categories
+WHERE organisation_id = $1
+  AND is_active = TRUE
+ORDER BY category_group, nominal_code;
+

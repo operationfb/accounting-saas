@@ -86,11 +86,22 @@ type userResponse struct {
 	EmailVerified bool    `json:"email_verified"`
 }
 
+// organisationResponse is the safe public view of the organisation the session
+// is scoped to. The org NAME is not inside the (encrypted) PASETO token — the
+// token only carries the org id — so we surface the name here for the client to
+// display (e.g. in the top bar).
+type organisationResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // loginUserResponse is the JSON returned on a successful login: the PASETO
-// access token plus the sanitised user.
+// access token, the sanitised user, and the organisation the session is scoped
+// to (null if the user belongs to no organisation yet).
 type loginUserResponse struct {
-	AccessToken string       `json:"access_token"`
-	User        userResponse `json:"user"`
+	AccessToken  string                `json:"access_token"`
+	User         userResponse          `json:"user"`
+	Organisation *organisationResponse `json:"organisation,omitempty"`
 }
 
 // newUserResponse projects a generated auth.User onto the safe userResponse.
@@ -194,6 +205,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// A future "switch organisation" endpoint can re-mint a token for a
 	// different org. orgID stays uuid.Nil if the user has no organisation yet.
 	var orgID uuid.UUID
+	var org *organisationResponse
 	orgs, err := h.queries.ListOrganisationsForUser(ctx, user.ID)
 	if err != nil {
 		respondInternal(c, err)
@@ -201,6 +213,9 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	}
 	if len(orgs) > 0 {
 		orgID = orgs[0].ID
+		// The org name is already loaded here, so include it in the response —
+		// the client can't read it from the encrypted token.
+		org = &organisationResponse{ID: orgs[0].ID.String(), Name: orgs[0].Name}
 	}
 
 	// Step 6: mint the PASETO token and return it with the safe user view.
@@ -211,8 +226,9 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, loginUserResponse{
-		AccessToken: accessToken,
-		User:        newUserResponse(user),
+		AccessToken:  accessToken,
+		User:         newUserResponse(user),
+		Organisation: org,
 	})
 }
 

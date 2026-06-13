@@ -157,6 +157,17 @@ type Querier interface {
 	// The UI shows attachments in this order.
 	// -----------------------------------------------------------------------------
 	ListExpenseAttachments(ctx context.Context, expenseID uuid.UUID) ([]ExpenseAttachment, error)
+	// =============================================================================
+	// SECTION 6: EXPENSE CATEGORIES (reference data)
+	// =============================================================================
+	// -----------------------------------------------------------------------------
+	// ListExpenseCategories
+	// All ACTIVE categories for an organisation, for the expense category picker.
+	// Scoped by organisation_id — categories are per-tenant reference data.
+	// Ordered by category_group then nominal_code so the UI can render stable
+	// sections (Admin expenses / Assets and stock / Cost of Sales).
+	// -----------------------------------------------------------------------------
+	ListExpenseCategories(ctx context.Context, organisationID uuid.UUID) ([]ExpenseCategory, error)
 	// -----------------------------------------------------------------------------
 	// ListExpenses
 	// Returns all active expenses for an organisation, newest first.

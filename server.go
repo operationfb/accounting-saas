@@ -111,6 +111,14 @@ func (s *Server) registerRoutes() {
 			expenses.POST("", s.handleCreateExpense)
 			expenses.GET("/:id", s.handleGetExpense)
 		}
+
+		// Expense categories (reference data) — also require a valid login.
+		expenseCategories := v1.Group("/expense-categories")
+		expenseCategories.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/expense-categories → active categories for the caller's org
+			expenseCategories.GET("", s.handleListExpenseCategories)
+		}
 	}
 }
 
@@ -184,6 +192,66 @@ type ExpenseResponse struct {
 	UpdatedAt         string  `json:"updated_at"`
 }
 
+// ExpenseDetailResponse is the richer JSON returned by GET /api/v1/expenses/:id.
+// It comes from the v_expenses_full view (category + mileage joined) so a single
+// call gives the detail screen everything: category name, VAT rate/status, FX /
+// native values, EC status, project/rebill, and the approval timestamps. Money
+// stays as pound strings; optional fields are omitted when null.
+type ExpenseDetailResponse struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	DatedOn     string `json:"dated_on"`
+	Description string `json:"description"`
+
+	CategoryName        string `json:"category_name"`
+	CategoryNominalCode string `json:"category_nominal_code"`
+
+	Currency   string `json:"currency"`
+	GrossValue string `json:"gross_value"`
+
+	VATRate   *string `json:"vat_rate,omitempty"` // e.g. "20%"
+	VATStatus string  `json:"vat_status"`
+	VATValue  string  `json:"vat_value"`
+
+	// Native / home-currency values — only differ from the above when the
+	// expense was incurred in a foreign currency.
+	NativeCurrency   string  `json:"native_currency"`
+	NativeGrossValue string  `json:"native_gross_value"`
+	NativeVATValue   string  `json:"native_vat_value"`
+	ExchangeRate     *string `json:"exchange_rate,omitempty"`
+
+	ECStatus string `json:"ec_status"`
+
+	SupplierName      *string `json:"supplier_name,omitempty"`
+	SupplierVATNumber *string `json:"supplier_vat_number,omitempty"`
+	InvoiceNumber     *string `json:"invoice_number,omitempty"`
+	ReceiptReference  *string `json:"receipt_reference,omitempty"`
+
+	ProjectID    *string `json:"project_id,omitempty"`
+	RebillType   *string `json:"rebill_type,omitempty"`
+	RebillFactor *string `json:"rebill_factor,omitempty"`
+
+	SubmittedAt *string `json:"submitted_at,omitempty"`
+	ApprovedAt  *string `json:"approved_at,omitempty"`
+	PaidAt      *string `json:"paid_at,omitempty"`
+
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ExpenseCategoryResponse is the JSON returned for an expense category — the
+// reference data the frontend uses to populate the category picker.
+type ExpenseCategoryResponse struct {
+	ID              string  `json:"id"`
+	NominalCode     string  `json:"nominal_code"`
+	Name            string  `json:"name"`
+	CategoryGroup   *string `json:"category_group,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	IsMileage       bool    `json:"is_mileage"`
+	IsCapitalAsset  bool    `json:"is_capital_asset"`
+	IsStockPurchase bool    `json:"is_stock_purchase"`
+}
+
 // =============================================================================
 // HANDLERS
 // =============================================================================
@@ -254,7 +322,7 @@ func (s *Server) handleGetExpense(c *gin.Context) {
 	userID := getAuthUserID(c)
 	orgID := getAuthOrgID(c)
 
-	expense, err := s.expenseService.GetExpense(c.Request.Context(), userID, orgID, id)
+	expense, err := s.expenseService.GetExpenseDetail(c.Request.Context(), userID, orgID, id)
 
 	/*if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -292,4 +360,25 @@ func (s *Server) handleListExpenses(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
+}
+
+// handleListExpenseCategories handles GET /api/v1/expense-categories
+//
+// Returns the active expense categories for the caller's organisation (taken
+// from the authenticated token), used to populate the category picker.
+func (s *Server) handleListExpenseCategories(c *gin.Context) {
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	list, err := s.expenseService.ListExpenseCategories(c.Request.Context(), userID, orgID)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"expense_categories": list})
 }

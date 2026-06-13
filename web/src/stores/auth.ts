@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { User } from '@/types/auth'
+import type { Organisation, User } from '@/types/auth'
 import { login as loginRequest } from '@/services/auth.service'
 
 // One JSON blob persisted under this key, in local- OR sessionStorage.
@@ -8,12 +8,15 @@ const STORAGE_KEY = 'auth'
 interface PersistedSession {
   token: string
   user: User
+  organisation: Organisation | null
   expiresAt: number | null
 }
 
 interface AuthState {
   token: string | null
   user: User | null
+  // The organisation the session is scoped to (its name is shown in the top bar).
+  organisation: Organisation | null
   // Epoch ms when the token expires; null when unknown (the backend doesn't
   // send an expiry today, and the encrypted token can't be read client-side).
   expiresAt: number | null
@@ -23,6 +26,7 @@ export const useAuthStore = defineStore('auth', {
   state: (): AuthState => ({
     token: null,
     user: null,
+    organisation: null,
     expiresAt: null,
   }),
 
@@ -36,7 +40,13 @@ export const useAuthStore = defineStore('auth', {
   actions: {
     async login(email: string, password: string, keepLoggedIn: boolean): Promise<void> {
       const res = await loginRequest(email, password)
-      this.setSession(res.access_token, res.user, res.expires_in ?? null, keepLoggedIn)
+      this.setSession(
+        res.access_token,
+        res.user,
+        res.organisation ?? null,
+        res.expires_in ?? null,
+        keepLoggedIn,
+      )
     },
 
     // keepLoggedIn → localStorage (survives a browser restart, shared across
@@ -45,14 +55,21 @@ export const useAuthStore = defineStore('auth', {
     setSession(
       token: string,
       user: User,
+      organisation: Organisation | null,
       expiresInSeconds: number | null,
       keepLoggedIn: boolean,
     ): void {
       this.token = token
       this.user = user
+      this.organisation = organisation
       this.expiresAt = expiresInSeconds ? Date.now() + expiresInSeconds * 1000 : null
 
-      const persisted: PersistedSession = { token, user, expiresAt: this.expiresAt }
+      const persisted: PersistedSession = {
+        token,
+        user,
+        organisation,
+        expiresAt: this.expiresAt,
+      }
       const primary = keepLoggedIn ? localStorage : sessionStorage
       const other = keepLoggedIn ? sessionStorage : localStorage
       other.removeItem(STORAGE_KEY)
@@ -65,6 +82,7 @@ export const useAuthStore = defineStore('auth', {
     logout(): void {
       this.token = null
       this.user = null
+      this.organisation = null
       this.expiresAt = null
       localStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(STORAGE_KEY)
@@ -83,6 +101,7 @@ export const useAuthStore = defineStore('auth', {
         }
         this.token = session.token
         this.user = session.user
+        this.organisation = session.organisation ?? null
         this.expiresAt = session.expiresAt ?? null
       } catch {
         // Corrupt blob — clear it.

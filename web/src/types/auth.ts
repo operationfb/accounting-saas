@@ -13,13 +13,23 @@ export const UserSchema = z.object({
 })
 export type User = z.infer<typeof UserSchema>
 
+// The organisation the session is scoped to. Comes from the login RESPONSE, not
+// the token — the PASETO token is encrypted (the SPA can't read it) and only
+// carries the org id anyway, not its name.
+export const OrganisationSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+})
+export type Organisation = z.infer<typeof OrganisationSchema>
+
 // POST /auth/login success body.
-// `expires_in` is OPTIONAL: the backend does not send it today, but if it is
-// added later the store will use it for proactive expiry handling. (The PASETO
-// token itself is encrypted, so the SPA can't read the expiry from it.)
+// `organisation` is the org the token is scoped to (null if the user has none).
+// `expires_in` is OPTIONAL: the backend does not send it today, but if added
+// later the store will use it for proactive expiry handling.
 export const LoginResponseSchema = z.object({
   access_token: z.string(),
   user: UserSchema,
+  organisation: OrganisationSchema.nullish(),
   expires_in: z.number().optional(),
 })
 export type LoginResponse = z.infer<typeof LoginResponseSchema>

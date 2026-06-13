@@ -53,11 +53,6 @@ _Last updated: 2026-06-11_
   `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered
   variants would need new queries. _Files: `expense_service.go`, `server.go`,
   `db/queries/query.sql`._
-- **Expense categories API.** The seeded categories aren't exposed yet — add a
-  `ListExpenseCategories` query (org-scoped, active, ordered by `category_group`
-  + `nominal_code`) and a `GET /api/v1/expense-categories` endpoint so the
-  frontend can populate the category picker. _Files: `db/queries/query.sql`,
-  new service/handler._
 - **Store category VAT default.** The category screenshots distinguished
   "normally VATable" vs "normally Zero-VAT"; we stored only `category_group`,
   not the VAT default. Consider adding a `normally_vatable` / default-VAT hint to
