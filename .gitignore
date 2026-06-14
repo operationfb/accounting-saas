@@ -8,6 +8,11 @@
 .env.local
 *.env
 
+# GCP service-account key files — long-lived credentials, never commit
+*-key.json
+gcs-*.json
+service-account*.json
+
 # Go build cache
 vendor/
 

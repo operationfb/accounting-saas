@@ -34,6 +34,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
@@ -49,6 +50,12 @@ import (
 // requireGCS skips the test unless the GCS dev bucket is configured.
 func requireGCS(t *testing.T) {
 	t.Helper()
+	// Load .env up front: these tests call requireGCS BEFORE newTestServer (which
+	// is what otherwise loads .env), and `go test -run TestAttachment` runs only
+	// these tests — so without this the GCS_BUCKET defined in .env wouldn't be
+	// visible yet and every test would skip. godotenv.Load is idempotent and
+	// never overrides a variable already set in the real environment.
+	_ = godotenv.Load()
 	if os.Getenv("GCS_BUCKET") == "" {
 		t.Skip("GCS_BUCKET not set — skipping attachment tests (they use the real dev bucket)")
 	}
