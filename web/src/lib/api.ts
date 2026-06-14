@@ -23,7 +23,7 @@ export interface ApiError {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   body?: unknown
   // Attach the bearer token (default true). The login call sets this false.
   auth?: boolean
@@ -36,10 +36,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   const { method = 'GET', body, auth = true, skipAuthRedirect = false } = options
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (auth) {
-    const token = useAuthStore().token
-    if (token) headers.Authorization = `Bearer ${token}`
-  }
+  if (auth) attachBearer(headers)
 
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
@@ -47,6 +44,39 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
+  return handleResponse<T>(res, skipAuthRedirect)
+}
+
+// Multipart upload (e.g. a receipt file) via FormData. Unlike apiFetch we
+// DELIBERATELY don't set Content-Type: the browser must set it itself so it can
+// add the multipart boundary — setting it by hand corrupts the request. The
+// bearer token and the 401/error handling are otherwise identical to apiFetch.
+export async function apiUpload<T>(
+  path: string,
+  formData: FormData,
+  options: { method?: 'POST' | 'PUT'; skipAuthRedirect?: boolean } = {},
+): Promise<T> {
+  const { method = 'POST', skipAuthRedirect = false } = options
+
+  const headers: Record<string, string> = {}
+  attachBearer(headers)
+
+  const res = await fetch(`${BASE_URL}${path}`, { method, headers, body: formData })
+
+  return handleResponse<T>(res, skipAuthRedirect)
+}
+
+// Attach the PASETO bearer token from the auth store, when we have one.
+function attachBearer(headers: Record<string, string>): void {
+  const token = useAuthStore().token
+  if (token) headers.Authorization = `Bearer ${token}`
+}
+
+// Shared response handling for apiFetch + apiUpload: parse the (possibly empty)
+// JSON body, and on a non-2xx normalise the error — reacting ONCE to a 401 by
+// logging out + redirecting to /login (unless the caller opted out, or we're
+// already there, so there are no redirect loops).
+async function handleResponse<T>(res: Response, skipAuthRedirect: boolean): Promise<T> {
   // The body may be empty (e.g. 204) — tolerate a failed parse.
   let data: unknown = null
   try {
@@ -57,10 +87,6 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
   if (!res.ok) {
     const err = normaliseError(res.status, data)
-
-    // 401 = not authenticated (expired/invalid token). Handle it ONCE: clear
-    // the session and bounce to /login, remembering where we were. Skip if the
-    // caller opted out (login) or we're already on /login (no redirect loops).
     if (res.status === 401 && !skipAuthRedirect) {
       useAuthStore().logout()
       const current = router.currentRoute.value

@@ -16,6 +16,7 @@ import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import FormRow from '@/components/FormRow.vue'
+import AttachmentsField from '@/components/AttachmentsField.vue'
 import { listCategories, listVatRates, createExpense, getExpense, updateExpense } from '@/services/expenses.service'
 import { toISODate, computeFixedVatPounds } from '@/lib/format'
 import type { ExpenseCategory, VatRate, CreateExpenseRequest } from '@/types/expense'
@@ -27,6 +28,10 @@ const route = useRoute()
 // Edit mode iff we're on /expenses/:id/edit (the create route has no :id param).
 const editId = typeof route.params.id === 'string' ? route.params.id : undefined
 const isEdit = !!editId
+
+// The staged-attachments manager. We call its commit() after the expense exists
+// (create) or has been saved (edit) to apply the file changes.
+const attachments = ref<InstanceType<typeof AttachmentsField> | null>(null)
 
 // Positive decimal with up to 2 dp. The backend truncates beyond 2 dp, so we
 // guard here to avoid a silent change to the stored amount.
@@ -140,7 +145,6 @@ const vatAmountLiveError = computed(() => {
 })
 
 // --- disabled "coming soon" sections — kept for layout, never sent ---
-const attachmentDesc = ref('')
 const vatOption = ref('uk')
 const project = ref('-- None --')
 const recurrence = ref('-- Does Not Recur --')
@@ -276,13 +280,32 @@ async function submit(addAnother: boolean) {
   submitting.value = true
   try {
     if (editId) {
+      // Save the expense fields first; if that fails we never touch attachments.
       await updateExpense(editId, buildPayload())
+      // Then apply the staged attachment changes (delete / upload / set-primary).
+      const result = await attachments.value?.commit(editId)
+      if (result && !result.ok) {
+        // Fields saved, but some attachment changes failed. Stay on the form so
+        // the user can retry — the field already re-synced to server truth.
+        formError.value = `Your changes were saved, but the attachments didn't fully update: ${result.message}`
+        return
+      }
       router.push(`/expenses/${editId}`)
     } else {
       const created = await createExpense(buildPayload())
+      // The expense now exists, so upload the staged files to it.
+      const result = await attachments.value?.commit(created.id)
+      const filesFailed = !!(result && !result.ok)
       if (addAnother) {
         resetForm()
-        successMessage.value = 'Expense created. Add another below.'
+        attachments.value?.reset() // clear the file list for the next expense
+        successMessage.value = filesFailed
+          ? 'Expense created, but some files didn’t upload — add them by editing it.'
+          : 'Expense created. Add another below.'
+      } else if (filesFailed) {
+        // Expense saved; some receipts didn't upload. Land on the detail with a
+        // notice (the user can finish attaching from the edit page).
+        router.push({ path: `/expenses/${created.id}`, query: { attach: 'partial' } })
       } else {
         router.push(`/expenses/${created.id}`)
       }
@@ -346,19 +369,8 @@ function cancel() {
         {{ successMessage }}
       </div>
 
-      <!-- Attachment — coming soon (disabled) -->
-      <FaCard title="Attachment" note="Coming soon">
-        <FormRow label="File to attach">
-          <div class="flex items-center gap-2.5 opacity-60">
-            <Button label="Upload a file" severity="secondary" outlined disabled />
-            <span class="text-sm text-fa-muted">or</span>
-            <span class="text-sm text-fa-muted"><i class="pi pi-bolt" /> Upload via Smart Capture</span>
-          </div>
-        </FormRow>
-        <FormRow label="Attachment description" label-for="att-desc">
-          <InputText id="att-desc" v-model="attachmentDesc" class="w-72" disabled />
-        </FormRow>
-      </FaCard>
+      <!-- Receipts — multi-file upload, staged until save (see AttachmentsField). -->
+      <AttachmentsField ref="attachments" :expense-id="editId" />
 
       <FaCard title="Expense details" note="Required fields *">
         <FormRow label="Category" label-for="category" required>

@@ -8,8 +8,10 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { getExpense } from '@/services/expenses.service'
-import { formatMoney, formatDate, formatDateTime } from '@/lib/format'
+import { listAttachments, getDownloadUrl } from '@/services/attachments.service'
+import { formatMoney, formatDate, formatDateTime, formatBytes } from '@/lib/format'
 import type { ExpenseDetail } from '@/types/expense'
+import type { Attachment } from '@/types/attachment'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
@@ -19,6 +21,16 @@ const id = route.params.id as string
 const expense = ref<ExpenseDetail | null>(null)
 const loading = ref(true)
 const error = ref<ApiError | null>(null)
+
+// Attachments load independently of the expense (separate endpoint).
+const attachments = ref<Attachment[]>([])
+const attachmentsLoading = ref(true)
+const attachmentsError = ref('')
+const previewError = ref('')
+
+// One-off notice when we landed here right after a create whose receipts didn't
+// all upload (ExpenseEntryView passes ?attach=partial).
+const uploadNotice = computed(() => route.query.attach === 'partial')
 
 async function load() {
   loading.value = true
@@ -35,7 +47,46 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadAttachments() {
+  attachmentsLoading.value = true
+  attachmentsError.value = ''
+  try {
+    attachments.value = await listAttachments(id)
+  } catch (err) {
+    // 401 is handled by apiFetch; other failures show inline (the expense card
+    // carries its own 404/403, so we don't double up on those here).
+    attachmentsError.value = (err as ApiError)?.message ?? 'Could not load attachments.'
+  } finally {
+    attachmentsLoading.value = false
+  }
+}
+
+// Open a receipt in a new tab. Open the blank tab SYNCHRONOUSLY (so the pop-up
+// blocker permits it), then point it at the short-lived signed URL once it loads.
+function openAttachment(att: Attachment) {
+  previewError.value = ''
+  const w = window.open('', '_blank')
+  getDownloadUrl(id, att.id)
+    .then((url) => {
+      if (w) w.location.href = url
+      else window.location.href = url // pop-up blocked → use this tab
+    })
+    .catch((err) => {
+      if (w) w.close()
+      previewError.value = (err as ApiError)?.message ?? 'Could not open this file.'
+    })
+}
+
+function iconFor(type: string): string {
+  if (type === 'application/pdf') return 'pi pi-file-pdf'
+  if (type.startsWith('image/')) return 'pi pi-image'
+  return 'pi pi-file'
+}
+
+onMounted(() => {
+  load()
+  loadAttachments()
+})
 
 const notFound = computed(() => error.value?.status === 404)
 
@@ -87,6 +138,14 @@ function backToList() {
 
 <template>
   <AppLayout>
+    <div
+      v-if="uploadNotice"
+      class="mb-4 rounded border border-[#f0e0b6] bg-[#fdf6e3] px-3 py-2 text-sm text-[#8a6d3b]"
+      role="status"
+    >
+      Some receipts didn’t finish uploading. You can add them by editing this expense.
+    </div>
+
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
         <h1 class="text-[22px] font-bold">Expense</h1>
@@ -130,6 +189,49 @@ function backToList() {
           <dd class="text-sm text-fa-text">{{ row.value }}</dd>
         </div>
       </dl>
+    </FaCard>
+
+    <!-- Attachments (read-only) — view/download receipts. Adding, removing and
+         choosing the primary live on the Edit page. Only shown once the expense
+         itself loaded, so a 404/403 doesn't surface twice. -->
+    <FaCard v-if="expense" title="Attachments">
+      <div v-if="attachmentsLoading" class="py-3 text-sm text-fa-muted">
+        <i class="pi pi-spin pi-spinner mr-2" />Loading…
+      </div>
+      <p v-else-if="attachmentsError" class="py-2 text-xs text-[#c0392b]">
+        {{ attachmentsError }}
+        <button type="button" class="underline" @click="loadAttachments">Retry</button>
+      </p>
+      <template v-else>
+        <p v-if="previewError" class="py-1 text-xs text-[#c0392b]">{{ previewError }}</p>
+        <ul v-if="attachments.length">
+          <li
+            v-for="att in attachments"
+            :key="att.id"
+            class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
+          >
+            <i :class="iconFor(att.content_type)" class="text-fa-muted" />
+            <button
+              type="button"
+              class="font-semibold text-fa-blue hover:underline"
+              @click="openAttachment(att)"
+            >
+              {{ att.file_name }}
+            </button>
+            <span class="text-xs text-fa-muted">{{ formatBytes(att.file_size_bytes) }}</span>
+            <span
+              v-if="att.is_primary"
+              class="rounded bg-[#eaf7e6] px-1.5 py-0.5 text-[11px] font-semibold text-[#3f8038]"
+            >
+              Primary
+            </span>
+            <span v-if="att.description" class="basis-full pl-7 text-xs text-fa-muted">
+              {{ att.description }}
+            </span>
+          </li>
+        </ul>
+        <p v-else class="py-2 text-sm text-fa-muted">No attachments.</p>
+      </template>
     </FaCard>
   </AppLayout>
 </template>
