@@ -211,6 +211,25 @@ type Querier interface {
 	// Last 30 days of expenses — useful for the dashboard "recent activity" widget.
 	// -----------------------------------------------------------------------------
 	ListRecentExpenses(ctx context.Context, organisationID uuid.UUID) ([]Expense, error)
+	// =============================================================================
+	// SECTION 7: VAT RATES (reference data)
+	// =============================================================================
+	// -----------------------------------------------------------------------------
+	// ListVatRatesByCountry
+	// All VAT rates that are valid TODAY for a given country, for the VAT rate
+	// picker. VAT rates are global reference data keyed by country_code (not per
+	// organisation) — the caller passes the organisation's country.
+	//
+	// "Valid today" means the rate is in its effective window:
+	//   - effective_from is on or before today (not a future rate), AND
+	//   - effective_to is NULL (still active) or on/after today (not yet expired).
+	// This is why the COVID 5% hospitality rate, for example, stops appearing once
+	// its effective_to date has passed.
+	//
+	// Explicit column list (not SELECT *) per project convention. Uses
+	// idx_vat_rates_country for the country_code lookup.
+	// -----------------------------------------------------------------------------
+	ListVatRatesByCountry(ctx context.Context, countryCode string) ([]ListVatRatesByCountryRow, error)
 	// -----------------------------------------------------------------------------
 	// SoftDeleteExpense
 	// Sets deleted_at to mark the record as deleted. The row remains in the DB

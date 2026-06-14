@@ -19,12 +19,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
@@ -87,17 +87,20 @@ type userResponse struct {
 }
 
 // organisationResponse is the safe public view of the organisation the session
-// is scoped to. The org NAME is not inside the (encrypted) PASETO token — the
-// token only carries the org id — so we surface the name here for the client to
-// display (e.g. in the top bar).
+// is scoped to. Neither the org NAME nor its COUNTRY is inside the (encrypted)
+// PASETO token — the token only carries the org id — so we surface them here for
+// the client. The name is for display (e.g. the top bar); country_code drives
+// country-scoped features such as which VAT rates apply, so it is mandatory.
 type organisationResponse struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CountryCode string `json:"country_code"` // ISO 3166-1 alpha-2, e.g. 'GB'
 }
 
 // loginUserResponse is the JSON returned on a successful login: the PASETO
 // access token, the sanitised user, and the organisation the session is scoped
-// to (null if the user belongs to no organisation yet).
+// to. organisation is always present on success — login fails if no organisation
+// (and therefore no country_code) can be resolved for the user.
 type loginUserResponse struct {
 	AccessToken  string                `json:"access_token"`
 	User         userResponse          `json:"user"`
@@ -203,19 +206,42 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// Step 5: choose the organisation to embed in the token. A user may belong
 	// to several organisations; we default to their first active membership.
 	// A future "switch organisation" endpoint can re-mint a token for a
-	// different org. orgID stays uuid.Nil if the user has no organisation yet.
-	var orgID uuid.UUID
-	var org *organisationResponse
+	// different org.
+	//
+	// ListOrganisationsForUser does SELECT o.* so each row already carries the
+	// organisation's country_code.
 	orgs, err := h.queries.ListOrganisationsForUser(ctx, user.ID)
 	if err != nil {
 		respondInternal(c, err)
 		return
 	}
-	if len(orgs) > 0 {
-		orgID = orgs[0].ID
-		// The org name is already loaded here, so include it in the response —
-		// the client can't read it from the encrypted token.
-		org = &organisationResponse{ID: orgs[0].ID.String(), Name: orgs[0].Name}
+
+	// country_code is MANDATORY: the platform is country-scoped (e.g. which VAT
+	// rates apply), so every session must carry the organisation's country. A
+	// user with no organisation has no country to scope to, and an org-less user
+	// can't do anything anyway (authorize() refuses them) — so we fail the login
+	// rather than mint a token with no country_code.
+	if len(orgs) == 0 {
+		respondInternal(c, fmt.Errorf("login: user %s belongs to no organisation; cannot resolve country_code", user.ID))
+		return
+	}
+	defaultOrg := orgs[0] // default to the first active membership
+
+	// country_code is NOT NULL in the schema, so a real row always has one; guard
+	// defensively so a blank/corrupt value fails the login loudly instead of
+	// silently issuing a session with no country.
+	if strings.TrimSpace(defaultOrg.CountryCode) == "" {
+		respondInternal(c, fmt.Errorf("login: organisation %s has an empty country_code", defaultOrg.ID))
+		return
+	}
+	orgID := defaultOrg.ID
+
+	// The org name + country are already loaded here, so include them in the
+	// response — the client can't read them from the encrypted token.
+	org := &organisationResponse{
+		ID:          defaultOrg.ID.String(),
+		Name:        defaultOrg.Name,
+		CountryCode: defaultOrg.CountryCode,
 	}
 
 	// Step 6: mint the PASETO token and return it with the safe user view.

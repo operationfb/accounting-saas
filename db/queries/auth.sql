@@ -246,12 +246,14 @@ INSERT INTO organisations (
     name,
     slug,
     native_currency,
-    timezone
+    timezone,
+    country_code
 ) VALUES (
     $1,   -- name             VARCHAR  (trading name)
     $2,   -- slug             VARCHAR  (nullable, URL-safe identifier)
     $3,   -- native_currency  CHAR(3)  e.g. 'GBP'
-    $4    -- timezone         VARCHAR  e.g. 'Europe/London'
+    $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
+    $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
 RETURNING *;
 
@@ -294,6 +296,7 @@ UPDATE organisations SET
     vrn                    = $8,
     native_currency        = $9,
     timezone               = $10,
+    country_code           = $11,
     updated_at             = now()
 WHERE id = $1
   AND deleted_at IS NULL

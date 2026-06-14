@@ -119,6 +119,15 @@ func (s *Server) registerRoutes() {
 			// GET /api/v1/expense-categories → active categories for the caller's org
 			expenseCategories.GET("", s.handleListExpenseCategories)
 		}
+
+		// VAT rates (reference data) — also require a valid login. The country is
+		// resolved from the caller's organisation, so there is no path/query param.
+		vatRates := v1.Group("/vat-rates")
+		vatRates.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/vat-rates → VAT rates valid today for the caller's org country
+			vatRates.GET("", s.handleListVATRates)
+		}
 	}
 }
 
@@ -252,6 +261,25 @@ type ExpenseCategoryResponse struct {
 	IsStockPurchase bool    `json:"is_stock_purchase"`
 }
 
+// VATRateResponse is the JSON returned for a VAT rate — reference data the
+// frontend uses to populate the VAT rate picker and to compute VAT amounts.
+//
+// The rate is exposed two ways on purpose:
+//   - rate_bps: the canonical integer (basis points, 2000 = 20.00%) the client
+//     should use for EXACT computation (gross × rate_bps / 10000).
+//   - rate: a ready-to-display string ("20%") so the dropdown doesn't have to
+//     format it.
+//
+// is_fixed_ratio tells the client whether the VAT amount is locked to
+// gross × rate (true) or whether the user may enter a custom amount (false).
+type VATRateResponse struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`           // e.g. "Standard Rate"
+	RateBps      int32  `json:"rate_bps"`       // basis points: 2000 = 20.00%
+	Rate         string `json:"rate"`           // display form, e.g. "20%"
+	IsFixedRatio bool   `json:"is_fixed_ratio"` // true = amount locked to gross × rate
+}
+
 // =============================================================================
 // HANDLERS
 // =============================================================================
@@ -381,4 +409,26 @@ func (s *Server) handleListExpenseCategories(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"expense_categories": list})
+}
+
+// handleListVATRates handles GET /api/v1/vat-rates
+//
+// Returns the VAT rates valid today for the caller's organisation's country
+// (resolved from the authenticated token, never a request param), used to
+// populate the VAT rate picker.
+func (s *Server) handleListVATRates(c *gin.Context) {
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	list, err := s.expenseService.ListVATRates(c.Request.Context(), userID, orgID)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"vat_rates": list})
 }

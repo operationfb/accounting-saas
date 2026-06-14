@@ -1,4 +1,12 @@
 {
+  // Node-side config: covers files that run in Node (not the browser), i.e. the
+  // Vite config. It's a "composite" project referenced by the root solution file.
+  //
+  // Why no "noEmit": a referenced (composite) project must be able to emit, or
+  // `tsc --build` / vue-tsc refuses with TS6310. Instead of disabling emit we
+  // redirect all generated output (.js, .d.ts, .tsbuildinfo) into a throwaway
+  // folder inside node_modules (which is gitignored), so type-checking never
+  // writes anything into the repo.
   "compilerOptions": {
     "composite": true,
     "skipLibCheck": true,
@@ -6,7 +14,11 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "strict": true,
-    "noEmit": true
+    "outDir": "./node_modules/.tmp/tsconfig.node",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    // vite.config.ts uses Node built-ins (e.g. `node:url`), so pull in @types/node.
+    // Listing it explicitly keeps the Node project's ambient types scoped to Node.
+    "types": ["node"]
   },
   "include": ["vite.config.ts"]
 }

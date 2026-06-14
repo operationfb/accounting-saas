@@ -439,6 +439,55 @@ func (s *ExpenseService) ListExpenseCategories(
 }
 
 // =============================================================================
+// LISTVATRATES
+// =============================================================================
+
+// ListVATRates returns the VAT rates valid TODAY for the caller's organisation's
+// country (for the VAT rate picker).
+//
+// VAT rates are GLOBAL reference data keyed by country_code, not per-organisation.
+// The country is resolved from the caller's organisation (via the auth token),
+// never from the request — so a client cannot read another country's rates by
+// passing a different code. This mirrors how ListExpenseCategories scopes to the
+// caller's org.
+//
+// Authorisation: any ACTIVE member of the organisation may read the VAT rates —
+// they are shared reference data needed to file expenses — so we authorise on
+// membership, not role.
+func (s *ExpenseService) ListVATRates(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]*VATRateResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+
+	// Resolve the organisation's country. The token carries only the org id; the
+	// country_code lives on the organisation row (auth domain).
+	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound("organisation", authOrgID.String())
+		}
+		return nil, ErrInternal(err)
+	}
+
+	// ListVatRatesByCountry already filters to rates whose effective window covers
+	// today, so the picker only ever shows currently-applicable rates.
+	rows, err := s.queries.ListVatRatesByCountry(ctx, org.CountryCode)
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+
+	out := make([]*VATRateResponse, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, vatRateToResponse(row))
+	}
+	return out, nil
+}
+
+// =============================================================================
 // RESPONSE FORMATTER
 // =============================================================================
 
@@ -501,6 +550,19 @@ func expenseCategoryToResponse(c expenses.ExpenseCategory) *ExpenseCategoryRespo
 	}
 }
 
+// vatRateToResponse maps a ListVatRatesByCountryRow to the API shape. The rate
+// is exposed both as canonical basis points (for exact client-side computation)
+// and as a human display string ("20%").
+func vatRateToResponse(r expenses.ListVatRatesByCountryRow) *VATRateResponse {
+	return &VATRateResponse{
+		ID:           r.ID.String(),
+		Name:         r.Name,
+		RateBps:      r.RateBps,
+		Rate:         bpsToPercent(r.RateBps),
+		IsFixedRatio: r.IsFixedRatio,
+	}
+}
+
 // expenseDetailToResponse maps a rich v_expenses_full row to the detail DTO.
 // Money minors → pound strings; VAT basis points → a percentage; nullable
 // NUMERIC / timestamp / UUID columns → optional strings (nil when NULL).
@@ -551,13 +613,19 @@ func minorToPounds(minor int32) string {
 	return decimal.NewFromInt(int64(minor)).Div(decimal.NewFromInt(100)).StringFixed(2)
 }
 
+// bpsToPercent renders a VAT rate in basis points as a percentage string:
+// 2000 → "20%", 1750 → "17.5%", 0 → "0%".
+func bpsToPercent(bps int32) string {
+	return decimal.NewFromInt(int64(bps)).Div(decimal.NewFromInt(100)).String() + "%"
+}
+
 // bpsToPercentPtr turns a nullable VAT rate in basis points into a percentage
 // string (2000 → "20%", 1750 → "17.5%"); nil when no rate is set.
 func bpsToPercentPtr(b pgtype.Int4) *string {
 	if !b.Valid {
 		return nil
 	}
-	s := decimal.NewFromInt(int64(b.Int32)).Div(decimal.NewFromInt(100)).String() + "%"
+	s := bpsToPercent(b.Int32)
 	return &s
 }
 

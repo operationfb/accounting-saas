@@ -120,6 +120,12 @@ CREATE TABLE organisations (
     -- might want USD as their native currency.
     native_currency         CHAR(3)     NOT NULL DEFAULT 'GBP',
 
+    -- ISO 3166-1 alpha-2 country code the organisation belongs to: 'GB', 'DE',
+    -- 'FR'. Determines which set of vat_rates (also keyed by country_code) apply.
+    -- Defaults to 'GB' for this UK-focused MVP. CHECK keeps it uppercase.
+    country_code            CHAR(2)     NOT NULL DEFAULT 'GB'
+                            CHECK (country_code = upper(country_code)),
+
     -- IANA timezone. Used to display dates correctly and schedule recurring
     -- jobs at the right local time.
     timezone                VARCHAR(60) NOT NULL DEFAULT 'Europe/London',
@@ -143,6 +149,7 @@ CREATE INDEX idx_organisations_slug ON organisations (slug) WHERE slug IS NOT NU
 COMMENT ON TABLE organisations IS 'Tenant entity. One row per registered business. All other tables point to this via organisation_id.';
 COMMENT ON COLUMN organisations.vrn IS 'VAT Registration Number. Format: GB + 9 digits. NULL if not VAT-registered.';
 COMMENT ON COLUMN organisations.utr IS 'HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.';
+COMMENT ON COLUMN organisations.country_code IS 'ISO 3166-1 alpha-2 country the org belongs to (e.g. GB). Selects the applicable vat_rates, which are keyed by the same country_code. NOT NULL, defaults to GB.';
 COMMENT ON COLUMN organisations.mtd_access_token IS 'HMRC MTD OAuth access token. TODO: encrypt at rest before production.';
 
 
@@ -375,12 +382,13 @@ CREATE TRIGGER trg_memberships_updated_at
 -- Generate a fresh hash with: htpasswd -bnBC 12 "" yourpassword | tr -d ':\n'
 -- =============================================================================
 
-INSERT INTO organisations (id, name, slug, native_currency, timezone, plan, is_active)
+INSERT INTO organisations (id, name, slug, native_currency, country_code, timezone, plan, is_active)
 VALUES (
     '00000000-0000-0000-0000-000000000001',
     'Development Test Company',
     'dev-test-company',
     'GBP',
+    'GB',              -- ISO 3166-1 alpha-2; dev company is UK-based
     'Europe/London',
     'trial',
     TRUE

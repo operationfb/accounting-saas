@@ -80,21 +80,33 @@ CREATE INDEX idx_expense_categories_org ON expense_categories (organisation_id) 
 
 -- -----------------------------------------------------------------------------
 -- vat_rates
--- Stores VAT rate definitions over time. VAT rates change (e.g. COVID 5%
--- hospitality rate), so we store effective_from/to to allow historical
--- accuracy. Rate is stored as INTEGER basis points: 20% = 2000, 5% = 500.
+-- Global reference data: VAT rate definitions keyed by COUNTRY, not by
+-- organisation. VAT rates are national/statutory (the UK standard rate is the
+-- same for every UK company), so they are NOT scoped per organisation — an org
+-- selects the rates for its country via organisations.country_code.
+--
+-- VAT rates change over time (e.g. COVID 5% hospitality rate), so we store
+-- effective_from/to to allow historical accuracy. Rate is stored as INTEGER
+-- basis points: 20% = 2000, 5% = 500.
 -- -----------------------------------------------------------------------------
 CREATE TABLE vat_rates (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    organisation_id UUID        NOT NULL,
+    -- ISO 3166-1 alpha-2 country code this rate applies to: 'GB', 'DE', 'FR'.
+    -- CHECK keeps codes uppercase so lookups by country are consistent.
+    country_code    CHAR(2)     NOT NULL CHECK (country_code = upper(country_code)),
     name            VARCHAR(50) NOT NULL,               -- 'Standard Rate', 'Reduced Rate', 'Zero Rate', 'Exempt'
     rate_bps        INTEGER     NOT NULL,               -- basis points: 2000 = 20.00%, 500 = 5.00%
+    -- TRUE  = rate-locked: the VAT amount must equal gross × rate (backend recomputes
+    --         and rejects mismatches). This is the norm (e.g. UK standard 20%).
+    -- FALSE = the user may enter a custom VAT amount (backend accepts it as-is).
+    is_fixed_ratio  BOOLEAN     NOT NULL DEFAULT TRUE,
     effective_from  DATE        NOT NULL,
     effective_to    DATE,                               -- NULL means currently active
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_vat_rates_org ON vat_rates (organisation_id);
+-- Lookup index: rates are fetched by country (see ListVatRatesByCountry).
+CREATE INDEX idx_vat_rates_country ON vat_rates (country_code);
 
 
 -- =============================================================================
@@ -532,7 +544,7 @@ COMMENT ON TABLE expense_attachments    IS 'Receipt/invoice files attached to an
 COMMENT ON TABLE expense_recurrence     IS 'Recurrence schedule for repeating expenses (e.g. monthly subscriptions).';
 COMMENT ON TABLE expense_audit_log      IS 'Immutable audit trail of all expense changes. Never delete rows from this table.';
 COMMENT ON TABLE expense_categories     IS 'Chart of Accounts categories available for expenses. Maps to nominal codes.';
-COMMENT ON TABLE vat_rates              IS 'VAT rate definitions with effective date ranges. Rates stored in basis points.';
+COMMENT ON TABLE vat_rates              IS 'Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.';
 
 COMMENT ON COLUMN expenses.gross_value_minor         IS 'Total amount in minor units of expense currency (e.g. pence for GBP). Negative = owed to claimant.';
 COMMENT ON COLUMN expenses.native_gross_value_minor  IS 'Total amount in minor units of company home currency (GBP pence for UK companies).';

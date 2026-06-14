@@ -1545,6 +1545,75 @@ func (q *Queries) ListRecentExpenses(ctx context.Context, organisationID uuid.UU
 	return items, nil
 }
 
+const listVatRatesByCountry = `-- name: ListVatRatesByCountry :many
+
+SELECT id, name, rate_bps, country_code, is_fixed_ratio, effective_from, effective_to, created_at
+FROM vat_rates
+WHERE country_code = $1
+  AND effective_from <= CURRENT_DATE                        -- not yet in effect → excluded
+  AND (effective_to IS NULL OR effective_to >= CURRENT_DATE) -- expired → excluded; NULL = still active
+ORDER BY name
+`
+
+type ListVatRatesByCountryRow struct {
+	ID            uuid.UUID          `json:"id"`
+	Name          string             `json:"name"`
+	RateBps       int32              `json:"rate_bps"`
+	CountryCode   string             `json:"country_code"`
+	IsFixedRatio  bool               `json:"is_fixed_ratio"`
+	EffectiveFrom pgtype.Date        `json:"effective_from"`
+	EffectiveTo   pgtype.Date        `json:"effective_to"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// =============================================================================
+// SECTION 7: VAT RATES (reference data)
+// =============================================================================
+// -----------------------------------------------------------------------------
+// ListVatRatesByCountry
+// All VAT rates that are valid TODAY for a given country, for the VAT rate
+// picker. VAT rates are global reference data keyed by country_code (not per
+// organisation) — the caller passes the organisation's country.
+//
+// "Valid today" means the rate is in its effective window:
+//   - effective_from is on or before today (not a future rate), AND
+//   - effective_to is NULL (still active) or on/after today (not yet expired).
+//
+// This is why the COVID 5% hospitality rate, for example, stops appearing once
+// its effective_to date has passed.
+//
+// Explicit column list (not SELECT *) per project convention. Uses
+// idx_vat_rates_country for the country_code lookup.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListVatRatesByCountry(ctx context.Context, countryCode string) ([]ListVatRatesByCountryRow, error) {
+	rows, err := q.db.Query(ctx, listVatRatesByCountry, countryCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVatRatesByCountryRow
+	for rows.Next() {
+		var i ListVatRatesByCountryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.RateBps,
+			&i.CountryCode,
+			&i.IsFixedRatio,
+			&i.EffectiveFrom,
+			&i.EffectiveTo,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteExpense = `-- name: SoftDeleteExpense :exec
 UPDATE expenses SET
     deleted_at = now(),

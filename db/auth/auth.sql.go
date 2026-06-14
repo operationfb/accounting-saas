@@ -170,14 +170,16 @@ INSERT INTO organisations (
     name,
     slug,
     native_currency,
-    timezone
+    timezone,
+    country_code
 ) VALUES (
     $1,   -- name             VARCHAR  (trading name)
     $2,   -- slug             VARCHAR  (nullable, URL-safe identifier)
     $3,   -- native_currency  CHAR(3)  e.g. 'GBP'
-    $4    -- timezone         VARCHAR  e.g. 'Europe/London'
+    $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
+    $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateOrganisationParams struct {
@@ -185,6 +187,7 @@ type CreateOrganisationParams struct {
 	Slug           pgtype.Text `json:"slug"`
 	NativeCurrency string      `json:"native_currency"`
 	Timezone       string      `json:"timezone"`
+	CountryCode    string      `json:"country_code"`
 }
 
 // =============================================================================
@@ -202,6 +205,7 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		arg.Slug,
 		arg.NativeCurrency,
 		arg.Timezone,
+		arg.CountryCode,
 	)
 	var i Organisation
 	err := row.Scan(
@@ -222,6 +226,7 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.StripeCustomerID,
 		&i.StripeSubscriptionID,
 		&i.NativeCurrency,
+		&i.CountryCode,
 		&i.Timezone,
 		&i.IsActive,
 		&i.CreatedAt,
@@ -394,7 +399,7 @@ func (q *Queries) GetMembershipByInviteToken(ctx context.Context, inviteToken pg
 }
 
 const getOrganisation = `-- name: GetOrganisation :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -424,6 +429,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.StripeCustomerID,
 		&i.StripeSubscriptionID,
 		&i.NativeCurrency,
+		&i.CountryCode,
 		&i.Timezone,
 		&i.IsActive,
 		&i.CreatedAt,
@@ -434,7 +440,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 }
 
 const getOrganisationBySlug = `-- name: GetOrganisationBySlug :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE slug = $1
   AND deleted_at IS NULL
 `
@@ -465,6 +471,7 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.StripeCustomerID,
 		&i.StripeSubscriptionID,
 		&i.NativeCurrency,
+		&i.CountryCode,
 		&i.Timezone,
 		&i.IsActive,
 		&i.CreatedAt,
@@ -721,7 +728,7 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 
 const listOrganisationsForUser = `-- name: ListOrganisationsForUser :many
 SELECT
-    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.utr, o.vrn, o.is_mtd_vat_enrolled, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.timezone, o.is_active, o.created_at, o.updated_at, o.deleted_at,
+    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.utr, o.vrn, o.is_mtd_vat_enrolled, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.is_active, o.created_at, o.updated_at, o.deleted_at,
     m.role
 FROM organisations o
 JOIN organisation_memberships m ON m.organisation_id = o.id
@@ -749,6 +756,7 @@ type ListOrganisationsForUserRow struct {
 	StripeCustomerID     pgtype.Text        `json:"stripe_customer_id"`
 	StripeSubscriptionID pgtype.Text        `json:"stripe_subscription_id"`
 	NativeCurrency       string             `json:"native_currency"`
+	CountryCode          string             `json:"country_code"`
 	Timezone             string             `json:"timezone"`
 	IsActive             bool               `json:"is_active"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
@@ -790,6 +798,7 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.StripeCustomerID,
 			&i.StripeSubscriptionID,
 			&i.NativeCurrency,
+			&i.CountryCode,
 			&i.Timezone,
 			&i.IsActive,
 			&i.CreatedAt,
@@ -1025,10 +1034,11 @@ UPDATE organisations SET
     vrn                    = $8,
     native_currency        = $9,
     timezone               = $10,
+    country_code           = $11,
     updated_at             = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationParams struct {
@@ -1042,6 +1052,7 @@ type UpdateOrganisationParams struct {
 	Vrn                  pgtype.Text `json:"vrn"`
 	NativeCurrency       string      `json:"native_currency"`
 	Timezone             string      `json:"timezone"`
+	CountryCode          string      `json:"country_code"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1062,6 +1073,7 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		arg.Vrn,
 		arg.NativeCurrency,
 		arg.Timezone,
+		arg.CountryCode,
 	)
 	var i Organisation
 	err := row.Scan(
@@ -1082,6 +1094,7 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.StripeCustomerID,
 		&i.StripeSubscriptionID,
 		&i.NativeCurrency,
+		&i.CountryCode,
 		&i.Timezone,
 		&i.IsActive,
 		&i.CreatedAt,

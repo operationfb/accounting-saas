@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "type-check": "vue-tsc --noEmit"
+    "type-check": "vue-tsc --build"
   },
   "dependencies": {
     "@primevue/themes": "4.2.5",
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^5.2.1",
     "tailwindcss": "^4.0.0",
     "tailwindcss-primeui": "^0.6.1",

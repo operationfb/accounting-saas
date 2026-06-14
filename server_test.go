@@ -575,6 +575,19 @@ func TestHandleLoginUser(t *testing.T) {
 		t.Error("user.id: expected a non-empty UUID")
 	}
 
+	// The response must carry the organisation the session is scoped to,
+	// including its country_code — a must-have that drives country-scoped
+	// features (VAT rates). The seeded dev org is 'GB'.
+	if got.Organisation == nil {
+		t.Fatal("organisation: expected the login response to include the scoped organisation")
+	}
+	if got.Organisation.ID != devOrgID {
+		t.Errorf("organisation.id: got %q, want %q", got.Organisation.ID, devOrgID)
+	}
+	if got.Organisation.CountryCode != "GB" {
+		t.Errorf("organisation.country_code: got %q, want %q", got.Organisation.CountryCode, "GB")
+	}
+
 	// The user object must not leak sensitive fields.
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
@@ -612,6 +625,45 @@ func TestHandleLoginUser_WrongPassword(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401, got %d — body: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestHandleLoginUser_NoOrganisationFails verifies the country_code must-have:
+// a user who authenticates correctly but belongs to NO organisation (so no
+// country_code can be resolved) is refused, and no token is issued.
+func TestHandleLoginUser_NoOrganisationFails(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	ctx := context.Background()
+
+	// Create an ephemeral, verified, active user with NO membership. We copy the
+	// dev user's bcrypt hash so the password 'devpassword123' authenticates
+	// without needing bcrypt in the test (same dependency as TestHandleLoginUser).
+	id := uuid.NewString()
+	email := "no-org-" + id + "@test.local"
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO users (id, email, password_hash, first_name, last_name, is_active, email_verified_at)
+		 SELECT $1, $2, password_hash, 'No', 'Org', TRUE, now()
+		 FROM users WHERE email = 'dev@example.com'`, id, email); err != nil {
+		t.Fatalf("insert no-org user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ts.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id) })
+
+	bodyBytes, _ := json.Marshal(map[string]string{"email": email, "password": "devpassword123"})
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	ts.server.router.ServeHTTP(recorder, req)
+
+	// Credentials are valid, but no organisation → no country_code → login fails.
+	// The guard treats this as a server-side invariant violation (500), and no
+	// access token is issued.
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 (no organisation → no country_code), got %d — body: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "access_token") {
+		t.Error("no token must be issued when country_code cannot be resolved")
 	}
 }
 

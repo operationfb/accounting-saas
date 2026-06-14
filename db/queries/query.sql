@@ -642,3 +642,31 @@ WHERE organisation_id = $1
   AND is_active = TRUE
 ORDER BY category_group, nominal_code;
 
+
+-- =============================================================================
+-- SECTION 7: VAT RATES (reference data)
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- ListVatRatesByCountry
+-- All VAT rates that are valid TODAY for a given country, for the VAT rate
+-- picker. VAT rates are global reference data keyed by country_code (not per
+-- organisation) — the caller passes the organisation's country.
+--
+-- "Valid today" means the rate is in its effective window:
+--   - effective_from is on or before today (not a future rate), AND
+--   - effective_to is NULL (still active) or on/after today (not yet expired).
+-- This is why the COVID 5% hospitality rate, for example, stops appearing once
+-- its effective_to date has passed.
+--
+-- Explicit column list (not SELECT *) per project convention. Uses
+-- idx_vat_rates_country for the country_code lookup.
+-- -----------------------------------------------------------------------------
+-- name: ListVatRatesByCountry :many
+SELECT id, name, rate_bps, country_code, is_fixed_ratio, effective_from, effective_to, created_at
+FROM vat_rates
+WHERE country_code = $1
+  AND effective_from <= CURRENT_DATE                        -- not yet in effect → excluded
+  AND (effective_to IS NULL OR effective_to >= CURRENT_DATE) -- expired → excluded; NULL = still active
+ORDER BY name;
+
