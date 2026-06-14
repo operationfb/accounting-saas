@@ -75,15 +75,6 @@ _Last updated: 2026-06-14_
 
 ## Pre-existing TODOs noted in code (not introduced by recent work)
 
-- **VAT compute-vs-validate in `CreateExpense`.** `CreateExpense` stores zero
-  VAT regardless of `vat_rate_id` (Step 3 is a stub). It should look up the rate
-  from `vat_rates` and branch on `is_fixed_ratio`: when TRUE, recompute
-  `vat_value_minor = gross × rate_bps / 10000` and reject a client-supplied
-  amount that doesn't match (rate-locked); when FALSE, accept a custom VAT amount
-  from the request. This needs a new custom-VAT-amount field on
-  `CreateExpenseRequest` and a single-rate lookup query (only
-  `ListVatRatesByCountry` exists today). _Files: `expense_service.go` (Step 3),
-  `server.go` (`CreateExpenseRequest`), `db/queries/query.sql`._
 - **Expense audit log on create.** The create transaction has a placeholder for
   an audit-log INSERT (`CreateAuditEntry` query + call) that isn't implemented.
   _File: `expense_service.go` (`withTransaction`)._

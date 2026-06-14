@@ -670,3 +670,18 @@ WHERE country_code = $1
   AND (effective_to IS NULL OR effective_to >= CURRENT_DATE) -- expired → excluded; NULL = still active
 ORDER BY name;
 
+
+-- -----------------------------------------------------------------------------
+-- GetVatRate
+-- Fetch a single VAT rate by id — used when applying VAT to an expense. The
+-- service validates the rate's country_code against the caller's organisation,
+-- then reads rate_bps + is_fixed_ratio to compute (fixed) or accept (custom) the
+-- VAT amount. Deliberately NOT date-filtered: an expense may legitimately
+-- reference a rate outside its current effective window (e.g. editing a
+-- historical expense whose rate has since lapsed).
+-- -----------------------------------------------------------------------------
+-- name: GetVatRate :one
+SELECT id, name, rate_bps, country_code, is_fixed_ratio, effective_from, effective_to, created_at
+FROM vat_rates
+WHERE id = $1;
+

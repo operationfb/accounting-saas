@@ -96,8 +96,9 @@ CREATE TABLE vat_rates (
     country_code    CHAR(2)     NOT NULL CHECK (country_code = upper(country_code)),
     name            VARCHAR(50) NOT NULL,               -- 'Standard Rate', 'Reduced Rate', 'Zero Rate', 'Exempt'
     rate_bps        INTEGER     NOT NULL,               -- basis points: 2000 = 20.00%, 500 = 5.00%
-    -- TRUE  = rate-locked: the VAT amount must equal gross × rate (backend recomputes
-    --         and rejects mismatches). This is the norm (e.g. UK standard 20%).
+    -- TRUE  = rate-locked: the backend EXTRACTS the VAT from the VAT-inclusive total
+    --         (vat = total × rate / (100 + rate)) and ignores any amount sent by the
+    --         client. This is the norm (e.g. UK standard 20%).
     -- FALSE = the user may enter a custom VAT amount (backend accepts it as-is).
     is_fixed_ratio  BOOLEAN     NOT NULL DEFAULT TRUE,
     effective_from  DATE        NOT NULL,

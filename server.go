@@ -110,6 +110,7 @@ func (s *Server) registerRoutes() {
 			expenses.GET("", s.handleListExpenses)
 			expenses.POST("", s.handleCreateExpense)
 			expenses.GET("/:id", s.handleGetExpense)
+			expenses.PUT("/:id", s.handleUpdateExpense)
 		}
 
 		// Expense categories (reference data) — also require a valid login.
@@ -170,11 +171,39 @@ type CreateExpenseRequest struct {
 
 	// VAT
 	VATRateID *string `json:"vat_rate_id"` // UUID of the applicable VAT rate
+	VATAmount *string `json:"vat_amount"`  // pounds, e.g. "3.33"; used only for non-fixed-ratio rates (ignored for fixed-ratio)
 
 	// Project rebilling — all three must be provided together if rebilling
 	ProjectID    *string `json:"project_id"`
 	RebillType   *string `json:"rebill_type"`   // "cost" | "markup" | "price"
 	RebillFactor *string `json:"rebill_factor"` // decimal string e.g. "1.15"
+}
+
+// UpdateExpenseRequest is the JSON body accepted by PUT /api/v1/expenses/:id.
+// It mirrors CreateExpenseRequest's editable fields — PUT is a full replace of
+// the editable representation. The claimant (user_id) and created_by are NOT
+// editable and are never read from the body.
+type UpdateExpenseRequest struct {
+	CategoryID       string `json:"category_id"      binding:"required,uuid"`
+	DatedOn          string `json:"dated_on"          binding:"required"` // YYYY-MM-DD
+	Description      string `json:"description"       binding:"required,min=1"`
+	CurrencyCode     string `json:"currency"          binding:"omitempty,len=3"` // defaults to GBP
+	GrossValuePounds string `json:"gross_value"     binding:"required"`          // e.g. "42.50"
+
+	// Optional fields — nil pointer means absent (omitted from the update body).
+	ReceiptReference *string `json:"receipt_reference"`
+	SupplierName     *string `json:"supplier_name"`
+	SupplierVATNo    *string `json:"supplier_vat_number"`
+	InvoiceNumber    *string `json:"invoice_number"`
+
+	// VAT
+	VATRateID *string `json:"vat_rate_id"`
+	VATAmount *string `json:"vat_amount"` // pounds; used only for non-fixed-ratio rates (ignored for fixed-ratio)
+
+	// Project rebilling
+	ProjectID    *string `json:"project_id"`
+	RebillType   *string `json:"rebill_type"`
+	RebillFactor *string `json:"rebill_factor"`
 }
 
 // ExpenseResponse is the JSON returned for a created or fetched expense.
@@ -357,6 +386,36 @@ func (s *Server) handleGetExpense(c *gin.Context) {
 		return
 	} */
 
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"expense": expense})
+}
+
+// handleUpdateExpense handles PUT /api/v1/expenses/:id
+//
+// Full update of an expense's editable fields. The service enforces that the
+// caller owns the expense (or is an owner/admin of the org) and that the expense
+// is still editable (DRAFT or REJECTED).
+func (s *Server) handleUpdateExpense(c *gin.Context) {
+	id := c.Param("id")
+
+	var req UpdateExpenseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	expense, err := s.expenseService.UpdateExpense(c.Request.Context(), userID, orgID, id, req)
 	if err != nil {
 		appErr := AsAppError(err)
 		if appErr.Code == ErrCodeInternal {

@@ -153,6 +153,108 @@ func (s *ExpenseService) withTransaction(ctx context.Context, fn func(*expenses.
 }
 
 // =============================================================================
+// VAT
+// =============================================================================
+
+// vatResult holds the resolved VAT fields, ready to drop into the Create/Update
+// params struct.
+type vatResult struct {
+	RateID     pgtype.UUID
+	RateBps    pgtype.Int4
+	ValueMinor int32
+}
+
+// resolveVAT turns the request's vat_rate_id (+ optional vat_amount) into the
+// stored VAT fields:
+//   - no rate selected     → no VAT (NULL rate id/bps, value 0)
+//   - fixed-ratio rate     → VAT EXTRACTED from the VAT-inclusive total (see
+//                            computeFixedVAT); any client amount is IGNORED (not an error)
+//   - non-fixed-ratio rate → value = the client-supplied amount (0 if omitted)
+//
+// The selected rate must belong to the caller's organisation's country (the
+// frontend only offers rates for that country); a mismatch is a validation error.
+// Shared by CreateExpense and UpdateExpense so the rule lives in one place.
+func (s *ExpenseService) resolveVAT(
+	ctx context.Context,
+	authOrgID uuid.UUID,
+	grossMinor int32,
+	vatRateID *string,
+	vatAmount *string,
+) (vatResult, error) {
+	// No VAT rate selected → no VAT.
+	if vatRateID == nil || *vatRateID == "" {
+		return vatResult{}, nil
+	}
+
+	rateUUID, err := uuid.Parse(*vatRateID)
+	if err != nil {
+		return vatResult{}, ErrValidation("vat_rate_id is not a valid UUID", err)
+	}
+
+	rate, err := s.queries.GetVatRate(ctx, rateUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return vatResult{}, ErrValidation("vat_rate_id not found", nil)
+		}
+		return vatResult{}, ErrInternal(err)
+	}
+
+	// The rate must be for the caller's organisation's country. The token carries
+	// only the org id; the country_code lives on the organisation (auth domain).
+	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return vatResult{}, ErrNotFound("organisation", authOrgID.String())
+		}
+		return vatResult{}, ErrInternal(err)
+	}
+	if rate.CountryCode != org.CountryCode {
+		return vatResult{}, ErrValidation("selected VAT rate is not valid for your organisation's country", nil)
+	}
+
+	var valueMinor int32
+	if rate.IsFixedRatio {
+		// Rate-locked: extract the VAT from the inclusive total; ignore any
+		// client-supplied amount.
+		valueMinor = computeFixedVAT(grossMinor, rate.RateBps)
+	} else if vatAmount != nil {
+		// Custom rate: accept the client's amount as-is (pounds → pence).
+		amt, err := decimal.NewFromString(*vatAmount)
+		if err != nil {
+			return vatResult{}, ErrValidation(fmt.Sprintf("vat_amount %q is not a valid decimal number", *vatAmount), err)
+		}
+		valueMinor = int32(amt.Mul(decimal.NewFromInt(100)).Round(0).IntPart())
+	}
+
+	return vatResult{
+		RateID:     pgNullUUID(vatRateID),
+		RateBps:    pgtype.Int4{Int32: rate.RateBps, Valid: true},
+		ValueMinor: valueMinor,
+	}, nil
+}
+
+// computeFixedVAT returns the VAT contained in a VAT-INCLUSIVE total for a
+// fixed-ratio rate. The entered gross is the total invoice/receipt amount, which
+// already includes VAT, so we EXTRACT the VAT rather than add it on top:
+//
+//	total = net + vat,  vat = net × rate   ⇒   vat = total × rate / (100 + rate)
+//
+// In basis points: vat = total × rate_bps / (10000 + rate_bps). This is the
+// standard HMRC "VAT fraction" (20% → 2000/12000 = 1/6; 5% → 500/10500 = 1/21).
+// The denominator is always ≥ 10000, so a 0% (zero) rate safely yields 0.
+// Result is rounded half-up (half away from zero) to the nearest penny.
+// Example: £120.00 (12000p) incl. 20% → 12000 × 2000 / 12000 = 2000p = £20.00.
+func computeFixedVAT(grossMinor, rateBps int32) int32 {
+	v := decimal.NewFromInt(int64(grossMinor)).
+		Mul(decimal.NewFromInt(int64(rateBps))).
+		// Denominator is 10000 + rate_bps (NOT 10000): the gross is VAT-inclusive,
+		// so we extract the VAT fraction rather than add the rate on top.
+		Div(decimal.NewFromInt(int64(10000 + rateBps))).
+		Round(0) // whole pence, half away from zero
+	return int32(v.IntPart())
+}
+
+// =============================================================================
 // CREATEEXPENSE
 // =============================================================================
 
@@ -235,18 +337,15 @@ func (s *ExpenseService) CreateExpense(
 	}
 
 	// -------------------------------------------------------------------------
-	// Step 3: Compute VAT
-	//
-	// Very simplified for now — we'll expand this when we build the VAT service.
-	// If a VAT rate ID was provided, we look up the rate and compute the amount.
-	// For now we just store zeroes and leave this as a clear TODO.
+	// Step 3: Resolve VAT.
+	// The entered gross is the VAT-inclusive total. Fixed-ratio rates EXTRACT the
+	// VAT from it (any client amount is ignored); non-fixed rates take the
+	// client-supplied vat_amount. See resolveVAT.
 	// -------------------------------------------------------------------------
-	var vatRateBPS int32 = 0
-	var vatValueMinor int32 = 0
-	var nativeVATValueMinor int32 = 0
-	// TODO: When VATRateID is provided, fetch the rate from vat_rates table,
-	// compute vatValueMinor = grossMinor * rate_bps / 10000, and store it.
-	// This will be built in the VAT service.
+	vat, err := s.resolveVAT(ctx, authOrgID, grossMinor, req.VATRateID, req.VATAmount)
+	if err != nil {
+		return nil, err
+	}
 
 	// -------------------------------------------------------------------------
 	// Step 4: Build the database parameters struct
@@ -266,10 +365,11 @@ func (s *ExpenseService) CreateExpense(
 		NativeCurrency:        "GBP", // hardcoded for UK MVP
 		GrossValueMinor:       grossMinor,
 		NativeGrossValueMinor: grossMinor, // same as gross for GBP; FX conversion added later
-		VatRateBps:            pgNullInt32(vatRateBPS),
-		VatValueMinor:         vatValueMinor,
-		NativeVatValueMinor:   nativeVATValueMinor,
-		VatStatus:             "TAXABLE",   // default; overridden when VAT service is built
+		VatRateID:             vat.RateID,
+		VatRateBps:            vat.RateBps,
+		VatValueMinor:         vat.ValueMinor,
+		NativeVatValueMinor:   vat.ValueMinor, // GBP: native VAT == expense-currency VAT
+		VatStatus:             "TAXABLE",   // TODO: derive EXEMPT/OUT_OF_SCOPE from the rate
 		EcStatus:              "UK_NON_EC", // correct default for post-2021 UK expenses
 
 		// Optional string fields: convert *string to pgtype.Text
@@ -322,6 +422,123 @@ func (s *ExpenseService) CreateExpense(
 	// Step 6: Format and return the response
 	// -------------------------------------------------------------------------
 	return expenseToResponse(created), nil
+}
+
+// =============================================================================
+// UPDATEEXPENSE
+// =============================================================================
+
+// UpdateExpense performs a full update of an existing expense's editable fields
+// (PUT semantics). Authorisation mirrors GetExpenseDetail: the caller must own
+// the expense, or be an owner/admin of the organisation. The expense must also
+// still be editable — only DRAFT or REJECTED expenses may be changed.
+//
+// The fetch, the ownership/status checks, and the UPDATE all run inside one
+// transaction so the row can't change status between the check and the write.
+func (s *ExpenseService) UpdateExpense(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+	id string,
+	req UpdateExpenseRequest,
+) (*ExpenseResponse, error) {
+	expenseUUID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, ErrValidation("id is not a valid UUID", err)
+	}
+
+	// Confirm the caller is an active member and get their role.
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse + convert the editable fields — same conversions as CreateExpense.
+	categoryUUID, err := uuid.Parse(req.CategoryID)
+	if err != nil {
+		return nil, ErrValidation("category_id is not a valid UUID", err)
+	}
+	datedOn, err := time.Parse("2006-01-02", req.DatedOn)
+	if err != nil {
+		return nil, ErrValidation("dated_on must be a valid date in YYYY-MM-DD format", err)
+	}
+	grossDecimal, err := decimal.NewFromString(req.GrossValuePounds)
+	if err != nil {
+		return nil, ErrValidation(fmt.Sprintf("gross_value %q is not a valid decimal number", req.GrossValuePounds), err)
+	}
+	grossMinor := int32(grossDecimal.Mul(decimal.NewFromInt(100)).IntPart())
+
+	currency := req.CurrencyCode
+	if currency == "" {
+		currency = "GBP"
+	}
+
+	// Resolve VAT (extract from the inclusive total for fixed-ratio, accept the
+	// client amount for custom) — same rule as CreateExpense, via resolveVAT.
+	vat, err := s.resolveVAT(ctx, authOrgID, grossMinor, req.VATRateID, req.VATAmount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch + authorise + status-check + update inside one transaction so the row
+	// can't change between the checks and the write (avoids a TOCTOU gap).
+	var updated expenses.Expense
+	err = s.withTransaction(ctx, func(qtx *expenses.Queries) error {
+		existing, err := qtx.GetExpense(ctx, expenses.GetExpenseParams{
+			ID:             expenseUUID,
+			OrganisationID: authOrgID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound("expense", id)
+			}
+			return ErrInternal(err)
+		}
+
+		// Ownership: own expense, or owner/admin of the org (mirrors GetExpenseDetail).
+		if existing.UserID != authUserID && !isOrgAdmin(role) {
+			return ErrForbidden("you do not have access to this expense")
+		}
+
+		// Editable only while DRAFT or REJECTED.
+		if existing.Status != "DRAFT" && existing.Status != "REJECTED" {
+			return ErrConflict("expense can only be edited while it is in DRAFT or REJECTED status")
+		}
+
+		updated, err = qtx.UpdateExpense(ctx, expenses.UpdateExpenseParams{
+			ID:                    expenseUUID,
+			OrganisationID:        authOrgID,
+			CategoryID:            categoryUUID,
+			DatedOn:               pgDateFromTime(datedOn),
+			Description:           req.Description,
+			Currency:              currency,
+			NativeCurrency:        "GBP",
+			GrossValueMinor:       grossMinor,
+			NativeGrossValueMinor: grossMinor,
+			VatRateID:             vat.RateID,
+			VatRateBps:            vat.RateBps,
+			VatValueMinor:         vat.ValueMinor,
+			NativeVatValueMinor:   vat.ValueMinor, // GBP: native VAT == expense-currency VAT
+			VatStatus:             "TAXABLE",
+			EcStatus:              "UK_NON_EC",
+			ReceiptReference:      pgNullText(req.ReceiptReference),
+			SupplierName:          pgNullText(req.SupplierName),
+			SupplierVatNumber:     pgNullText(req.SupplierVATNo),
+			InvoiceNumber:         pgNullText(req.InvoiceNumber),
+			ProjectID:             pgNullUUID(req.ProjectID),
+			RebillType:            pgNullText(req.RebillType),
+			RebillFactor:          pgNullNumeric(req.RebillFactor),
+		})
+		if err != nil {
+			return ErrInternal(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return expenseToResponse(updated), nil
 }
 
 // =============================================================================

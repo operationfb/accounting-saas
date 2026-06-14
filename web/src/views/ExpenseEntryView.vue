@@ -26,9 +26,19 @@ const router = useRouter()
 const categories = ref<ExpenseCategory[]>([])
 const categoriesLoading = ref(true)
 const categoriesError = ref('')
-const categoryOptions = computed(() =>
-  categories.value.map((c) => ({ label: `${c.name} (${c.nominal_code})`, value: c.id })),
-)
+// Categories grouped by their category_group for the picker. PrimeVue Select
+// renders the group name as a non-selectable header; only a category (an item)
+// can be chosen. The backend already orders rows by group then nominal code, so
+// a Map (insertion-ordered) keeps both the group order and the item order.
+const categoryGroups = computed(() => {
+  const groups = new Map<string, { label: string; value: string }[]>()
+  for (const c of categories.value) {
+    const groupName = c.category_group ?? 'Other'
+    if (!groups.has(groupName)) groups.set(groupName, [])
+    groups.get(groupName)!.push({ label: `${c.name} (${c.nominal_code})`, value: c.id })
+  }
+  return [...groups.entries()].map(([group, items]) => ({ group, items }))
+})
 
 async function loadCategories() {
   categoriesLoading.value = true
@@ -191,12 +201,16 @@ function cancel() {
         <Select
           id="category"
           v-model="form.category"
-          :options="categoryOptions"
+          :options="categoryGroups"
+          option-group-label="group"
+          option-group-children="items"
           option-label="label"
           option-value="value"
           :placeholder="categoriesLoading ? 'Loading…' : 'Select a category'"
           :loading="categoriesLoading"
           :invalid="!!errors.category"
+          filter
+          filter-placeholder="Search categories"
           class="w-72"
         />
         <p v-if="categoriesError" class="text-xs text-[#c0392b]">

@@ -834,6 +834,48 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 	return i, err
 }
 
+const getVatRate = `-- name: GetVatRate :one
+SELECT id, name, rate_bps, country_code, is_fixed_ratio, effective_from, effective_to, created_at
+FROM vat_rates
+WHERE id = $1
+`
+
+type GetVatRateRow struct {
+	ID            uuid.UUID          `json:"id"`
+	Name          string             `json:"name"`
+	RateBps       int32              `json:"rate_bps"`
+	CountryCode   string             `json:"country_code"`
+	IsFixedRatio  bool               `json:"is_fixed_ratio"`
+	EffectiveFrom pgtype.Date        `json:"effective_from"`
+	EffectiveTo   pgtype.Date        `json:"effective_to"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// -----------------------------------------------------------------------------
+// GetVatRate
+// Fetch a single VAT rate by id — used when applying VAT to an expense. The
+// service validates the rate's country_code against the caller's organisation,
+// then reads rate_bps + is_fixed_ratio to compute (fixed) or accept (custom) the
+// VAT amount. Deliberately NOT date-filtered: an expense may legitimately
+// reference a rate outside its current effective window (e.g. editing a
+// historical expense whose rate has since lapsed).
+// -----------------------------------------------------------------------------
+func (q *Queries) GetVatRate(ctx context.Context, id uuid.UUID) (GetVatRateRow, error) {
+	row := q.db.QueryRow(ctx, getVatRate, id)
+	var i GetVatRateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.RateBps,
+		&i.CountryCode,
+		&i.IsFixedRatio,
+		&i.EffectiveFrom,
+		&i.EffectiveTo,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listDueRecurrences = `-- name: ListDueRecurrences :many
 SELECT id, expense_id, organisation_id, frequency, next_recurs_on, end_date, is_active, created_at, updated_at FROM expense_recurrence
 WHERE next_recurs_on <= CURRENT_DATE   -- due today or overdue

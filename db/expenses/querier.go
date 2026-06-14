@@ -144,6 +144,16 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithDetailsParams) (VExpensesFull, error)
 	// -----------------------------------------------------------------------------
+	// GetVatRate
+	// Fetch a single VAT rate by id — used when applying VAT to an expense. The
+	// service validates the rate's country_code against the caller's organisation,
+	// then reads rate_bps + is_fixed_ratio to compute (fixed) or accept (custom) the
+	// VAT amount. Deliberately NOT date-filtered: an expense may legitimately
+	// reference a rate outside its current effective window (e.g. editing a
+	// historical expense whose rate has since lapsed).
+	// -----------------------------------------------------------------------------
+	GetVatRate(ctx context.Context, id uuid.UUID) (GetVatRateRow, error)
+	// -----------------------------------------------------------------------------
 	// ListDueRecurrences
 	// Returns all active recurrences that are due today or overdue.
 	// This is the query your cron job / scheduler runs daily to generate new

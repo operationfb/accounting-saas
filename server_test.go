@@ -920,3 +920,281 @@ func TestHandleListExpenseCategories(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// EXPENSE UPDATE
+// =============================================================================
+
+// validUpdateBody builds a complete, valid PUT body (fresh random category +
+// fields); individual subtests tweak what they care about.
+func validUpdateBody(t *testing.T, ts *testServer) UpdateExpenseRequest {
+	t.Helper()
+	return UpdateExpenseRequest{
+		CategoryID:       randomCategoryUUID(t, ts.pool),
+		DatedOn:          util.RandomDatedOn(),
+		Description:      util.RandomExpenseDescription(),
+		CurrencyCode:     "GBP",
+		GrossValuePounds: util.RandomGrossValue(),
+	}
+}
+
+// putExpense sends PUT /api/v1/expenses/:id with the given auth header (empty =
+// none) and JSON body, returning the recorder.
+func putExpense(t *testing.T, ts *testServer, id, authHeader string, body UpdateExpenseRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/expenses/"+id, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHandleUpdateExpense covers PUT /api/v1/expenses/:id and its authorization:
+// owner edits own (200, persisted), org owner/admin edits a member's (200),
+// member edits another's (403), unknown id (404), no token (401), and the
+// DRAFT/REJECTED status guard (409).
+func TestHandleUpdateExpense(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("owner edits own expense", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID)
+
+		body := validUpdateBody(t, ts)
+		body.Description = "Updated " + util.RandomExpenseDescription()
+		body.GrossValuePounds = "99.99"
+
+		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Expense ExpenseResponse `json:"expense"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.Expense.Description != body.Description {
+			t.Errorf("description: got %q, want %q", resp.Expense.Description, body.Description)
+		}
+		if resp.Expense.GrossValue != "99.99" {
+			t.Errorf("gross_value: got %q, want %q", resp.Expense.GrossValue, "99.99")
+		}
+
+		// The change must be persisted in the DB.
+		var dbDesc string
+		var dbGrossMinor int32
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT description, gross_value_minor FROM expenses WHERE id=$1", id).Scan(&dbDesc, &dbGrossMinor); err != nil {
+			t.Fatalf("db read: %v", err)
+		}
+		if dbDesc != body.Description || dbGrossMinor != 9999 {
+			t.Errorf("db row not updated: desc=%q gross_minor=%d", dbDesc, dbGrossMinor)
+		}
+	})
+
+	t.Run("org owner/admin edits a member's expense", func(t *testing.T) {
+		memberID := newMemberUser(t, ts, devOrgID)
+		id := createExpenseAs(t, ts, memberID, devOrgID)
+
+		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("admin editing member's expense: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("member cannot edit another user's expense", func(t *testing.T) {
+		ownerExpense := createExpenseAs(t, ts, devUserID, devOrgID)
+		memberID := newMemberUser(t, ts, devOrgID)
+
+		rec := putExpense(t, ts, ownerExpense, bearer(t, ts, memberID, devOrgID), validUpdateBody(t, ts))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("member editing owner's expense: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown id returns 404", func(t *testing.T) {
+		rec := putExpense(t, ts, uuid.NewString(), bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("requires auth", func(t *testing.T) {
+		rec := putExpense(t, ts, uuid.NewString(), "", validUpdateBody(t, ts))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("non-editable status is rejected", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID)
+		// Move it out of DRAFT so it can no longer be edited.
+		if _, err := ts.pool.Exec(context.Background(),
+			"UPDATE expenses SET status='APPROVED' WHERE id=$1", id); err != nil {
+			t.Fatalf("set status: %v", err)
+		}
+		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		if rec.Code != http.StatusConflict {
+			t.Errorf("expected 409, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// =============================================================================
+// EXPENSE VAT
+// =============================================================================
+
+// postExpense sends POST /api/v1/expenses with the given auth header and body.
+func postExpense(t *testing.T, ts *testServer, authHeader string, body CreateExpenseRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/expenses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// decodeExpense decodes a {"expense": {...}} envelope into an ExpenseResponse.
+func decodeExpense(t *testing.T, rec *httptest.ResponseRecorder) ExpenseResponse {
+	t.Helper()
+	var resp struct {
+		Expense ExpenseResponse `json:"expense"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode expense: %v — body: %s", err, rec.Body.String())
+	}
+	return resp.Expense
+}
+
+// gbVatRateID returns the id of a seeded GB VAT rate matching the predicate.
+func gbVatRateID(t *testing.T, ts *testServer, fixed bool, rateBps int32) string {
+	t.Helper()
+	var id string
+	err := ts.pool.QueryRow(context.Background(),
+		"SELECT id::text FROM vat_rates WHERE country_code='GB' AND is_fixed_ratio=$1 AND rate_bps=$2 LIMIT 1",
+		fixed, rateBps).Scan(&id)
+	if err != nil {
+		t.Fatalf("need a GB vat_rate (fixed=%v, bps=%d) seeded: %v", fixed, rateBps, err)
+	}
+	return id
+}
+
+// TestExpenseVAT covers VAT handling in create and update:
+//   - fixed-ratio rate → backend computes gross × rate and IGNORES any client amount
+//   - non-fixed rate   → backend stores the client-supplied amount
+//   - half-up rounding on a half-penny result
+//   - a rate from another country is rejected (422)
+//   - update recomputes VAT for a fixed-ratio rate
+func TestExpenseVAT(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	devAuth := bearer(t, ts, devUserID, devOrgID)
+	fixedRateID := gbVatRateID(t, ts, true, 2000)     // Standard Rate 20%
+	nonFixedRateID := gbVatRateID(t, ts, false, 2000) // Standard Rate (manual) 20%
+
+	baseBody := func() CreateExpenseRequest {
+		return CreateExpenseRequest{
+			CategoryID:       randomCategoryUUID(t, ts.pool),
+			DatedOn:          util.RandomDatedOn(),
+			Description:      util.RandomExpenseDescription(),
+			CurrencyCode:     "GBP",
+			GrossValuePounds: "100.00",
+		}
+	}
+
+	t.Run("fixed-ratio extracts VAT from inclusive total and ignores client amount", func(t *testing.T) {
+		body := baseBody()
+		body.GrossValuePounds = "120.00" // VAT-inclusive total (£100 net + £20 VAT)
+		body.VATRateID = &fixedRateID
+		bogus := "99.00"
+		body.VATAmount = &bogus // must be ignored
+
+		rec := postExpense(t, ts, devAuth, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		if got.VATValue != "20.00" {
+			t.Errorf("vat_value: got %q, want %q (£120 incl. 20%% → £20 VAT; client 99.00 ignored)", got.VATValue, "20.00")
+		}
+	})
+
+	t.Run("non-fixed-ratio uses client amount", func(t *testing.T) {
+		body := baseBody()
+		body.VATRateID = &nonFixedRateID
+		amt := "3.33"
+		body.VATAmount = &amt
+
+		rec := postExpense(t, ts, devAuth, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		if got.VATValue != "3.33" {
+			t.Errorf("vat_value: got %q, want %q (client amount on a non-fixed rate)", got.VATValue, "3.33")
+		}
+	})
+
+	t.Run("fixed-ratio rounds half-up", func(t *testing.T) {
+		// £0.03 incl. 20% → 3 × 2000 / 12000 = 0.5p → rounds half-up to 1p = £0.01.
+		body := baseBody()
+		body.GrossValuePounds = "0.03"
+		body.VATRateID = &fixedRateID
+
+		rec := postExpense(t, ts, devAuth, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		if got.VATValue != "0.01" {
+			t.Errorf("vat_value: got %q, want %q (0.5p rounds half-up to 1p)", got.VATValue, "0.01")
+		}
+	})
+
+	t.Run("rate from another country is rejected", func(t *testing.T) {
+		frRateID := uuid.NewString()
+		if _, err := ts.pool.Exec(context.Background(),
+			"INSERT INTO vat_rates (id, country_code, name, rate_bps, is_fixed_ratio, effective_from) VALUES ($1,'FR','TVA Standard',2000,true,'2000-01-01')",
+			frRateID); err != nil {
+			t.Fatalf("insert FR rate: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = ts.pool.Exec(context.Background(), "DELETE FROM vat_rates WHERE id=$1", frRateID)
+		})
+
+		body := baseBody()
+		body.VATRateID = &frRateID
+
+		rec := postExpense(t, ts, devAuth, body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("wrong-country rate: expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("update recomputes fixed-ratio VAT", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID) // created with no VAT rate → vat 0
+		body := validUpdateBody(t, ts)
+		body.GrossValuePounds = "60.00" // VAT-inclusive total (£50 net + £10 VAT)
+		body.VATRateID = &fixedRateID
+
+		rec := putExpense(t, ts, id, devAuth, body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		if got.VATValue != "10.00" {
+			t.Errorf("vat_value: got %q, want %q (£60 incl. 20%% → £10 VAT)", got.VATValue, "10.00")
+		}
+	})
+}
