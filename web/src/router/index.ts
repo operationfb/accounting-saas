@@ -14,6 +14,7 @@ const router = createRouter({
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },
+    { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true } },
   ],
 })
 

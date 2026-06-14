@@ -34,19 +34,21 @@ import (
 // Adding a new service module (invoices, contacts, etc.) means adding a field
 // here and passing it into NewServer.
 type Server struct {
-	router         *gin.Engine
-	expenseService *ExpenseService
-	authHandler    *AuthHandler
-	tokenMaker     token.Maker
+	router            *gin.Engine
+	expenseService    *ExpenseService
+	attachmentService *AttachmentService
+	authHandler       *AuthHandler
+	tokenMaker        token.Maker
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
 	s := &Server{
-		expenseService: expenseService,
-		authHandler:    authHandler,
-		tokenMaker:     tokenMaker,
+		expenseService:    expenseService,
+		attachmentService: attachmentService,
+		authHandler:       authHandler,
+		tokenMaker:        tokenMaker,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -55,6 +57,11 @@ func NewServer(expenseService *ExpenseService, authHandler *AuthHandler, tokenMa
 	// For production you'd replace these with structured logging middleware,
 	// but Default() is the right starting point.
 	s.router = gin.Default()
+
+	// How much of a multipart upload Gin buffers in memory before spilling the
+	// rest to a temp file. We stream uploads to GCS and hard-cap the body in the
+	// handler, so a modest in-memory buffer is plenty.
+	s.router.MaxMultipartMemory = 8 << 20 // 8 MiB
 
 	// CORS must be registered globally and BEFORE the routes/auth middleware.
 	// A browser sends a preflight OPTIONS request (with no Authorization header)
@@ -111,6 +118,20 @@ func (s *Server) registerRoutes() {
 			expenses.POST("", s.handleCreateExpense)
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
+
+			// Attachments (receipt files) are a sub-resource of an expense. They
+			// reuse the :id param for the expense — introducing a differently
+			// named wildcard at that path position would make Gin panic.
+			// POST   /:id/attachments                         → upload a file
+			// GET    /:id/attachments                         → list metadata
+			// GET    /:id/attachments/:attachmentId/download  → signed download URL
+			// PATCH  /:id/attachments/:attachmentId/primary   → mark as primary
+			// DELETE /:id/attachments/:attachmentId           → delete a file
+			expenses.POST("/:id/attachments", s.handleUploadAttachment)
+			expenses.GET("/:id/attachments", s.handleListAttachments)
+			expenses.GET("/:id/attachments/:attachmentId/download", s.handleDownloadAttachment)
+			expenses.PATCH("/:id/attachments/:attachmentId/primary", s.handleSetPrimaryAttachment)
+			expenses.DELETE("/:id/attachments/:attachmentId", s.handleDeleteAttachment)
 		}
 
 		// Expense categories (reference data) — also require a valid login.
@@ -243,11 +264,13 @@ type ExpenseDetailResponse struct {
 
 	CategoryName        string `json:"category_name"`
 	CategoryNominalCode string `json:"category_nominal_code"`
+	CategoryID          string `json:"category_id"` // raw FK, for the edit form's picker
 
 	Currency   string `json:"currency"`
 	GrossValue string `json:"gross_value"`
 
-	VATRate   *string `json:"vat_rate,omitempty"` // e.g. "20%"
+	VATRateID *string `json:"vat_rate_id,omitempty"` // raw FK, for the edit form's picker
+	VATRate   *string `json:"vat_rate,omitempty"`    // e.g. "20%"
 	VATStatus string  `json:"vat_status"`
 	VATValue  string  `json:"vat_value"`
 

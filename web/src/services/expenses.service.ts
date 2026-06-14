@@ -3,10 +3,12 @@ import {
   ListExpensesResponseSchema,
   GetExpenseResponseSchema,
   ListCategoriesResponseSchema,
+  ListVatRatesResponseSchema,
   CreateExpenseResponseSchema,
   type Expense,
   type ExpenseDetail,
   type ExpenseCategory,
+  type VatRate,
   type CreateExpenseRequest,
 } from '@/types/expense'
 
@@ -33,10 +35,28 @@ export async function listCategories(): Promise<ExpenseCategory[]> {
   return ListCategoriesResponseSchema.parse(data).expense_categories ?? []
 }
 
+// GET /api/v1/vat-rates — VAT rates valid today for the caller's org country
+// (populates the entry form's VAT rate picker).
+export async function listVatRates(): Promise<VatRate[]> {
+  const data = await apiFetch<unknown>('/vat-rates', { method: 'GET' })
+  return ListVatRatesResponseSchema.parse(data).vat_rates ?? []
+}
+
 // POST /api/v1/expenses — create an expense. Returns the created (lean) expense;
 // the caller uses its id to navigate. A 422 (bad date/decimal/uuid) is thrown as
 // an ApiError for the form to display.
 export async function createExpense(payload: CreateExpenseRequest): Promise<Expense> {
   const data = await apiFetch<unknown>('/expenses', { method: 'POST', body: payload })
+  return CreateExpenseResponseSchema.parse(data).expense
+}
+
+// PUT /api/v1/expenses/:id — update an editable (DRAFT/REJECTED) expense. Same
+// payload as create; returns the updated (lean) expense. A 409 means the expense
+// is no longer editable; 422 a bad field — both surfaced as an ApiError.
+export async function updateExpense(id: string, payload: CreateExpenseRequest): Promise<Expense> {
+  const data = await apiFetch<unknown>(`/expenses/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: payload,
+  })
   return CreateExpenseResponseSchema.parse(data).expense
 }

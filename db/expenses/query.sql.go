@@ -12,6 +12,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countExpenseAttachments = `-- name: CountExpenseAttachments :one
+SELECT count(*) FROM expense_attachments
+WHERE expense_id = $1
+`
+
+// -----------------------------------------------------------------------------
+// CountExpenseAttachments
+// How many files an expense already has. The service calls this when a new file
+// is uploaded: if the count is 0, this upload is the FIRST one and therefore
+// becomes the primary (default) attachment. Scoped by expense_id only — the
+// caller has already been authorised against the parent expense's organisation,
+// which is the same convention ListExpenseAttachments uses.
+// -----------------------------------------------------------------------------
+func (q *Queries) CountExpenseAttachments(ctx context.Context, expenseID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countExpenseAttachments, expenseID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countExpensesByStatus = `-- name: CountExpensesByStatus :many
 SELECT
     status,
@@ -761,7 +781,7 @@ func (q *Queries) GetExpenseRecurrence(ctx context.Context, expenseID uuid.UUID)
 const getExpenseWithDetails = `-- name: GetExpenseWithDetails :one
 
 
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id FROM v_expenses_full
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -830,6 +850,8 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 		&i.ReimbursementMinor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CategoryID,
+		&i.VatRateID,
 	)
 	return i, err
 }
@@ -1656,6 +1678,30 @@ func (q *Queries) ListVatRatesByCountry(ctx context.Context, countryCode string)
 	return items, nil
 }
 
+const setAttachmentPrimary = `-- name: SetAttachmentPrimary :exec
+UPDATE expense_attachments SET
+    is_primary = TRUE,
+    updated_at = now()
+WHERE id              = $1
+  AND organisation_id = $2
+`
+
+type SetAttachmentPrimaryParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// SetAttachmentPrimary
+// Marks a single attachment as the primary one for its expense. Pair it with
+// UnsetExpensePrimary inside one transaction so the "exactly one primary"
+// invariant holds. organisation_id prevents cross-tenant writes.
+// -----------------------------------------------------------------------------
+func (q *Queries) SetAttachmentPrimary(ctx context.Context, arg SetAttachmentPrimaryParams) error {
+	_, err := q.db.Exec(ctx, setAttachmentPrimary, arg.ID, arg.OrganisationID)
+	return err
+}
+
 const softDeleteExpense = `-- name: SoftDeleteExpense :exec
 UPDATE expenses SET
     deleted_at = now(),
@@ -1812,6 +1858,31 @@ func (q *Queries) SumExpensesByMonth(ctx context.Context, arg SumExpensesByMonth
 		return nil, err
 	}
 	return items, nil
+}
+
+const unsetExpensePrimary = `-- name: UnsetExpensePrimary :exec
+UPDATE expense_attachments SET
+    is_primary = FALSE,
+    updated_at = now()
+WHERE expense_id      = $1
+  AND organisation_id = $2
+  AND is_primary      = TRUE
+`
+
+type UnsetExpensePrimaryParams struct {
+	ExpenseID      uuid.UUID `json:"expense_id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// UnsetExpensePrimary
+// Clears the primary flag on every attachment of an expense. Run inside a
+// transaction immediately BEFORE SetAttachmentPrimary so that exactly one row
+// ends up flagged primary. organisation_id keeps the update tenant-scoped.
+// -----------------------------------------------------------------------------
+func (q *Queries) UnsetExpensePrimary(ctx context.Context, arg UnsetExpensePrimaryParams) error {
+	_, err := q.db.Exec(ctx, unsetExpensePrimary, arg.ExpenseID, arg.OrganisationID)
+	return err
 }
 
 const updateAttachmentOCRStatus = `-- name: UpdateAttachmentOCRStatus :one

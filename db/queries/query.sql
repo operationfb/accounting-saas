@@ -478,6 +478,48 @@ WHERE id              = $1
   AND organisation_id = $2;
 
 
+-- -----------------------------------------------------------------------------
+-- CountExpenseAttachments
+-- How many files an expense already has. The service calls this when a new file
+-- is uploaded: if the count is 0, this upload is the FIRST one and therefore
+-- becomes the primary (default) attachment. Scoped by expense_id only — the
+-- caller has already been authorised against the parent expense's organisation,
+-- which is the same convention ListExpenseAttachments uses.
+-- -----------------------------------------------------------------------------
+-- name: CountExpenseAttachments :one
+SELECT count(*) FROM expense_attachments
+WHERE expense_id = $1;
+
+
+-- -----------------------------------------------------------------------------
+-- UnsetExpensePrimary
+-- Clears the primary flag on every attachment of an expense. Run inside a
+-- transaction immediately BEFORE SetAttachmentPrimary so that exactly one row
+-- ends up flagged primary. organisation_id keeps the update tenant-scoped.
+-- -----------------------------------------------------------------------------
+-- name: UnsetExpensePrimary :exec
+UPDATE expense_attachments SET
+    is_primary = FALSE,
+    updated_at = now()
+WHERE expense_id      = $1
+  AND organisation_id = $2
+  AND is_primary      = TRUE;
+
+
+-- -----------------------------------------------------------------------------
+-- SetAttachmentPrimary
+-- Marks a single attachment as the primary one for its expense. Pair it with
+-- UnsetExpensePrimary inside one transaction so the "exactly one primary"
+-- invariant holds. organisation_id prevents cross-tenant writes.
+-- -----------------------------------------------------------------------------
+-- name: SetAttachmentPrimary :exec
+UPDATE expense_attachments SET
+    is_primary = TRUE,
+    updated_at = now()
+WHERE id              = $1
+  AND organisation_id = $2;
+
+
 -- =============================================================================
 -- SECTION 4: EXPENSE RECURRENCE
 -- =============================================================================

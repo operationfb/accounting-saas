@@ -125,11 +125,35 @@ func main() {
 
 	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration)
 
+	// -------------------------------------------------------------------------
+	// Attachment storage (Google Cloud Storage).
+	//
+	// Receipt FILES live in GCS; their METADATA lives in Postgres. GCS_BUCKET
+	// names the bucket. Credentials come from Application Default Credentials
+	// (locally: `gcloud auth application-default login`; on Cloud Run: the
+	// attached service account). When GCS_BUCKET is unset we start without
+	// attachment support so the rest of the API still runs in environments that
+	// have no GCS configured (e.g. a frontend dev's machine).
+	// -------------------------------------------------------------------------
+	var attachmentStorage Storage
+	if bucket := os.Getenv("GCS_BUCKET"); bucket != "" {
+		gcs, gcsErr := newGCSStorage(context.Background(), bucket)
+		if gcsErr != nil {
+			log.Fatalf("could not initialise GCS storage: %v", gcsErr)
+		}
+		attachmentStorage = gcs
+		log.Printf("attachment storage: GCS bucket %q", bucket)
+	} else {
+		log.Println("attachment storage: GCS_BUCKET not set — receipt uploads are disabled")
+	}
+	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).
+	attachmentService := NewAttachmentService(pool, queries, authQueries, attachmentStorage, 0, 0)
+
 	// Allowed CORS origins for the browser SPA. Comma-separated in
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

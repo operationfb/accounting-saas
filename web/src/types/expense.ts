@@ -39,8 +39,10 @@ export const ExpenseDetailSchema = z.object({
   description: z.string(),
   category_name: z.string(),
   category_nominal_code: z.string(),
+  category_id: z.string(), // raw FK — pre-fills the edit form's category picker
   currency: z.string(),
   gross_value: z.string(),
+  vat_rate_id: z.string().nullish(), // raw FK — pre-fills the edit form's VAT picker
   vat_rate: z.string().nullish(),
   vat_status: z.string(),
   vat_value: z.string(),
@@ -95,6 +97,8 @@ export interface CreateExpenseRequest {
   description: string
   gross_value: string
   currency?: string
+  vat_rate_id?: string
+  vat_amount?: string
   supplier_name?: string
   supplier_vat_number?: string
   invoice_number?: string
@@ -105,4 +109,20 @@ export interface CreateExpenseRequest {
 // need the new id (to navigate), so reuse the lean ExpenseSchema.
 export const CreateExpenseResponseSchema = z.object({
   expense: ExpenseSchema,
+})
+
+// GET /api/v1/vat-rates → { "vat_rates": [...] } — rates valid today for the
+// org's country. `rate` is the display form ("20%"); `is_fixed_ratio` tells the
+// form whether the VAT amount is auto-calculated (true) or user-entered (false).
+export const VatRateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  rate_bps: z.number(),
+  rate: z.string(),
+  is_fixed_ratio: z.boolean(),
+})
+export type VatRate = z.infer<typeof VatRateSchema>
+
+export const ListVatRatesResponseSchema = z.object({
+  vat_rates: z.array(VatRateSchema).nullish(),
 })

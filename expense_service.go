@@ -792,10 +792,12 @@ func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
 
 		CategoryName:        e.CategoryName,
 		CategoryNominalCode: e.CategoryNominalCode,
+		CategoryID:          e.CategoryID.String(),
 
 		Currency:   e.Currency,
 		GrossValue: minorToPounds(e.GrossValueMinor),
 
+		VATRateID: uuidToStringPtr(e.VatRateID),
 		VATRate:   bpsToPercentPtr(e.VatRateBps),
 		VATStatus: e.VatStatus,
 		VATValue:  minorToPounds(e.VatValueMinor),

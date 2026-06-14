@@ -528,7 +528,10 @@ SELECT
     em.reimbursement_minor,
     -- Timestamps
     e.created_at,
-    e.updated_at
+    e.updated_at,
+    -- Raw FKs (the rest of the view exposes names) — used to pre-fill the edit form.
+    e.category_id,
+    e.vat_rate_id
 FROM expenses e
 JOIN expense_categories ec ON ec.id = e.category_id
 LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims

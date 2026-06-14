@@ -46,3 +46,18 @@ export function toISODate(d: Date): string {
   const day = String(d.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
+
+// VAT extracted from a VAT-INCLUSIVE total for a fixed-ratio rate. Mirrors the
+// backend's computeFixedVAT exactly: vat = round(grossMinor × rate_bps /
+// (10000 + rate_bps)). Math.round is half-up, which equals the backend's
+// half-away-from-zero for non-negative amounts. Returns a 2dp pound string, or
+// '' when the gross isn't a valid non-negative number.
+export function computeFixedVatPounds(grossPounds: string, rateBps: number): string {
+  const gross = Number(grossPounds)
+  if (!Number.isFinite(gross) || gross < 0) return ''
+  const grossMinor = Math.round(gross * 100)
+  const denom = 10000 + rateBps
+  if (denom <= 0) return ''
+  const vatMinor = Math.round((grossMinor * rateBps) / denom)
+  return (vatMinor / 100).toFixed(2)
+}

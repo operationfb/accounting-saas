@@ -49,8 +49,13 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── server.go            # Gin engine + Server struct + route registration + expense handlers
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
+├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule
+├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete)
+├── storage.go           # Storage interface (Upload / SignedDownloadURL / Delete / Bucket) — abstraction over the object store
+├── storage_gcs.go       # gcsStorage: the Google Cloud Storage implementation of Storage
 ├── errors.go            # AppError type + ErrorCode constants + handler→HTTP mapping
 ├── server_test.go       # Integration tests (real Postgres) for the HTTP handlers
+├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth)
 │
 ├── db/
@@ -73,7 +78,11 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
     └── random.go        # Random test-data helpers for the integration tests
 ```
 
-Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`), `.gitignore`, and this `CLAUDE.md`.
+Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, and `GCS_BUCKET` for receipt-attachment storage), `.gitignore`, and this `CLAUDE.md`.
+
+### Attachment storage (receipts)
+
+Expense attachments (PDF/image receipts) follow the standard split: the **file bytes live in Google Cloud Storage**, the **file metadata lives in Postgres** (`expense_attachments`). The service (`attachment_service.go`) depends on the `Storage` interface (`storage.go`); the only implementation is GCS (`storage_gcs.go`), reached via Application Default Credentials. The DB row stores the GCS object **key** in `storage_path` (never a signed URL — those are short-lived and generated on demand). GCS and Postgres are not one transaction, so an upload writes to GCS first and, if the metadata write fails, best-effort deletes the object to avoid orphans. The **first file uploaded to an expense is the primary** one; deleting the primary promotes the oldest remaining file.
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 
@@ -143,6 +152,7 @@ Testing is a first-class part of this project, not an optional extra.
   go test ./...
   ```
 - For DB-backed tests, ensure Postgres is reachable via `DATABASE_URL` (in `.env`) and the DDL in `db/schema/` has been applied. Document any setup steps you add (e.g., a `docker-compose.test.yml` or a `make test` target) so they're reproducible.
+- The **attachment tests hit the real GCS dev bucket** (no emulator/fake), mirroring how the DB tests hit real Postgres. They require `GCS_BUCKET` set in `.env` plus GCP credentials that can read/write it (`gcloud auth application-default login`, or `GOOGLE_APPLICATION_CREDENTIALS`); the signed-URL test additionally needs a service-account *signer*. When `GCS_BUCKET` is unset they **skip** (so `go test ./...` still passes without GCS), exactly like DB tests skip without `DATABASE_URL`. Each test uses a unique per-expense key prefix and deletes its objects in `t.Cleanup` so the shared bucket stays clean.
 
 ## Architecture & Methodology Principles
 

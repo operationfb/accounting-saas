@@ -12,6 +12,15 @@ import (
 
 type Querier interface {
 	// -----------------------------------------------------------------------------
+	// CountExpenseAttachments
+	// How many files an expense already has. The service calls this when a new file
+	// is uploaded: if the count is 0, this upload is the FIRST one and therefore
+	// becomes the primary (default) attachment. Scoped by expense_id only — the
+	// caller has already been authorised against the parent expense's organisation,
+	// which is the same convention ListExpenseAttachments uses.
+	// -----------------------------------------------------------------------------
+	CountExpenseAttachments(ctx context.Context, expenseID uuid.UUID) (int64, error)
+	// -----------------------------------------------------------------------------
 	// CountExpensesByStatus
 	// Count of expenses per status — used for the dashboard summary cards.
 	// e.g. "3 Pending Approval", "12 Paid This Month"
@@ -241,6 +250,13 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListVatRatesByCountry(ctx context.Context, countryCode string) ([]ListVatRatesByCountryRow, error)
 	// -----------------------------------------------------------------------------
+	// SetAttachmentPrimary
+	// Marks a single attachment as the primary one for its expense. Pair it with
+	// UnsetExpensePrimary inside one transaction so the "exactly one primary"
+	// invariant holds. organisation_id prevents cross-tenant writes.
+	// -----------------------------------------------------------------------------
+	SetAttachmentPrimary(ctx context.Context, arg SetAttachmentPrimaryParams) error
+	// -----------------------------------------------------------------------------
 	// SoftDeleteExpense
 	// Sets deleted_at to mark the record as deleted. The row remains in the DB
 	// for audit purposes but is invisible to all other queries.
@@ -265,6 +281,13 @@ type Querier interface {
 	// GROUP BY aggregate by month cleanly.
 	// -----------------------------------------------------------------------------
 	SumExpensesByMonth(ctx context.Context, arg SumExpensesByMonthParams) ([]SumExpensesByMonthRow, error)
+	// -----------------------------------------------------------------------------
+	// UnsetExpensePrimary
+	// Clears the primary flag on every attachment of an expense. Run inside a
+	// transaction immediately BEFORE SetAttachmentPrimary so that exactly one row
+	// ends up flagged primary. organisation_id keeps the update tenant-scoped.
+	// -----------------------------------------------------------------------------
+	UnsetExpensePrimary(ctx context.Context, arg UnsetExpensePrimaryParams) error
 	// -----------------------------------------------------------------------------
 	// UpdateAttachmentOCRStatus
 	// Called by the background OCR processing pipeline to record results.

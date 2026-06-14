@@ -111,7 +111,20 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatalf("failed to create token maker: %v", err)
 	}
 	authHandler := NewAuthHandler(authQueries, tokenMaker, time.Minute)
-	server := NewServer(service, authHandler, tokenMaker, []string{testCORSOrigin})
+
+	// Attachment storage: when GCS_BUCKET is set the tests exercise the real GCS
+	// code path against that bucket; otherwise storage is nil and the attachment
+	// tests skip (see requireGCS in attachment_service_test.go).
+	var store Storage
+	if bucket := os.Getenv("GCS_BUCKET"); bucket != "" {
+		gcs, gcsErr := newGCSStorage(context.Background(), bucket)
+		if gcsErr != nil {
+			t.Fatalf("failed to create GCS storage: %v", gcsErr)
+		}
+		store = gcs
+	}
+	attachmentService := NewAttachmentService(pool, queries, authQueries, store, 0, 0)
+	server := NewServer(service, attachmentService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
 		server:     server,

@@ -56,6 +56,14 @@ const (
 	// ErrCodeForbidden — the caller is authenticated but not allowed to perform
 	// this action or access this resource. Maps to HTTP 403.
 	ErrCodeForbidden ErrorCode = "forbidden"
+
+	// ErrCodePayloadTooLarge — the request body (e.g. an uploaded file) exceeds
+	// the allowed size. Maps to HTTP 413.
+	ErrCodePayloadTooLarge ErrorCode = "payload_too_large"
+
+	// ErrCodeUnsupportedMediaType — the uploaded file is of a type we don't
+	// accept (we only allow PDF/JPEG/PNG receipts). Maps to HTTP 415.
+	ErrCodeUnsupportedMediaType ErrorCode = "unsupported_media_type"
 )
 
 // AppError is the structured error type returned by the service layer.
@@ -102,6 +110,10 @@ func (e *AppError) HTTPStatus() int {
 		return http.StatusConflict // 409
 	case ErrCodeForbidden:
 		return http.StatusForbidden // 403
+	case ErrCodePayloadTooLarge:
+		return http.StatusRequestEntityTooLarge // 413
+	case ErrCodeUnsupportedMediaType:
+		return http.StatusUnsupportedMediaType // 415
 	case ErrCodeInternal:
 		return http.StatusInternalServerError // 500
 	default:
@@ -151,6 +163,24 @@ func ErrConflict(msg string) *AppError {
 func ErrForbidden(msg string) *AppError {
 	return &AppError{
 		Code:    ErrCodeForbidden,
+		Message: msg,
+	}
+}
+
+// ErrPayloadTooLarge constructs a "payload_too_large" AppError.
+// msg should state the limit, e.g. "file is 26214400 bytes; the limit is 20971520".
+func ErrPayloadTooLarge(msg string) *AppError {
+	return &AppError{
+		Code:    ErrCodePayloadTooLarge,
+		Message: msg,
+	}
+}
+
+// ErrUnsupportedMediaType constructs an "unsupported_media_type" AppError.
+// msg names the rejected type, e.g. `file type "text/plain" is not allowed`.
+func ErrUnsupportedMediaType(msg string) *AppError {
+	return &AppError{
+		Code:    ErrCodeUnsupportedMediaType,
 		Message: msg,
 	}
 }

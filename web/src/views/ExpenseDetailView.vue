@@ -93,8 +93,13 @@ function backToList() {
         <StatusTag v-if="expense" :status="expense.status" />
       </div>
       <div class="flex gap-2.5">
-        <!-- Edit is a placeholder until the edit flow is built. -->
-        <Button label="Edit" icon="pi pi-pencil" :disabled="!expense" />
+        <!-- Edit only for editable statuses (the backend enforces DRAFT/REJECTED). -->
+        <Button
+          v-if="expense && (expense.status === 'DRAFT' || expense.status === 'REJECTED')"
+          label="Edit"
+          icon="pi pi-pencil"
+          @click="router.push(`/expenses/${id}/edit`)"
+        />
         <Button label="Back to list" severity="secondary" outlined @click="backToList" />
       </div>
     </div>

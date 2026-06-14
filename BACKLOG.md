@@ -59,6 +59,43 @@ _Last updated: 2026-06-14_
   `expense_categories` to pre-fill an expense's VAT status from its category.
   _Files: `db/schema/schema.sql`, `expense_service.go` (`CreateExpense`)._
 
+## Attachments & document storage
+
+- **OCR / data capture for receipts.** The `expense_attachments` table already
+  carries the phase-2 OCR columns (`ocr_status`, `ocr_raw_text`,
+  `ocr_extracted_data`, `ocr_processed_at`) and the `UpdateAttachmentOCRStatus`
+  query, but nothing populates them. Wire up a background pipeline that OCRs
+  uploaded receipts and fills these in (Datamolino-style auto-fill). _Files:
+  `attachment_service.go`, `db/queries/query.sql`._
+- **Thumbnails / previews.** Generate a small downscaled image per attachment so
+  the SPA's list view doesn't fetch full-size files. This is image *resizing* for
+  UX, separate from storage. _File: `attachment_service.go`._
+- **CMEK (customer-managed encryption keys).** Attachments rely on GCS default
+  at-rest encryption. For a stronger key-custody compliance story, point the
+  bucket at a Cloud KMS key — a bucket-level setting, no code change.
+- **DB-level single-primary guarantee.** "Exactly one primary per expense" is
+  enforced in the service inside a transaction. A partial unique index
+  (`... ON expense_attachments (expense_id) WHERE is_primary`) would enforce it in
+  the database too, but needs handling for the (low-risk) concurrent-first-upload
+  race. _File: `db/schema/schema.sql`._
+- **Orphaned-object reconciliation.** Upload cleans up its own object if the
+  metadata write fails, and delete is best-effort, but a crash between steps can
+  still strand a GCS object (or leave a deleted row's file behind). Add a periodic
+  sweep reconciling `expense_attachments` against the bucket. _File:
+  `attachment_service.go`._
+- **Virus/malware scanning.** Receipts are user-uploaded files; consider scanning
+  on upload (ClamAV step, or a GCS-triggered scan) before they're downloadable.
+- **HEIC support.** iOS photos are often HEIC, which `http.DetectContentType`
+  reports as `application/octet-stream`, so they're currently rejected. Add HEIC to
+  the allowlist (and likely transcode to JPEG). _File: `attachment_service.go`._
+- **Direct-to-GCS uploads.** Uploads are server-proxied today (simple, full
+  server-side validation). If server bandwidth becomes a constraint, add a
+  signed-upload-URL flow so browsers upload straight to GCS. _Files:
+  `attachment_service.go`, `attachment_handler.go`._
+- **Audit log on attachment create/delete.** `UploadAttachment` / `DeleteAttachment`
+  leave the same `CreateAuditEntry` TODO as `CreateExpense`. _File:
+  `attachment_service.go`._
+
 ## Cleanups (also flagged as background tasks)
 
 - **Strip `[DEBUG]` token logging.** `token/paseto_maker.go` `VerifyToken` logs
