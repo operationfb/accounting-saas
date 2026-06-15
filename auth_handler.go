@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -378,7 +379,10 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		return
 	}
 	if sendErr := h.emailSender.Send(ctx, user.Email, subject, body); sendErr != nil {
-		_ = ErrInternal(sendErr).Error() // TODO: structured logger
+		// Still return the generic 200 (don't reveal the email exists), but LOG the
+		// failure — otherwise a misconfigured SMTP (bad credentials, unreachable
+		// host, ...) is completely silent. TODO: replace with the structured logger.
+		log.Printf("password reset: failed to send email to %s: %v", user.Email, sendErr)
 	}
 
 	respondGeneric()

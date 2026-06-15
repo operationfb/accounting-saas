@@ -205,10 +205,15 @@ function backToList() {
       <template v-else>
         <p v-if="previewError" class="py-1 text-xs text-[#c0392b]">{{ previewError }}</p>
         <ul v-if="attachments.length">
+          <!-- Indent each row to the Expense-details value column (190px label
+               column + 16px gap-4 = 206px) so the files line up with the values
+               in the card above. Only at sm+ (where the details card becomes
+               two-column); the <li> stays full-width, so the row dividers still
+               span the whole card rather than indenting with the content. -->
           <li
             v-for="att in attachments"
             :key="att.id"
-            class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
+            class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0 sm:pl-[206px]"
           >
             <i :class="iconFor(att.content_type)" class="text-fa-muted" />
             <button
