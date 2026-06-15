@@ -1,6 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 import LoginView from '@/views/LoginView.vue'
+import ForgotPasswordView from '@/views/ForgotPasswordView.vue'
+import ResetPasswordView from '@/views/ResetPasswordView.vue'
 import ExpenseListView from '@/views/ExpenseListView.vue'
 import ExpenseEntryView from '@/views/ExpenseEntryView.vue'
 import ExpenseDetailView from '@/views/ExpenseDetailView.vue'
@@ -11,6 +13,11 @@ const router = createRouter({
   routes: [
     { path: '/', redirect: '/expenses' },
     { path: '/login', name: 'login', component: LoginView },
+    { path: '/forgot', name: 'forgot', component: ForgotPasswordView },
+    // Reached from the reset email link, which carries the one-time token as a
+    // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
+    // ResetPasswordView reads it from route.params.token.
+    { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },

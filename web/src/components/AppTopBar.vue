@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Top navigation bar (the navy strip), mirroring FA's app chrome.
-// The company button on the right opens an account dropdown with Logout.
+// The company button on the right opens an account dropdown (Change Password,
+// Logout).
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Menu from 'primevue/menu'
@@ -26,6 +27,7 @@ const navItems = [
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
 const accountMenu = ref()
 const accountItems = ref<MenuItem[]>([
+  { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
 ])
 
@@ -36,6 +38,14 @@ function toggleAccountMenu(event: Event) {
 function logout() {
   auth.logout()
   router.push('/login')
+}
+
+// "Change Password" enters the password-reset flow. That flow is unauthenticated
+// (the reset page is reached via an emailed token), so we log the user out first
+// and then send them to /forgot to request a reset link.
+function changePassword() {
+  auth.logout()
+  router.push('/forgot')
 }
 </script>
 

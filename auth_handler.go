@@ -18,6 +18,10 @@ package main
 // =============================================================================
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -45,14 +49,29 @@ type AuthHandler struct {
 	// accessTokenDuration is how long an issued token stays valid. Injected
 	// rather than hardcoded so it can be configured per environment.
 	accessTokenDuration time.Duration
+
+	// Password-reset dependencies.
+	emailSender      EmailSender   // transport for the reset-link email
+	appBaseURL       string        // frontend base, used to build the reset link
+	passwordResetTTL time.Duration // how long a reset link stays valid (e.g. 15m)
 }
 
 // NewAuthHandler wires the dependencies for the auth endpoints.
-func NewAuthHandler(queries auth.Querier, tokenMaker token.Maker, accessTokenDuration time.Duration) *AuthHandler {
+func NewAuthHandler(
+	queries auth.Querier,
+	tokenMaker token.Maker,
+	accessTokenDuration time.Duration,
+	emailSender EmailSender,
+	appBaseURL string,
+	passwordResetTTL time.Duration,
+) *AuthHandler {
 	return &AuthHandler{
 		queries:             queries,
 		tokenMaker:          tokenMaker,
 		accessTokenDuration: accessTokenDuration,
+		emailSender:         emailSender,
+		appBaseURL:          appBaseURL,
+		passwordResetTTL:    passwordResetTTL,
 	}
 }
 
@@ -264,4 +283,156 @@ func respondInternal(c *gin.Context, err error) {
 	appErr := ErrInternal(err)
 	_ = appErr.Error() // TODO: replace with structured logger (slog/zap)
 	c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+}
+
+// =============================================================================
+// PASSWORD RESET
+// =============================================================================
+
+// generateToken returns a cryptographically-random, URL-safe token — the raw
+// value that travels in the email link. 32 random bytes → base64url (no
+// padding), so it is safe as a URL path segment (the alphabet has no '/').
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// hashToken returns the hex SHA-256 of a raw token. We store only this hash in
+// the DB, so a database leak can't be used to reset accounts; lookups hash the
+// supplied token and compare. Generic — reusable for email-verification tokens.
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// forgotPasswordRequest is the JSON body for POST /auth/forgot-password.
+type forgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// resetPasswordRequest is the JSON body for POST /auth/reset-password/:token.
+// The token itself comes from the URL path, not the body.
+type resetPasswordRequest struct {
+	Password string `json:"password" binding:"required,min=8"`
+}
+
+// ForgotPassword handles POST /auth/forgot-password.
+//
+// It issues a single-use, time-limited reset token, emails a link containing the
+// raw token, and ALWAYS returns 200 with a generic message — it never reveals
+// whether the email is registered (no account enumeration).
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var req forgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	// The generic response we return in every non-error outcome (sent, unknown
+	// email, or inactive account) — so the caller can't tell them apart.
+	respondGeneric := func() {
+		c.JSON(http.StatusOK, gin.H{"message": "if that email is registered, a password reset link has been sent"})
+	}
+
+	rawToken, err := generateToken()
+	if err != nil {
+		respondInternal(c, err)
+		return
+	}
+
+	// Store the HASH of the token (the raw token only ever travels in the email).
+	// SetPasswordResetToken stamps password_reset_sent_at = now() and returns the
+	// user; a missing email yields pgx.ErrNoRows → respond identically.
+	user, err := h.queries.SetPasswordResetToken(ctx, auth.SetPasswordResetTokenParams{
+		Email:              email,
+		PasswordResetToken: pgtype.Text{String: hashToken(rawToken), Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			respondGeneric()
+			return
+		}
+		respondInternal(c, err)
+		return
+	}
+
+	// Don't email deactivated accounts (still respond generically).
+	if !user.IsActive {
+		respondGeneric()
+		return
+	}
+
+	// Build the reset link (token as a path segment) and the email content, then
+	// send. A send failure is logged but we STILL return the generic 200 — failing
+	// loudly here would reveal that the email exists; the user can re-request.
+	resetLink := strings.TrimRight(h.appBaseURL, "/") + "/reset-password/" + rawToken
+	subject, body, err := buildPasswordResetEmail(user.FirstName, resetLink, int(h.passwordResetTTL.Minutes()))
+	if err != nil {
+		respondInternal(c, err)
+		return
+	}
+	if sendErr := h.emailSender.Send(ctx, user.Email, subject, body); sendErr != nil {
+		_ = ErrInternal(sendErr).Error() // TODO: structured logger
+	}
+
+	respondGeneric()
+}
+
+// ResetPassword handles POST /auth/reset-password/:token.
+//
+// The path token is the raw reset code from the email link. We hash it, look up
+// the user, enforce the expiry window (passwordResetTTL), then set the new
+// bcrypt password. UpdateUserPassword also clears the token, so a link works
+// only once. Any invalid / expired / used token returns the same generic 400.
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	rawToken := c.Param("token")
+
+	var req resetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx := c.Request.Context()
+	const invalidMsg = "invalid or expired reset link"
+
+	user, err := h.queries.GetUserByPasswordResetToken(ctx, pgtype.Text{String: hashToken(rawToken), Valid: true})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidMsg})
+			return
+		}
+		respondInternal(c, err)
+		return
+	}
+
+	// Enforce expiry: valid for passwordResetTTL from when the link was issued.
+	if !user.PasswordResetSentAt.Valid ||
+		time.Now().After(user.PasswordResetSentAt.Time.Add(h.passwordResetTTL)) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidMsg})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+	if err != nil {
+		respondInternal(c, err)
+		return
+	}
+
+	// Sets the new hash and clears password_reset_token + sent_at (single-use).
+	if err := h.queries.UpdateUserPassword(ctx, auth.UpdateUserPasswordParams{
+		ID:           user.ID,
+		PasswordHash: pgtype.Text{String: string(hash), Valid: true},
+	}); err != nil {
+		respondInternal(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "your password has been updated"})
 }

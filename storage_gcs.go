@@ -51,6 +51,12 @@ func (g *gcsStorage) Bucket() string { return g.bucket }
 func (g *gcsStorage) Upload(ctx context.Context, key, contentType string, r io.Reader) error {
 	w := g.client.Bucket(g.bucket).Object(key).NewWriter(ctx)
 	w.ContentType = contentType
+	// ChunkSize=0 uses a single-request upload instead of GCS resumable uploads.
+	// Resumable requires extra round-trips (initiate → upload-in-chunks → finalise)
+	// which add meaningful latency for the small receipt files (≤20 MiB) we store.
+	// If we ever raise the cap above ~100 MiB, switch back to a non-zero ChunkSize
+	// so partial progress isn't lost on network interruption.
+	w.ChunkSize = 0
 
 	if _, err := io.Copy(w, r); err != nil {
 		// Abort the in-flight upload; don't leave a half-written object.

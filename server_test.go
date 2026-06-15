@@ -41,6 +41,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
@@ -56,9 +57,10 @@ import (
 // We build it once in TestMain and reuse it — opening a DB pool is expensive
 // and we don't want to do it for every individual test case.
 type testServer struct {
-	server     *Server
-	pool       *pgxpool.Pool
-	tokenMaker token.Maker
+	server      *Server
+	pool        *pgxpool.Pool
+	tokenMaker  token.Maker
+	emailSender *fakeEmailSender
 }
 
 // testSymmetricKey is a fixed 32-byte key used only by tests to build a PASETO
@@ -68,6 +70,9 @@ const testSymmetricKey = "12345678901234567890123456789012"
 
 // testCORSOrigin is the single allowed CORS origin the test server is built with.
 const testCORSOrigin = "http://localhost:3000"
+
+// testAppBaseURL is the frontend base the test server builds reset links against.
+const testAppBaseURL = "http://localhost:5173"
 
 // newTestServer connects to the real database and builds a Server instance
 // configured for testing. It mirrors what main() does, but reads from .env
@@ -110,7 +115,8 @@ func newTestServer(t *testing.T) *testServer {
 	if err != nil {
 		t.Fatalf("failed to create token maker: %v", err)
 	}
-	authHandler := NewAuthHandler(authQueries, tokenMaker, time.Minute)
+	emailSender := &fakeEmailSender{}
+	authHandler := NewAuthHandler(authQueries, tokenMaker, time.Minute, emailSender, testAppBaseURL, 15*time.Minute)
 
 	// Attachment storage: when GCS_BUCKET is set the tests exercise the real GCS
 	// code path against that bucket; otherwise storage is nil and the attachment
@@ -127,9 +133,10 @@ func newTestServer(t *testing.T) *testServer {
 	server := NewServer(service, attachmentService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
-		server:     server,
-		pool:       pool,
-		tokenMaker: tokenMaker,
+		server:      server,
+		pool:        pool,
+		tokenMaker:  tokenMaker,
+		emailSender: emailSender,
 	}
 }
 
@@ -1208,6 +1215,163 @@ func TestExpenseVAT(t *testing.T) {
 		got := decodeExpense(t, rec)
 		if got.VATValue != "10.00" {
 			t.Errorf("vat_value: got %q, want %q (£60 incl. 20%% → £10 VAT)", got.VATValue, "10.00")
+		}
+	})
+}
+
+// =============================================================================
+// PASSWORD RESET
+// =============================================================================
+
+// fakeEmailSender is a test EmailSender that records the last message instead of
+// sending it, so tests can pull the reset link/token back out.
+type fakeEmailSender struct {
+	called  bool
+	to      string
+	subject string
+	body    string
+}
+
+func (f *fakeEmailSender) Send(_ context.Context, to, subject, body string) error {
+	f.called, f.to, f.subject, f.body = true, to, subject, body
+	return nil
+}
+
+// newUserWithPassword inserts an ephemeral active user (bcrypt password + an
+// active membership in orgID) and registers cleanup. Returns the user's id and
+// email. Keeps the seeded dev user's password untouched.
+func newUserWithPassword(t *testing.T, ts *testServer, orgID, plainPassword string) (id, email string) {
+	t.Helper()
+	id = uuid.NewString()
+	email = "reset-" + id + "@test.local"
+	hash, err := bcrypt.GenerateFromPassword([]byte(plainPassword), 12)
+	if err != nil {
+		t.Fatalf("newUserWithPassword: hash: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO users (id, email, password_hash, first_name, last_name, is_active, email_verified_at)
+		 VALUES ($1, $2, $3, 'Reset', 'Tester', TRUE, now())`, id, email, string(hash)); err != nil {
+		t.Fatalf("newUserWithPassword: insert user: %v", err)
+	}
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO organisation_memberships (organisation_id, user_id, role, status)
+		 VALUES ($1, $2, 'member', 'active')`, orgID, id); err != nil {
+		t.Fatalf("newUserWithPassword: insert membership: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_memberships WHERE user_id = $1`, id)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	})
+	return id, email
+}
+
+// extractResetToken pulls the raw token out of the reset email body, which
+// contains "{base}/reset-password/<token>" on its own line.
+func extractResetToken(t *testing.T, body string) string {
+	t.Helper()
+	const marker = "/reset-password/"
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("reset email missing %q:\n%s", marker, body)
+	}
+	// The token runs from just after the marker to the first whitespace (the link
+	// is on its own line; base64url tokens contain no whitespace).
+	fields := strings.Fields(body[i+len(marker):])
+	if len(fields) == 0 {
+		t.Fatalf("reset email has no token after %q:\n%s", marker, body)
+	}
+	return fields[0]
+}
+
+// TestPasswordReset covers the forgot-password → reset-password flow:
+// happy path (request → reset → login with new password, old rejected, token
+// single-use), unknown email (200, nothing sent), expired token (400), and a
+// garbage token (400).
+func TestPasswordReset(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	const oldPassword = "oldpassword123"
+	const newPassword = "newpassword456"
+
+	postJSON := func(path string, body any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(body)
+		rec := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		ts.server.router.ServeHTTP(rec, req)
+		return rec
+	}
+	login := func(email, password string) int {
+		return postJSON("/api/v1/auth/login", map[string]string{"email": email, "password": password}).Code
+	}
+
+	t.Run("happy path: request, reset, login with new password", func(t *testing.T) {
+		_, email := newUserWithPassword(t, ts, devOrgID, oldPassword)
+
+		// 1) Request a reset → always 200; the fake sender captured the link.
+		ts.emailSender.called = false
+		if rec := postJSON("/api/v1/auth/forgot-password", map[string]string{"email": email}); rec.Code != http.StatusOK {
+			t.Fatalf("forgot-password: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		if !ts.emailSender.called {
+			t.Fatal("expected a reset email to be sent")
+		}
+		token := extractResetToken(t, ts.emailSender.body)
+
+		// 2) Reset with the token → 200.
+		if rec := postJSON("/api/v1/auth/reset-password/"+token, map[string]string{"password": newPassword}); rec.Code != http.StatusOK {
+			t.Fatalf("reset-password: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		// 3) New password logs in; the old password is now rejected.
+		if code := login(email, newPassword); code != http.StatusOK {
+			t.Errorf("login with new password: expected 200, got %d", code)
+		}
+		if code := login(email, oldPassword); code != http.StatusUnauthorized {
+			t.Errorf("login with old password: expected 401, got %d", code)
+		}
+
+		// 4) The token is single-use — reusing it fails.
+		if rec := postJSON("/api/v1/auth/reset-password/"+token, map[string]string{"password": "anotherpass789"}); rec.Code != http.StatusBadRequest {
+			t.Errorf("reused token: expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown email still returns 200 and sends nothing", func(t *testing.T) {
+		ts.emailSender.called = false
+		rec := postJSON("/api/v1/auth/forgot-password", map[string]string{"email": "nobody-" + uuid.NewString() + "@test.local"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		if ts.emailSender.called {
+			t.Error("no email should be sent for an unknown address")
+		}
+	})
+
+	t.Run("expired token is rejected", func(t *testing.T) {
+		_, email := newUserWithPassword(t, ts, devOrgID, oldPassword)
+		ts.emailSender.called = false
+		if rec := postJSON("/api/v1/auth/forgot-password", map[string]string{"email": email}); rec.Code != http.StatusOK {
+			t.Fatalf("forgot-password: expected 200, got %d", rec.Code)
+		}
+		token := extractResetToken(t, ts.emailSender.body)
+
+		// Backdate the sent time beyond the 15-minute TTL.
+		if _, err := ts.pool.Exec(context.Background(),
+			"UPDATE users SET password_reset_sent_at = now() - interval '20 minutes' WHERE email = $1", email); err != nil {
+			t.Fatalf("backdate sent_at: %v", err)
+		}
+		if rec := postJSON("/api/v1/auth/reset-password/"+token, map[string]string{"password": newPassword}); rec.Code != http.StatusBadRequest {
+			t.Errorf("expired token: expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("garbage token is rejected", func(t *testing.T) {
+		rec := postJSON("/api/v1/auth/reset-password/not-a-real-token", map[string]string{"password": newPassword})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("garbage token: expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

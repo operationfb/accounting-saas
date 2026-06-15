@@ -1,13 +1,15 @@
 <script setup lang="ts">
 // Login screen — standalone full-page (no app chrome), modelled on FA's login.
 // Wired to the real POST /api/v1/auth/login via the auth store.
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import { useAuthStore } from '@/stores/auth'
 import type { ApiError } from '@/lib/api'
+// Imported (not in /public) so Vite fingerprints the file for cache-busting.
+import kontalaLogo from '@/assets/kontala-logo.png'
 
 const router = useRouter()
 const route = useRoute()
@@ -20,6 +22,16 @@ const showPassword = ref(false)
 
 const pending = ref(false)
 const errorMessage = ref('')
+
+// The backend (auth_handler.go) returns a plain "invalid email or password"
+// string for bad credentials. Show a friendlier wording for that specific case,
+// but pass any other message through unchanged — notably the account-lockout
+// notice ("account is temporarily locked…"), which we must not hide.
+const displayError = computed(() =>
+  errorMessage.value === 'invalid email or password'
+    ? 'The email and password you entered were incorrect'
+    : errorMessage.value,
+)
 
 async function onSubmit() {
   if (pending.value) return
@@ -42,17 +54,19 @@ async function onSubmit() {
 
 <template>
   <div class="flex min-h-screen flex-col items-center gap-[22px] bg-fa-bg px-4 pb-10 pt-14">
-    <div class="text-[34px] font-extrabold italic tracking-[-0.5px] text-fa-blue">Accounting</div>
+    <img :src="kontalaLogo" alt="Kontala" class="h-10 w-auto select-none" />
 
     <div class="w-full max-w-[380px] rounded-md bg-white p-7 shadow-[0_1px_3px_rgba(20,40,80,0.12)]">
       <h1 class="mb-[22px] text-xl font-bold">Ready to take care of business?</h1>
 
       <div
         v-if="errorMessage"
-        class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-sm text-[#c0392b]"
+        class="mb-4 flex items-start gap-2.5 rounded-md border-l-4 border-[#c0392b] bg-[#fdecec] px-3 py-2.5 text-sm text-[#3c4043]"
         role="alert"
       >
-        {{ errorMessage }}
+        <!-- Decorative: the text already conveys the error, so hide from a11y tree. -->
+        <i class="pi pi-exclamation-triangle mt-0.5 text-[#c0392b]" aria-hidden="true" />
+        <span>{{ displayError }}</span>
       </div>
 
       <form class="flex flex-col" @submit.prevent="onSubmit">
@@ -87,7 +101,7 @@ async function onSubmit() {
             <span>Keep me logged in</span>
           </label>
           <span class="text-fa-muted">•</span>
-          <a href="#" class="text-fa-blue hover:underline">Reset my password</a>
+          <RouterLink to="/forgot" class="text-fa-blue hover:underline">Reset my password</RouterLink>
         </div>
 
         <Button type="submit" label="Log in" :loading="pending" class="w-full font-semibold" />

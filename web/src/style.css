@@ -15,11 +15,11 @@
   --font-sans: Inter, 'Helvetica Neue', Arial, Helvetica, sans-serif;
 
   --color-fa-bg: #f5f9ff; /* pale-blue page background (login) */
-  --color-fa-nav: #3f6fad; /* top navigation bar */
-  --color-fa-nav-active: #2f5a91; /* active/hovered nav item */
+  --color-fa-nav: #002d63; /* top navigation bar */
+  --color-fa-nav-active: #004aaa; /* active/hovered nav item */
   --color-fa-green: #79cc6e; /* primary action */
   --color-fa-green-hover: #69bf5e;
-  --color-fa-blue: #0069bf; /* links / brand */
+  --color-fa-blue: #004aaa; /* links / brand */
   --color-fa-text: #181a1b; /* default text */
   --color-fa-muted: #6b7785; /* secondary text */
   --color-fa-border: #d6dce3; /* card / table borders */

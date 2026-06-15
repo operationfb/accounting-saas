@@ -123,7 +123,45 @@ func main() {
 		accessTokenDuration = parsed
 	}
 
-	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration)
+	// -------------------------------------------------------------------------
+	// Email sender + password-reset config.
+	//
+	// EmailSender is the transport for outbound email (currently the password-
+	// reset link). With SMTP_HOST set we send via SMTP; otherwise we fall back to
+	// a sender that just LOGS the message, so local dev and tests work without a
+	// mail server (the reset link appears in the logs).
+	// -------------------------------------------------------------------------
+	var emailSender EmailSender
+	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
+		emailSender = newSMTPSender(smtpConfig{
+			Host:     smtpHost,
+			Port:     envOr("SMTP_PORT", "587"),
+			Username: os.Getenv("SMTP_USERNAME"),
+			Password: os.Getenv("SMTP_PASSWORD"),
+			From:     envOr("EMAIL_FROM", "no-reply@localhost"),
+		})
+		log.Printf("email: sending via SMTP host %s", smtpHost)
+	} else {
+		emailSender = newLogSender()
+		log.Println("email: SMTP_HOST not set — emails are logged, not sent")
+	}
+
+	// Base URL of the frontend, used to build the password-reset link
+	// ({APP_BASE_URL}/reset-password/<token>). Defaults to the Vite dev server.
+	appBaseURL := envOr("APP_BASE_URL", "http://localhost:5173")
+
+	// How long a password-reset link stays valid. Override with PASSWORD_RESET_TTL
+	// (a Go duration string, e.g. "15m", "1h").
+	passwordResetTTL := 15 * time.Minute
+	if v := os.Getenv("PASSWORD_RESET_TTL"); v != "" {
+		parsed, parseErr := time.ParseDuration(v)
+		if parseErr != nil {
+			log.Fatalf("invalid PASSWORD_RESET_TTL %q: %v", v, parseErr)
+		}
+		passwordResetTTL = parsed
+	}
+
+	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration, emailSender, appBaseURL, passwordResetTTL)
 
 	// -------------------------------------------------------------------------
 	// Attachment storage (Google Cloud Storage).
@@ -182,4 +220,13 @@ func parseCORSOrigins(raw string) []string {
 		return []string{devDefault}
 	}
 	return origins
+}
+
+// envOr returns the trimmed value of environment variable key, or def when it
+// is unset or blank.
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
 }

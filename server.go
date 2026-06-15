@@ -104,6 +104,10 @@ func (s *Server) registerRoutes() {
 		{
 			// POST /api/v1/auth/login → verify credentials, return a PASETO token
 			authRoutes.POST("/login", s.authHandler.LoginUser)
+			// POST /api/v1/auth/forgot-password → email a reset link (always 200, no enumeration)
+			authRoutes.POST("/forgot-password", s.authHandler.ForgotPassword)
+			// POST /api/v1/auth/reset-password/:token → set a new password via the emailed code
+			authRoutes.POST("/reset-password/:token", s.authHandler.ResetPassword)
 		}
 
 		// Expense routes require a valid login. authMiddleware verifies the
