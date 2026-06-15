@@ -322,115 +322,123 @@ defineExpose({ commit, hasPendingChanges, reset })
       </ul>
     </FormRow>
 
-    <!-- existing-list states (edit mode) -->
-    <div v-if="loadingExisting" class="py-3 text-sm text-fa-muted">
-      <i class="pi pi-spin pi-spinner mr-2" />Loading attachments…
-    </div>
-    <p v-else-if="existingError" class="py-2 text-xs text-[#c0392b]">
-      {{ existingError }}
-      <button type="button" class="underline" @click="props.expenseId && loadExisting(props.expenseId)">
-        Retry
-      </button>
-    </p>
+    <!-- Indent the file list + status messages to the form's content column
+         (under "Add files" and the fields). 206px = FormRow's 190px label column
+         + its 16px gap-4 — the same value used in ExpenseDetailView. sm: only, so
+         on mobile (where FormRow stacks) the content stays at the left edge. -->
+    <div class="sm:pl-[206px]">
+      <!-- existing-list states (edit mode) -->
+      <div v-if="loadingExisting" class="py-3 text-sm text-fa-muted">
+        <i class="pi pi-spin pi-spinner mr-2" />Loading attachments…
+      </div>
+      <p v-else-if="existingError" class="py-2 text-xs text-[#c0392b]">
+        {{ existingError }}
+        <button type="button" class="underline" @click="props.expenseId && loadExisting(props.expenseId)">
+          Retry
+        </button>
+      </p>
 
-    <p v-if="previewError" class="py-1 text-xs text-[#c0392b]">{{ previewError }}</p>
+      <p v-if="previewError" class="py-1 text-xs text-[#c0392b]">{{ previewError }}</p>
 
-    <!-- the unified file list: existing rows first, then staged rows -->
-    <ul v-if="!loadingExisting && (existing.length || staged.length)" class="mt-1">
-      <!-- EXISTING (server) files -->
-      <li
-        v-for="row in existing"
-        :key="row.key"
-        class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
-        :class="{ 'opacity-50': row.remove }"
-      >
-        <RadioButton
-          v-model="primaryKey"
-          :value="row.key"
-          :input-id="`pri-${row.key}`"
-          :disabled="row.remove"
-          title="Set as the primary receipt"
-        />
-        <i :class="iconFor(row.attachment.content_type)" class="text-fa-muted" />
-        <button
-          type="button"
-          class="font-semibold text-fa-blue hover:underline"
-          :class="{ 'line-through': row.remove }"
-          @click="openExisting(row.attachment)"
+      <!-- the unified file list: existing rows first, then staged rows -->
+      <ul v-if="!loadingExisting && (existing.length || staged.length)" class="mt-1">
+        <!-- EXISTING (server) files -->
+        <li
+          v-for="row in existing"
+          :key="row.key"
+          class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
+          :class="{ 'opacity-50': row.remove }"
         >
-          {{ row.attachment.file_name }}
-        </button>
-        <span class="text-xs text-fa-muted">{{ formatBytes(row.attachment.file_size_bytes) }}</span>
-        <span
-          v-if="primaryKey === row.key && !row.remove"
-          class="rounded bg-[#eaf7e6] px-1.5 py-0.5 text-[11px] font-semibold text-[#3f8038]"
-        >
-          Primary
-        </span>
-        <span v-if="row.remove" class="text-xs italic text-fa-muted">Will be removed on save</span>
-        <span
-          v-if="row.attachment.description && !row.remove"
-          class="basis-full pl-7 text-xs text-fa-muted"
-        >
-          {{ row.attachment.description }}
-        </span>
-        <button
-          type="button"
-          class="ml-auto text-sm font-semibold text-fa-blue hover:underline"
-          @click="toggleRemoveExisting(row)"
-        >
-          {{ row.remove ? 'Undo' : 'Remove' }}
-        </button>
-      </li>
-
-      <!-- STAGED (new, not-yet-uploaded) files -->
-      <li
-        v-for="row in staged"
-        :key="row.key"
-        class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
-      >
-        <RadioButton
-          v-model="primaryKey"
-          :value="row.key"
-          :input-id="`pri-${row.key}`"
-          title="Set as the primary receipt"
-        />
-        <i :class="iconFor(effectiveType(row.file))" class="text-fa-muted" />
-        <button
-          type="button"
-          class="font-semibold text-fa-blue hover:underline"
-          @click="openStaged(row.file)"
-        >
-          {{ row.file.name }}
-        </button>
-        <span class="text-xs text-fa-muted">{{ formatBytes(row.file.size) }}</span>
-        <span
-          v-if="primaryKey === row.key"
-          class="rounded bg-[#eaf7e6] px-1.5 py-0.5 text-[11px] font-semibold text-[#3f8038]"
-        >
-          Primary
-        </span>
-        <span class="rounded bg-[#fff4e0] px-1.5 py-0.5 text-[11px] font-semibold text-[#a86a00]">
-          Pending upload
-        </span>
-        <button
-          type="button"
-          class="ml-auto text-sm font-semibold text-fa-blue hover:underline"
-          @click="removeStaged(row.key)"
-        >
-          Remove
-        </button>
-        <div class="basis-full pl-7">
-          <InputText
-            v-model="row.description"
-            placeholder="Description (optional)"
-            class="w-full max-w-md"
-            size="small"
+          <RadioButton
+            v-model="primaryKey"
+            :value="row.key"
+            :input-id="`pri-${row.key}`"
+            :disabled="row.remove"
+            title="Set as the primary receipt"
           />
-        </div>
-      </li>
-    </ul>
+          <i :class="iconFor(row.attachment.content_type)" class="text-fa-muted" />
+          <button
+            type="button"
+            class="font-semibold text-fa-blue hover:underline"
+            :class="{ 'line-through': row.remove }"
+            @click="openExisting(row.attachment)"
+          >
+            {{ row.attachment.file_name }}
+          </button>
+          <span class="text-xs text-fa-muted">{{ formatBytes(row.attachment.file_size_bytes) }}</span>
+          <span
+            v-if="primaryKey === row.key && !row.remove"
+            class="rounded bg-[#eaf7e6] px-1.5 py-0.5 text-[11px] font-semibold text-[#3f8038]"
+          >
+            Primary
+          </span>
+          <span v-if="row.remove" class="text-xs italic text-fa-muted">Will be removed on save</span>
+          <!-- Remove comes BEFORE the description so ml-auto keeps it on the
+               filename's line; the basis-full description then wraps beneath. -->
+          <button
+            type="button"
+            class="ml-auto text-sm font-semibold text-fa-blue hover:underline"
+            @click="toggleRemoveExisting(row)"
+          >
+            {{ row.remove ? 'Undo' : 'Remove' }}
+          </button>
+          <span
+            v-if="row.attachment.description && !row.remove"
+            class="basis-full pl-7 text-xs text-fa-muted"
+          >
+            {{ row.attachment.description }}
+          </span>
+        </li>
 
-    <p v-if="isEmpty" class="py-2 text-sm text-fa-muted">No files attached yet.</p>
+        <!-- STAGED (new, not-yet-uploaded) files -->
+        <li
+          v-for="row in staged"
+          :key="row.key"
+          class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#eef1f4] py-2 last:border-b-0"
+        >
+          <RadioButton
+            v-model="primaryKey"
+            :value="row.key"
+            :input-id="`pri-${row.key}`"
+            title="Set as the primary receipt"
+          />
+          <i :class="iconFor(effectiveType(row.file))" class="text-fa-muted" />
+          <button
+            type="button"
+            class="font-semibold text-fa-blue hover:underline"
+            @click="openStaged(row.file)"
+          >
+            {{ row.file.name }}
+          </button>
+          <span class="text-xs text-fa-muted">{{ formatBytes(row.file.size) }}</span>
+          <span
+            v-if="primaryKey === row.key"
+            class="rounded bg-[#eaf7e6] px-1.5 py-0.5 text-[11px] font-semibold text-[#3f8038]"
+          >
+            Primary
+          </span>
+          <span class="rounded bg-[#fff4e0] px-1.5 py-0.5 text-[11px] font-semibold text-[#a86a00]">
+            Pending upload
+          </span>
+          <button
+            type="button"
+            class="ml-auto text-sm font-semibold text-fa-blue hover:underline"
+            @click="removeStaged(row.key)"
+          >
+            Remove
+          </button>
+          <div class="basis-full pl-7">
+            <InputText
+              v-model="row.description"
+              placeholder="Description (optional)"
+              class="w-full max-w-md"
+              size="small"
+            />
+          </div>
+        </li>
+      </ul>
+
+      <p v-if="isEmpty" class="py-2 text-sm text-fa-muted">No files attached yet.</p>
+    </div>
   </FaCard>
 </template>
