@@ -13,16 +13,25 @@ export const UserSchema = z.object({
 })
 export type User = z.infer<typeof UserSchema>
 
+// The caller's membership role in the scoped organisation. Mirrors the backend
+// Postgres `organisation_role` enum. The role is per-membership (a user can be
+// owner in one org and member in another), so it lives on the organisation, not
+// the user. Used to drive role-based UI (e.g. hiding admin-only actions).
+export const RoleSchema = z.enum(['owner', 'admin', 'member', 'accountant', 'read_only'])
+export type Role = z.infer<typeof RoleSchema>
+
 // The organisation the session is scoped to. Comes from the login RESPONSE, not
 // the token — the PASETO token is encrypted (the SPA can't read it) and only
 // carries the org id anyway, not its name/country.
 // country_code (ISO 3166-1 alpha-2, e.g. 'GB') is REQUIRED: it drives
 // country-scoped features such as which VAT rates apply. If the backend ever
 // omits it, this parse throws and login fails — country_code is a must-have.
+// role is REQUIRED too: the backend always returns it on a successful login.
 export const OrganisationSchema = z.object({
   id: z.string(),
   name: z.string(),
   country_code: z.string(),
+  role: RoleSchema,
 })
 export type Organisation = z.infer<typeof OrganisationSchema>
 

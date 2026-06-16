@@ -115,6 +115,13 @@ type organisationResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	CountryCode string `json:"country_code"` // ISO 3166-1 alpha-2, e.g. 'GB'
+	// Role is the caller's membership role IN this organisation (owner/admin/
+	// member/accountant/read_only). It is per-membership, not a property of the
+	// org itself, but it is scoped to this org and comes from the same
+	// ListOrganisationsForUser row — and, like name/country, it is not inside the
+	// encrypted PASETO token, so we surface it here for the client to drive
+	// role-based UI.
+	Role string `json:"role"`
 }
 
 // loginUserResponse is the JSON returned on a successful login: the PASETO
@@ -262,6 +269,9 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 		ID:          defaultOrg.ID.String(),
 		Name:        defaultOrg.Name,
 		CountryCode: defaultOrg.CountryCode,
+		// OrganisationRole is a string-backed enum; convert it to a plain string
+		// ("owner"/"admin"/...) for the JSON response.
+		Role: string(defaultOrg.Role),
 	}
 
 	// Step 6: mint the PASETO token and return it with the safe user view.

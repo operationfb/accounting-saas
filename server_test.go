@@ -134,7 +134,8 @@ func newTestServer(t *testing.T) *testServer {
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
 	contactService := NewContactService(pool, contacts.New(pool), authQueries)
 	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
-	server := NewServer(service, attachmentService, contactService, projectService, authHandler, tokenMaker, []string{testCORSOrigin})
+	memberService := NewMemberService(authQueries)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
 		server:      server,
@@ -610,6 +611,11 @@ func TestHandleLoginUser(t *testing.T) {
 	}
 	if got.Organisation.CountryCode != "GB" {
 		t.Errorf("organisation.country_code: got %q, want %q", got.Organisation.CountryCode, "GB")
+	}
+	// The response must carry the caller's membership role in the scoped org so
+	// the frontend can drive role-based UI. The seeded dev user is the org owner.
+	if got.Organisation.Role != "owner" {
+		t.Errorf("organisation.role: got %q, want %q", got.Organisation.Role, "owner")
 	}
 
 	// The user object must not leak sensitive fields.

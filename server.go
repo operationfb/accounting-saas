@@ -39,18 +39,20 @@ type Server struct {
 	attachmentService *AttachmentService
 	contactService    *ContactService
 	projectService    *ProjectService
+	memberService     *MemberService
 	authHandler       *AuthHandler
 	tokenMaker        token.Maker
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:    expenseService,
 		attachmentService: attachmentService,
 		contactService:    contactService,
 		projectService:    projectService,
+		memberService:     memberService,
 		authHandler:       authHandler,
 		tokenMaker:        tokenMaker,
 	}
@@ -201,6 +203,16 @@ func (s *Server) registerRoutes() {
 			projectRoutes.GET("/:id", s.handleGetProject)
 			projectRoutes.PUT("/:id", s.handleUpdateProject)
 			projectRoutes.DELETE("/:id", s.handleDeleteProject)
+		}
+
+		// Member routes require a valid login. The organisation is taken from the
+		// bearer token, so the listing is automatically scoped to the caller's org
+		// — and the handler/service additionally restricts it to owners/admins.
+		members := v1.Group("/members")
+		members.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/members → list the org's members (owner/admin only)
+			members.GET("", s.handleListMembers)
 		}
 	}
 }
@@ -509,6 +521,25 @@ type ContactResponse struct {
 	IsActive  bool   `json:"is_active"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// MemberResponse is the JSON returned for one organisation member (a membership
+// joined to its user). It deliberately exposes only what a "Team / Manage users"
+// screen needs — no password hash or other secrets. UUIDs are strings and
+// timestamps are RFC3339; avatar_url and last_login_at are nullable (omitted when
+// absent). role and status are the membership enum/status values, so the UI can
+// badge each member.
+type MemberResponse struct {
+	MembershipID string  `json:"membership_id"`
+	UserID       string  `json:"user_id"`
+	Email        string  `json:"email"`
+	FirstName    string  `json:"first_name"`
+	LastName     string  `json:"last_name"`
+	Role         string  `json:"role"`   // owner | admin | member | accountant | read_only
+	Status       string  `json:"status"` // active | invited | suspended | deactivated
+	AvatarURL    *string `json:"avatar_url,omitempty"`
+	MemberSince  string  `json:"member_since"` // RFC3339 (membership created_at)
+	LastLoginAt  *string `json:"last_login_at,omitempty"`
 }
 
 // =============================================================================
@@ -997,4 +1028,24 @@ func (s *Server) handleDeleteProject(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// =============================================================================
+// MEMBER HANDLERS
+// =============================================================================
+
+// handleListMembers handles GET /api/v1/members — every member of the caller's
+// organisation. The org is taken from the token; the service restricts this to
+// owners/admins (a plain member gets 403).
+func (s *Server) handleListMembers(c *gin.Context) {
+	list, err := s.memberService.ListMembers(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": list})
 }

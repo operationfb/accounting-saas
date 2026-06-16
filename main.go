@@ -107,6 +107,10 @@ func main() {
 	projectQueries := projects.New(pool)
 	projectService := NewProjectService(pool, projectQueries, authQueries, contactQueries)
 
+	// Members: a thin, read-only service over the auth queries for listing an
+	// organisation's members (owner/admin only). Reuses the shared authQueries.
+	memberService := NewMemberService(authQueries)
+
 	// -------------------------------------------------------------------------
 	// Auth wiring.
 	//
@@ -239,7 +243,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.
