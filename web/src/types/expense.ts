@@ -35,6 +35,7 @@ export const ListExpensesResponseSchema = z.object({
 // superset of the lean list item with category name, VAT rate/status, FX, etc.
 export const ExpenseDetailSchema = z.object({
   id: z.string(),
+  user_id: z.string(), // the claimant — pre-fills the edit form's "on behalf of" picker
   status: z.string(),
   dated_on: z.string(),
   description: z.string(),
@@ -118,6 +119,9 @@ export interface CreateExpenseRequest {
   supplier_vat_number?: string
   invoice_number?: string
   receipt_reference?: string
+  // The claimant the expense is for. Omitted → the caller (the normal case).
+  // Setting it to another user is owner/admin-only and re-authorised server-side.
+  user_id?: string
 }
 
 // POST /api/v1/expenses → 201 { "expense": <lean ExpenseResponse> }. We only

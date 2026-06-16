@@ -254,6 +254,11 @@ type CreateExpenseRequest struct {
 	SupplierVATNo    *string `json:"supplier_vat_number"`
 	InvoiceNumber    *string `json:"invoice_number"`
 
+	// Optional claimant. When an owner/admin records an expense on behalf of
+	// someone else, this is that person's user id. Absent (nil) → the expense is
+	// for the caller (the normal case). Authorised + validated in the service.
+	UserID *string `json:"user_id" binding:"omitempty,uuid"`
+
 	// VAT
 	VATRateID *string `json:"vat_rate_id"` // UUID of the applicable VAT rate
 	VATAmount *string `json:"vat_amount"`  // pounds, e.g. "3.33"; used only for non-fixed-ratio rates (ignored for fixed-ratio)
@@ -323,6 +328,7 @@ type ExpenseResponse struct {
 // stays as pound strings; optional fields are omitted when null.
 type ExpenseDetailResponse struct {
 	ID          string `json:"id"`
+	UserID      string `json:"user_id"` // claimant — raw FK for the edit form's "on behalf of" picker
 	Status      string `json:"status"`
 	DatedOn     string `json:"dated_on"`
 	Description string `json:"description"`

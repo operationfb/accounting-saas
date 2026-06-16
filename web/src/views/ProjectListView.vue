@@ -4,13 +4,13 @@
 // hand-rolled Tailwind table with the fa-* theme colours, and a
 // loading/error/empty/data state machine.
 //
-// Scope (per the approved plan): the TABLE is real data; the cheap controls
-// (A–Z filter, per-page, Grid/List) work client-side over the loaded list. The
-// saved-view dropdown and the "Add New Project" button are faithful but INERT
-// placeholders — project entry/edit lands in a later change, so the project
-// name is plain text (nowhere to navigate yet). The list API returns only
-// contact_id, so we also fetch contacts and join by id to show a client name.
+// Scope: the TABLE is real data; the cheap controls (A–Z filter, per-page,
+// Grid/List) work client-side over the loaded list. "Add New Project" opens the
+// entry form and a project name opens it in edit mode; the saved-view dropdown is
+// still an inert placeholder. The list API returns only contact_id, so we also
+// fetch contacts and join by id to show a client name.
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Button from 'primevue/button'
@@ -27,6 +27,16 @@ const projects = ref<Project[]>([])
 const contactNames = ref<Map<string, string>>(new Map())
 const loading = ref(true)
 const error = ref('')
+
+const router = useRouter()
+
+// The entry form doubles as the edit form (no separate detail view for projects).
+function newProject() {
+  router.push('/projects/new')
+}
+function openEdit(id: string) {
+  router.push(`/projects/${id}/edit`)
+}
 
 // Saved-view dropdown — rendered but static (no saved-views feature yet).
 const savedView = ref('All projects')
@@ -146,8 +156,7 @@ onMounted(load)
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-[22px] font-bold">Projects</h1>
       <div class="flex gap-2.5">
-        <!-- Inert until the project entry view lands (out of scope here). -->
-        <Button label="Add New Project" disabled />
+        <Button label="Add New Project" @click="newProject" />
       </div>
     </div>
 
@@ -233,8 +242,13 @@ onMounted(load)
                     class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#eef1f4] text-xs font-bold text-fa-muted"
                     >{{ firstLetter(p) }}</span
                   >
-                  <!-- Plain text: no project detail/edit view yet. -->
-                  <span class="font-semibold text-fa-text">{{ p.name }}</span>
+                  <button
+                    type="button"
+                    class="text-left font-semibold text-fa-blue hover:underline"
+                    @click="openEdit(p.id)"
+                  >
+                    {{ p.name }}
+                  </button>
                 </div>
               </td>
               <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle text-fa-muted">
@@ -267,7 +281,13 @@ onMounted(load)
                 >{{ firstLetter(p) }}</span
               >
               <div>
-                <span class="font-semibold text-fa-text">{{ p.name }}</span>
+                <button
+                  type="button"
+                  class="block text-left font-semibold text-fa-blue hover:underline"
+                  @click="openEdit(p.id)"
+                >
+                  {{ p.name }}
+                </button>
                 <div class="text-xs text-fa-muted">{{ contactName(p) }}</div>
               </div>
             </div>

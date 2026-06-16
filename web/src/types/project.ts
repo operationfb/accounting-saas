@@ -47,3 +47,35 @@ export type Project = z.infer<typeof ProjectSchema>
 export const ListProjectsResponseSchema = z.object({
   projects: z.array(ProjectSchema).nullish(),
 })
+
+// GET /:id, POST, and PUT all return a single project as { project: {...} }.
+export const GetProjectResponseSchema = z.object({
+  project: ProjectSchema,
+})
+
+// Body for POST /api/v1/projects (create) and PUT /api/v1/projects/:id (update) —
+// the two share the same shape. Mirrors the Go CreateProjectRequest: only
+// contact_id and name are required; omit an optional field to leave it at the
+// backend default. Money/budget amounts are POUND strings and times are "H:MM"
+// (or decimal-hours) strings — the backend parses + converts them to pence/minutes.
+export interface CreateProjectRequest {
+  contact_id: string
+  name: string
+  status?: string
+  contract_po_number?: string
+  project_invoice_sequence?: boolean
+  currency?: string
+  // Budget: send budget_type plus the ONE matching amount; omit all for "no budget".
+  budget_type?: string // hours | days | money
+  budget_hours?: string // "H:MM" or decimal hours
+  budget_days?: number
+  budget_money?: string // pound string
+  hours_per_day?: string // "H:MM" or decimal hours
+  billing_rate?: string // pound string
+  billing_rate_unit?: string // per_hour | per_day
+  billing_rate_plus_vat?: boolean
+  is_ir35?: boolean
+  start_date?: string // "YYYY-MM-DD"
+  end_date?: string // "YYYY-MM-DD"
+  include_unbillable_time?: boolean
+}

@@ -30,9 +30,13 @@ import {
 import { toISODate, computeFixedVatPounds } from '@/lib/format'
 import type { ExpenseCategory, VatRate, CreateExpenseRequest, ExpenseDetail } from '@/types/expense'
 import type { ApiError } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth'
+import { listMembers } from '@/services/members.service'
+import type { OrganisationMember } from '@/types/member'
 
 const router = useRouter()
 const route = useRoute()
+const auth = useAuthStore()
 
 // Edit mode iff we're on /expenses/:id/edit (the create route has no :id param).
 const editId = typeof route.params.id === 'string' ? route.params.id : undefined
@@ -146,8 +150,47 @@ async function loadVatRates() {
   }
 }
 
+// --- claimant (who the expense is for) ---
+// Only an owner/admin may file on behalf of someone else; everyone else gets a
+// disabled dropdown pinned to themselves. The members list backs the admin picker;
+// non-admins never call the (admin-only) /members endpoint.
+const members = ref<OrganisationMember[]>([])
+const membersLoading = ref(false)
+const membersError = ref('')
+
+async function loadMembers() {
+  membersLoading.value = true
+  membersError.value = ''
+  try {
+    members.value = await listMembers()
+  } catch (err) {
+    membersError.value = (err as ApiError)?.message ?? 'Could not load the people list.'
+  } finally {
+    membersLoading.value = false
+  }
+}
+
+// "First Last", falling back to the email when both names are blank.
+function personName(p: { first_name?: string; last_name?: string; email: string }): string {
+  return `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || p.email
+}
+
+// Claimant options: owner/admin → every ACTIVE member (the endpoint returns all
+// statuses, but you can only file for an active member); everyone else → just
+// themselves (the field is disabled, so a one-item list is correct).
+const claimantOptions = computed(() => {
+  if (auth.isOrgAdmin) {
+    return members.value
+      .filter((m) => m.status === 'active')
+      .map((m) => ({ label: personName(m), value: m.user_id }))
+  }
+  const u = auth.user
+  return u ? [{ label: personName(u), value: u.id }] : []
+})
+
 // --- wired form state ---
 const form = reactive({
+  claimantId: auth.user?.id ?? '', // who the expense is for; defaults to me
   category: '',
   datedOn: new Date() as Date | null, // default to today (create)
   currency: 'GBP',
@@ -218,13 +261,18 @@ async function loadForEdit() {
   notEditable.value = false
   try {
     // Reference data FIRST so the pre-selected options exist on the dropdowns.
-    await Promise.all([loadCategories(), loadVatRates()])
+    // For an admin, also load members so the disabled claimant picker can show the
+    // claimant's name (an admin may be editing another user's draft).
+    const refData = [loadCategories(), loadVatRates()]
+    if (auth.isOrgAdmin) refData.push(loadMembers())
+    await Promise.all(refData)
     const exp = await getExpense(editId)
     if (exp.status !== 'DRAFT' && exp.status !== 'REJECTED') {
       notEditable.value = true
       return
     }
     hydrating.value = true
+    form.claimantId = exp.user_id // the claimant (shown read-only in edit mode)
     form.category = exp.category_id
     form.datedOn = new Date(`${exp.dated_on}T00:00:00`) // local midnight, no tz shift
     form.currency = exp.currency
@@ -276,6 +324,8 @@ onMounted(() => {
   } else {
     loadCategories()
     loadVatRates()
+    // Only owners/admins get the member picker; everyone else is pinned to self.
+    if (auth.isOrgAdmin) loadMembers()
   }
 })
 
@@ -355,10 +405,14 @@ function buildPayload(): CreateExpenseRequest {
     supplier_vat_number: opt(form.supplierVat),
     invoice_number: opt(form.invoiceNumber),
     receipt_reference: opt(form.receiptReference),
+    // Claimant. Defaults to self; only owner/admin can pick someone else. Sent on
+    // create; the update endpoint ignores it (the claimant isn't editable).
+    user_id: form.claimantId || undefined,
   }
 }
 
 function resetForm() {
+  form.claimantId = auth.user?.id ?? '' // back to "for me" for the next expense
   form.category = ''
   form.datedOn = new Date()
   form.currency = 'GBP'
@@ -729,6 +783,27 @@ async function onSmartFilePicked(e: Event) {
       />
 
       <FaCard title="Expense details" note="Required fields *">
+        <FormRow label="Claimant" label-for="claimant" required>
+          <Select
+            id="claimant"
+            v-model="form.claimantId"
+            :options="claimantOptions"
+            option-label="label"
+            option-value="value"
+            :placeholder="membersLoading ? 'Loading…' : 'Select a person'"
+            :loading="membersLoading"
+            :disabled="isEdit || !auth.isOrgAdmin"
+            class="w-72"
+          />
+          <p v-if="membersError" class="text-xs text-[#c0392b]">
+            {{ membersError }}
+            <button type="button" class="underline" @click="loadMembers">Retry</button>
+          </p>
+          <p v-if="!isEdit && !auth.isOrgAdmin" class="text-xs text-fa-muted">
+            Only an owner or admin can record an expense for someone else.
+          </p>
+        </FormRow>
+
         <FormRow label="Category" label-for="category" required>
           <Select
             id="category"

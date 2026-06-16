@@ -807,6 +807,186 @@ func TestExpenseOwnership_MemberScoped(t *testing.T) {
 }
 
 // =============================================================================
+// CREATE ON BEHALF — an owner/admin records an expense for another user.
+// The body's user_id picks the claimant; created_by_user_id stays the caller.
+// =============================================================================
+
+// strPtr returns a pointer to s — for setting optional *string request fields.
+func strPtr(s string) *string { return &s }
+
+// newDeactivatedMemberUser mirrors newMemberUser but inserts the membership with
+// status='deactivated', to prove a non-active claimant is rejected. Same cleanup.
+func newDeactivatedMemberUser(t *testing.T, ts *testServer, orgID string) string {
+	t.Helper()
+	id := uuid.NewString()
+	email := "deactivated-" + id + "@test.local"
+	ctx := context.Background()
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO users (id, email, first_name, last_name, is_active, email_verified_at)
+		 VALUES ($1, $2, 'Test', 'Deactivated', TRUE, now())`, id, email); err != nil {
+		t.Fatalf("newDeactivatedMemberUser: insert user: %v", err)
+	}
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO organisation_memberships (organisation_id, user_id, role, status)
+		 VALUES ($1, $2, 'member', 'deactivated')`, orgID, id); err != nil {
+		t.Fatalf("newDeactivatedMemberUser: insert membership: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM expenses WHERE user_id = $1`, id)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_memberships WHERE user_id = $1`, id)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	})
+	return id
+}
+
+// createdByUserID reads an expense's recorder (created_by_user_id) straight from
+// the DB — it is deliberately not exposed in the API response.
+func createdByUserID(t *testing.T, ts *testServer, expenseID string) string {
+	t.Helper()
+	var createdBy string
+	if err := ts.pool.QueryRow(context.Background(),
+		"SELECT created_by_user_id::text FROM expenses WHERE id = $1", expenseID).Scan(&createdBy); err != nil {
+		t.Fatalf("read created_by_user_id for %s: %v", expenseID, err)
+	}
+	return createdBy
+}
+
+// onBehalfBody builds a minimal valid create body that claims for claimantID.
+func onBehalfBody(t *testing.T, ts *testServer, claimantID string) CreateExpenseRequest {
+	t.Helper()
+	return CreateExpenseRequest{
+		CategoryID:       randomCategoryUUID(t, ts.pool),
+		DatedOn:          util.RandomDatedOn(),
+		Description:      util.RandomExpenseDescription(),
+		CurrencyCode:     "GBP",
+		GrossValuePounds: util.RandomGrossValue(),
+		UserID:           strPtr(claimantID),
+	}
+}
+
+func TestHandleCreateExpense_OnBehalf(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("owner records on behalf of a member", func(t *testing.T) {
+		member := newMemberUser(t, ts, devOrgID)
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, member))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		// The claimant is the member...
+		if got.UserID != member {
+			t.Errorf("user_id (claimant): got %q, want member %q", got.UserID, member)
+		}
+		// ...but the recorder is the owner who actually typed it.
+		if cb := createdByUserID(t, ts, got.ID); cb != devUserID {
+			t.Errorf("created_by_user_id: got %q, want caller/owner %q", cb, devUserID)
+		}
+	})
+
+	t.Run("member cannot record on behalf of another user", func(t *testing.T) {
+		member := newMemberUser(t, ts, devOrgID)
+
+		// Member tries to claim it for the owner (someone else) → 403.
+		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, devUserID))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("member on behalf of another: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("owner on behalf of a non-member is rejected", func(t *testing.T) {
+		stranger := uuid.NewString() // a user id with no membership in this org
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, stranger))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("non-member claimant: expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("owner on behalf of a deactivated member is rejected", func(t *testing.T) {
+		deactivated := newDeactivatedMemberUser(t, ts, devOrgID)
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, deactivated))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("deactivated claimant: expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("omitted user_id defaults to the caller", func(t *testing.T) {
+		body := onBehalfBody(t, ts, "") // start from a valid body...
+		body.UserID = nil               // ...then omit the claimant entirely.
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeExpense(t, rec)
+		// This expense is owned by the dev owner, so no member-helper cleans it up.
+		t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM expenses WHERE id = $1`, got.ID) })
+
+		if got.UserID != devUserID {
+			t.Errorf("claimant should default to caller: got %q, want %q", got.UserID, devUserID)
+		}
+		if cb := createdByUserID(t, ts, got.ID); cb != devUserID {
+			t.Errorf("created_by should be caller: got %q, want %q", cb, devUserID)
+		}
+	})
+
+	t.Run("member may pass their own id (not on-behalf, so not forbidden)", func(t *testing.T) {
+		member := newMemberUser(t, ts, devOrgID)
+
+		// Passing your own user_id is a no-op claimant-wise and must NOT require admin.
+		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, member))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("member self-claim: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		if got := decodeExpense(t, rec); got.UserID != member {
+			t.Errorf("user_id: got %q, want member %q", got.UserID, member)
+		}
+	})
+
+	t.Run("detail endpoint exposes the claimant", func(t *testing.T) {
+		member := newMemberUser(t, ts, devOrgID)
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, member))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("setup create: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		id := decodeExpense(t, rec).ID
+
+		// GET the detail as the owner and confirm user_id is the member.
+		getRec := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/"+id, nil)
+		req.Header.Set("Authorization", bearer(t, ts, devUserID, devOrgID))
+		ts.server.router.ServeHTTP(getRec, req)
+		if getRec.Code != http.StatusOK {
+			t.Fatalf("get detail: expected 200, got %d — body: %s", getRec.Code, getRec.Body.String())
+		}
+		var resp struct {
+			Expense ExpenseDetailResponse `json:"expense"`
+		}
+		if err := json.Unmarshal(getRec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode detail: %v — body: %s", err, getRec.Body.String())
+		}
+		if resp.Expense.UserID != member {
+			t.Errorf("detail user_id (claimant): got %q, want member %q", resp.Expense.UserID, member)
+		}
+	})
+
+	t.Run("malformed user_id is a 400", func(t *testing.T) {
+		body := onBehalfBody(t, ts, "")
+		body.UserID = strPtr("not-a-uuid") // fails the binding:"omitempty,uuid" tag
+
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("malformed user_id: expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// =============================================================================
 // CORS
 // =============================================================================
 

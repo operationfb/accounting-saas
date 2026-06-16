@@ -35,6 +35,13 @@ export const useAuthStore = defineStore('auth', {
     // Otherwise we trust it until the server rejects a request with 401.
     isAuthenticated: (state): boolean =>
       !!state.token && (state.expiresAt === null || Date.now() < state.expiresAt),
+
+    // Whether the caller may act as an organisation admin — e.g. file an expense
+    // on behalf of another user. Mirrors the backend isOrgAdmin: owner or admin
+    // only. The role is per-organisation and arrives in the login response
+    // (organisation.role), so it reads off the scoped organisation.
+    isOrgAdmin: (state): boolean =>
+      state.organisation?.role === 'owner' || state.organisation?.role === 'admin',
   },
 
   actions: {

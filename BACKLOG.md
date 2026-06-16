@@ -8,14 +8,6 @@ _Last updated: 2026-06-16_
 
 ## Auth & authorization
 
-- **On-behalf expense creation.** Today a user can only create expenses for
-  themselves — `CreateExpense` forces `user_id` = `created_by_user_id` = the
-  authenticated caller. The schema deliberately separates `created_by_user_id`
-  from the claimant `user_id` to allow an admin to enter an expense on behalf of
-  another user. Wire this up (e.g. an optional `on_behalf_of_user_id` in the
-  request, permitted only for owner/admin). _File: `expense_service.go`
-  (`CreateExpense`)._
-
 - **Widen org-wide read beyond owner/admin.** `isOrgAdmin` currently grants
   read-all to `owner` + `admin` only. The schema documents `accountant` and
   `read_only` as read-all financial roles — decide whether they should also see
@@ -109,6 +101,22 @@ _Last updated: 2026-06-16_
   whole org's contacts, ordered by name only, unpaged. Add name/email search, an
   active-only filter, and pagination. _Files: `contact_service.go`, `server.go`,
   `db/queries/contacts.sql`._
+
+## Projects (frontend / SPA)
+
+- **Inline "add new contact" from the project form.** The New/Edit Project form's
+  "Add a new contact" link currently navigates to `/contacts/new`, discarding any
+  unsaved project input. Replace with an inline modal (or a draft-persistence /
+  return-with-new-contact flow) so the half-filled project survives. _File:
+  `web/src/views/ProjectEntryView.vue`._
+- **"plus VAT" rendered as a checkbox.** The FreeAgent mockup shows "plus VAT" as
+  static text beside the billing rate; we render it as a checkbox bound to
+  `billing_rate_plus_vat` (so edit preserves the stored value). Revisit if a
+  static "always plus VAT" presentation is preferred. _File:
+  `web/src/views/ProjectEntryView.vue`._
+- **Project delete from the UI.** `DELETE /api/v1/projects/:id` exists but the SPA
+  exposes no delete affordance (list or form). Add when needed. _Files:
+  `web/src/views/ProjectListView.vue`, `web/src/services/projects.service.ts`._
 
 ## Attachments & document storage
 

@@ -282,16 +282,50 @@ func (s *ExpenseService) CreateExpense(
 	// -------------------------------------------------------------------------
 
 	// Authorisation: the caller must be an active member of the organisation.
-	// We don't use the role for creation (everyone creates only for themselves),
-	// but this refuses non-members and deactivated members.
-	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+	// We capture their role so we can gate the "on behalf of" path below
+	// (owner/admin only); authorize already refuses non-members and deactivated
+	// members.
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
 		return nil, err
 	}
 
-	// The claimant and the organisation come from the authenticated token, not
-	// from the request body — a user can only create expenses for themselves.
+	// The organisation comes from the authenticated token, never the request body.
 	organisationUUID := authOrgID
-	userUUID := authUserID
+
+	// Resolve the claimant (whose expense this is). Default: the caller records it
+	// for themselves — claimant == caller, which is the overwhelming common case.
+	// An owner/admin MAY record on behalf of another active member by passing
+	// user_id; we still keep created_by_user_id = caller below (who actually typed it).
+	claimantUUID := authUserID
+	if req.UserID != nil && *req.UserID != "" {
+		parsed, err := uuid.Parse(*req.UserID) // binding already validated shape; parse for the value
+		if err != nil {
+			return nil, ErrValidation("user_id is not a valid UUID", err)
+		}
+		if parsed != authUserID {
+			// On-behalf entry. Only owners/admins may do it.
+			if !isOrgAdmin(role) {
+				return nil, ErrForbidden("only organisation owners and admins can record an expense on behalf of another user")
+			}
+			// The claimant must be an ACTIVE member of THIS organisation. The lookup
+			// is org-scoped, so a user id from another tenant simply isn't found.
+			m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
+				OrganisationID: authOrgID,
+				UserID:         parsed,
+			})
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil, ErrValidation("user_id is not a member of this organisation", err)
+				}
+				return nil, ErrInternal(err)
+			}
+			if m.Status != "active" {
+				return nil, ErrValidation("user_id is not an active member of this organisation", nil)
+			}
+			claimantUUID = parsed
+		}
+	}
 
 	categoryUUID, err := uuid.Parse(req.CategoryID)
 	if err != nil {
@@ -356,8 +390,8 @@ func (s *ExpenseService) CreateExpense(
 	// -------------------------------------------------------------------------
 	params := expenses.CreateExpenseParams{
 		OrganisationID:        organisationUUID,
-		UserID:                userUUID,
-		CreatedByUserID:       userUUID, // same as claimant for now; admin entry handled later
+		UserID:                claimantUUID, // the claimant (may be someone else for admin-on-behalf entry)
+		CreatedByUserID:       authUserID,   // always the caller — audit of who actually recorded it
 		CategoryID:            categoryUUID,
 		DatedOn:               pgDateFromTime(datedOn), // helper below converts time.Time → pgx date
 		Description:           req.Description,
@@ -898,6 +932,7 @@ func vatRateToResponse(r expenses.ListVatRatesByCountryRow) *VATRateResponse {
 func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
 	return &ExpenseDetailResponse{
 		ID:          e.ID.String(),
+		UserID:      e.UserID.String(), // claimant — lets the edit form prefill the "on behalf of" picker
 		Status:      e.Status,
 		DatedOn:     e.DatedOn.Time.Format("2006-01-02"),
 		Description: e.Description,
