@@ -12,6 +12,16 @@ import (
 
 type Querier interface {
 	// -----------------------------------------------------------------------------
+	// ApplySuggestedCategory
+	// Set the category on an UNCONFIRMED capture from the dictionary suggestion. The
+	// needs_review = TRUE guard is the safety rail: it means a human has not yet
+	// chosen a category, so we can only ever replace the placeholder — never clobber
+	// a category a person has confirmed. :exec (not :one) so that a no-op (e.g. the
+	// capture was confirmed in the meantime → zero rows) is NOT treated as an error.
+	// Org-scoped, soft-delete aware.
+	// -----------------------------------------------------------------------------
+	ApplySuggestedCategory(ctx context.Context, arg ApplySuggestedCategoryParams) error
+	// -----------------------------------------------------------------------------
 	// CountExpenseAttachments
 	// How many files an expense already has. The service calls this when a new file
 	// is uploaded: if the count is 0, this upload is the FIRST one and therefore
@@ -195,6 +205,23 @@ type Querier interface {
 	// This is the query you'd use for the "view expense" detail page.
 	// -----------------------------------------------------------------------------
 	GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithDetailsParams) (VExpensesFull, error)
+	// =============================================================================
+	// SECTION 6b: SUPPLIER → CATEGORY DICTIONARY (auto-categorisation)
+	//
+	// The supplier_category_map table is POPULATED automatically by the
+	// learn_supplier_category() trigger (see db/schema/schema.sql) from confirmed
+	// expenses. These two queries are the CONSUME side: read a remembered category
+	// for a supplier, and apply it to an unconfirmed Smart Upload capture.
+	// =============================================================================
+	// -----------------------------------------------------------------------------
+	// GetSuggestedCategory
+	// Look up the category this organisation usually files a supplier under. The
+	// supplier name is normalised here with the SAME rule the trigger uses to build
+	// supplier_key — lower(btrim(...)) — so reads and writes always match. Returns no
+	// row when the supplier has never been seen (caller treats that as "no suggestion").
+	// Org-scoped; uses the uq_supplier_category unique index.
+	// -----------------------------------------------------------------------------
+	GetSuggestedCategory(ctx context.Context, arg GetSuggestedCategoryParams) (uuid.UUID, error)
 	// -----------------------------------------------------------------------------
 	// GetVatRate
 	// Fetch a single VAT rate by id — used when applying VAT to an expense. The

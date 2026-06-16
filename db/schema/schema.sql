@@ -443,6 +443,44 @@ CREATE INDEX idx_expense_audit_expense ON expense_audit_log (expense_id, changed
 CREATE INDEX idx_expense_audit_org     ON expense_audit_log (organisation_id, changed_at);
 
 
+-- -----------------------------------------------------------------------------
+-- supplier_category_map
+-- A learned "dictionary" mapping each supplier to the category an organisation
+-- usually files it under, so future expenses (especially Smart Upload captures,
+-- where the category starts as a placeholder) can be auto-categorised.
+--
+-- This is DERIVED data: it is populated automatically by the learn_supplier_category()
+-- trigger below, from CONFIRMED expenses only (needs_review = FALSE — i.e. a human
+-- has signed off the categorisation). It is therefore safe to wipe and rebuild
+-- from the expenses table at any time; nothing here is a source of truth.
+--
+-- Strategy: LAST-WRITE-WINS. There is exactly one row per (organisation, supplier);
+-- the most recent confirmed save overwrites the remembered category. (We chose
+-- this over a frequency-weighted table for simplicity — see the decision doc.)
+--
+-- supplier_key is the supplier name NORMALISED to lower(btrim(...)) so that
+-- 'Amazon', 'AMAZON' and '  amazon ' all collapse to one entry. The same
+-- normalisation is applied on lookup (see GetSuggestedCategory) so reads and
+-- writes always agree.
+--
+-- Multi-tenancy: organisation_id scopes every row and is the leading column of
+-- the unique key, so one tenant's learned categories can never leak to another.
+-- -----------------------------------------------------------------------------
+CREATE TABLE supplier_category_map (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    organisation_id UUID         NOT NULL,                       -- tenant scope
+    supplier_key    VARCHAR(200) NOT NULL,                       -- normalised supplier: lower(btrim(supplier_name))
+    category_id     UUID         NOT NULL REFERENCES expense_categories(id),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+
+    -- One remembered category per supplier per org (last-write-wins). This UNIQUE
+    -- constraint also backs the (organisation_id, supplier_key) lookup index, so
+    -- no separate index is needed.
+    CONSTRAINT uq_supplier_category UNIQUE (organisation_id, supplier_key)
+);
+
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -476,6 +514,68 @@ CREATE TRIGGER trg_expense_attachments_updated_at
 CREATE TRIGGER trg_expense_recurrence_updated_at
     BEFORE UPDATE ON expense_recurrence
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Reuse the same stamp-on-write trigger for the learned dictionary table.
+CREATE TRIGGER trg_supplier_category_map_updated_at
+    BEFORE UPDATE ON supplier_category_map
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- -----------------------------------------------------------------------------
+-- Trigger: learn_supplier_category()
+-- Populates supplier_category_map whenever an expense is saved, so the org builds
+-- up a "this supplier → this category" memory for auto-categorisation.
+--
+-- The single most important rule: only learn from a CONFIRMED expense
+-- (needs_review = FALSE). A Smart Upload capture is needs_review = TRUE while it
+-- carries the placeholder 'Sundries' category and again after OCR fills the
+-- supplier but BEFORE a human picks the real category — learning then would teach
+-- the dictionary "supplier → Sundries", poisoning it. Waiting for needs_review to
+-- be FALSE means we only ever learn a category a person actually stood behind.
+--
+-- It is an AFTER trigger because it writes to a DIFFERENT table (it doesn't modify
+-- the expense row); the return value of an AFTER row trigger is ignored, so we
+-- RETURN NULL by convention.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION learn_supplier_category()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Gate 1: only confirmed rows, with a real (non-blank) supplier, not deleted.
+    IF NEW.needs_review
+       OR NEW.deleted_at IS NOT NULL
+       OR NEW.supplier_name IS NULL
+       OR btrim(NEW.supplier_name) = '' THEN
+        RETURN NULL;
+    END IF;
+
+    -- Gate 2 (UPDATE only): skip unless something we actually learn from changed.
+    -- Without this, editing an unrelated field on an OLD expense (e.g. fixing a
+    -- typo, or a manager approving it) would re-run the INSERT below and could
+    -- CLOBBER a newer supplier→category mapping that a later expense established.
+    -- We relearn only when the supplier or category changed, or at the moment the
+    -- capture is confirmed (needs_review flips TRUE → FALSE).
+    IF TG_OP = 'UPDATE'
+       AND NEW.supplier_name IS NOT DISTINCT FROM OLD.supplier_name
+       AND NEW.category_id   IS NOT DISTINCT FROM OLD.category_id
+       AND NOT (OLD.needs_review AND NOT NEW.needs_review) THEN
+        RETURN NULL;
+    END IF;
+
+    -- Last-write-wins upsert: one row per (org, normalised supplier); the latest
+    -- confirmed save overwrites the remembered category. updated_at is stamped by
+    -- the BEFORE UPDATE trigger above on the DO UPDATE path.
+    INSERT INTO supplier_category_map (organisation_id, supplier_key, category_id)
+    VALUES (NEW.organisation_id, lower(btrim(NEW.supplier_name)), NEW.category_id)
+    ON CONFLICT (organisation_id, supplier_key) DO UPDATE
+        SET category_id = EXCLUDED.category_id;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_expenses_learn_supplier
+    AFTER INSERT OR UPDATE ON expenses
+    FOR EACH ROW EXECUTE FUNCTION learn_supplier_category();
 
 
 -- =============================================================================
@@ -568,6 +668,8 @@ COMMENT ON TABLE expense_attachments    IS 'Receipt/invoice files attached to an
 COMMENT ON TABLE expense_recurrence     IS 'Recurrence schedule for repeating expenses (e.g. monthly subscriptions).';
 COMMENT ON TABLE expense_audit_log      IS 'Immutable audit trail of all expense changes. Never delete rows from this table.';
 COMMENT ON TABLE expense_categories     IS 'Chart of Accounts categories available for expenses. Maps to nominal codes.';
+COMMENT ON TABLE supplier_category_map  IS 'Learned supplier→category dictionary for auto-categorisation. Derived data: populated by the learn_supplier_category() trigger from CONFIRMED expenses only (needs_review = FALSE). Safe to rebuild from expenses.';
+COMMENT ON COLUMN supplier_category_map.supplier_key IS 'Supplier name normalised to lower(btrim(...)) so case/whitespace variants collapse. Apply the same normalisation when looking up.';
 COMMENT ON TABLE vat_rates              IS 'Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.';
 
 COMMENT ON COLUMN expenses.gross_value_minor         IS 'Total amount in minor units of expense currency (e.g. pence for GBP). Negative = owed to claimant.';

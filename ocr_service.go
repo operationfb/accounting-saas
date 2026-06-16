@@ -31,6 +31,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +39,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
@@ -238,6 +240,16 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 		return fmt.Errorf("marshal extracted data: %w", err)
 	}
 
+	// Auto-categorise from the supplier→category dictionary (the org's learned
+	// "memory" of where it files each supplier). We look up the supplier that will
+	// END UP on the row — the user's if they typed one, otherwise OCR's — mirroring
+	// FillExpenseFromOCR's COALESCE(existing, new). A hit replaces the skeleton's
+	// placeholder category below; a miss leaves the placeholder for the user to set.
+	suggestedCategory, hasSuggestion, err := s.suggestCategory(ctx, orgID, exp, res)
+	if err != nil {
+		return err
+	}
+
 	return s.withTx(ctx, func(qtx *expenses.Queries) error {
 		if _, err := qtx.UpdateAttachmentOCRStatus(ctx, expenses.UpdateAttachmentOCRStatusParams{
 			ID:               att.ID,
@@ -248,7 +260,7 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 		}); err != nil {
 			return err
 		}
-		_, err := qtx.FillExpenseFromOCR(ctx, expenses.FillExpenseFromOCRParams{
+		if _, err := qtx.FillExpenseFromOCR(ctx, expenses.FillExpenseFromOCRParams{
 			ID:                    att.ExpenseID,
 			OrganisationID:        orgID,
 			SupplierName:          pgNullText(res.SupplierName),
@@ -261,9 +273,56 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 			VatValueMinor:         vat,
 			NativeVatValueMinor:   vat,
 			OcrConfidence:         pgNumericFromDecimal(res.Confidence),
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+
+		// Apply the remembered category, if we found one. ApplySuggestedCategory is
+		// guarded in SQL to only touch a still-unconfirmed capture (needs_review =
+		// TRUE), so it can replace the placeholder but never a human's chosen category.
+		if hasSuggestion {
+			if err := qtx.ApplySuggestedCategory(ctx, expenses.ApplySuggestedCategoryParams{
+				ID:             att.ExpenseID,
+				OrganisationID: orgID,
+				CategoryID:     suggestedCategory,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+}
+
+// suggestCategory looks up the category this org usually files the expense's
+// supplier under, for auto-categorisation. The supplier used is the one that
+// will end up on the row (existing user value, else OCR's), and it is normalised
+// inside the query to match how the learn trigger built supplier_key. Returns
+// (_, false, nil) when there is no supplier or no remembered mapping — a normal
+// "no suggestion" outcome, not an error.
+func (s *OcrService) suggestCategory(ctx context.Context, orgID uuid.UUID, exp expenses.Expense, res *ExtractionResult) (uuid.UUID, bool, error) {
+	supplier := ""
+	if exp.SupplierName.Valid {
+		supplier = exp.SupplierName.String
+	}
+	if strings.TrimSpace(supplier) == "" && res.SupplierName != nil {
+		supplier = *res.SupplierName
+	}
+	if strings.TrimSpace(supplier) == "" {
+		return uuid.Nil, false, nil
+	}
+
+	cat, err := s.queries.GetSuggestedCategory(ctx, expenses.GetSuggestedCategoryParams{
+		OrganisationID: orgID,
+		SupplierName:   supplier,
+	})
+	switch {
+	case err == nil:
+		return cat, true, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return uuid.Nil, false, nil // supplier not seen before — keep the placeholder
+	default:
+		return uuid.Nil, false, fmt.Errorf("lookup suggested category: %w", err)
+	}
 }
 
 // markTerminal records a terminal OCR state (FAILED / SKIPPED, or COMPLETE when

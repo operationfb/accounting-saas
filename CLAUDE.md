@@ -59,11 +59,12 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── server_test.go       # Integration tests (real Postgres) for the HTTP handlers
 ├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
 ├── ocr_service_test.go  # OCR/Smart Upload tests (real Postgres + GCS; Document AI faked) + money-conversion unit test
+├── supplier_category_test.go  # supplier→category dictionary: learn-trigger tests (DB) + auto-categorise tests (Postgres + GCS)
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth)
 │
 ├── db/
 │   ├── schema/          # Source-of-truth DDL (full CREATE TABLE files, not migrations)
-│   │   ├── schema.sql        # expenses module + the set_updated_at() trigger function
+│   │   ├── schema.sql        # expenses module, supplier_category_map dictionary, set_updated_at() + learn_supplier_category() triggers
 │   │   └── auth_schema.sql   # auth module: users, organisations, organisation_memberships
 │   ├── queries/         # Annotated SQL = sqlc input (one file per domain)
 │   │   ├── query.sql         # expenses queries
@@ -90,6 +91,15 @@ Expense attachments (PDF/image receipts) follow the standard split: the **file b
 ### OCR / "Smart Upload" (Document AI)
 
 There are two upload paths. **"Add file"** (`POST /expenses/:id/attachments`) attaches a receipt to an *existing* expense and runs **no** OCR. **"Smart Upload"** (`POST /expenses/capture`) is receipt-first: it creates a **skeleton draft** (`needs_review=TRUE`, placeholder Sundries category, `gross=0`), attaches the file, and kicks off **background OCR** (`OcrService.Enqueue` → a goroutine). The user picks Receipt or Invoice (`document_type`), which routes to the matching Document AI processor (Expense vs Invoice parser); residency is enforced by the **`eu` regional endpoint**. OCR drives the attachment's `ocr_status` (PENDING→PROCESSING→COMPLETE/FAILED/SKIPPED) and **COALESCE-fills only empty expense fields** — it never overwrites user-entered data and never clears `needs_review` (a human confirms by saving, which clears it via the normal update). `needs_review` is a **third axis**, orthogonal to the approval `status` and the attachment `ocr_status`. The Document AI call sits behind the `DocumentExtractor` interface (`ocr_documentai.go`), so tests fake it (like the only-mock-external-services rule) while still using real Postgres + GCS; money is converted `MoneyValue`→pence with `shopspring/decimal` (HALF_UP). OCR is optional: with `DOCAI_*` unset, Smart Upload still creates drafts but they stay PENDING. An **opt-in** integration test (`TestDocumentAILive`, gated on `DOCAI_LIVE_TEST=1` so routine runs aren't billed) exercises the *real* API against both processors: `DOCAI_LIVE_TEST=1 go test -run TestDocumentAILive -v`.
+
+### Supplier → category dictionary (auto-categorisation)
+
+An organisation builds up a **learned mapping** from supplier to the category it usually files them under, so future captures can be **auto-categorised**. Two halves:
+
+- **Populate (in the DB).** A `plpgsql` trigger, `learn_supplier_category()` (`AFTER INSERT OR UPDATE ON expenses`, in `schema.sql`), upserts into `supplier_category_map`. The golden rule: it **only learns from CONFIRMED expenses** (`needs_review = FALSE`) — never from a Smart Upload skeleton/OCR-fill, whose category is still the placeholder, which would poison the dictionary. The key is **normalised** (`lower(btrim(supplier_name))`, so `Amazon`/`AMAZON`/`  amazon ` collapse), strategy is **last-write-wins** (one row per `(organisation_id, supplier_key)`), and a change-guard skips relearning on unrelated edits (e.g. an approval) so an old expense can't clobber a newer mapping. The table is **derived data** — safe to rebuild from `expenses`.
+- **Consume (in Go).** On the OCR path, `OcrService.suggestCategory` looks up `GetSuggestedCategory` for the supplier that will land on the row, and `ApplySuggestedCategory` writes it onto the capture **inside the same fill transaction**. That UPDATE is SQL-guarded by `needs_review = TRUE`, so it only ever replaces the placeholder and **never overrides a category a human chose**. A miss leaves the placeholder. The manual-entry "suggest as you type" endpoint is deferred (see `BACKLOG.md`).
+
+Like everything else, the dictionary is **organisation-scoped** (`organisation_id` leads the unique key and every lookup). Tested in `supplier_category_test.go`: the trigger directly against Postgres, and the auto-categorise loop end-to-end through the capture→OCR pipeline (Document AI faked).
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 

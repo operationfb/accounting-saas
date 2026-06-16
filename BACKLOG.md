@@ -79,6 +79,14 @@ _Last updated: 2026-06-16_
   not the VAT default. Consider adding a `normally_vatable` / default-VAT hint to
   `expense_categories` to pre-fill an expense's VAT status from its category.
   _Files: `db/schema/schema.sql`, `expense_service.go` (`CreateExpense`)._
+- **Suggest-category endpoint for manual entry.** The supplier→category
+  dictionary (`supplier_category_map`, populated by the `learn_supplier_category()`
+  trigger) is currently consumed only on the Smart Upload / OCR path
+  (`OcrService.suggestCategory`). For the manual "new expense" form, add a small
+  read endpoint (e.g. `GET /api/v1/expenses/suggest-category?supplier=…`) over the
+  existing `GetSuggestedCategory` query so the SPA can pre-select the category as
+  the user types the supplier. Org-scoped; read-only. _Files: `server.go`,
+  `expense_service.go`._
 
 ## Attachments & document storage
 

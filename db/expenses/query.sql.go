@@ -12,6 +12,36 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const applySuggestedCategory = `-- name: ApplySuggestedCategory :exec
+UPDATE expenses SET
+    category_id = $3,
+    updated_at  = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND needs_review     = TRUE
+  AND deleted_at IS NULL
+`
+
+type ApplySuggestedCategoryParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	CategoryID     uuid.UUID `json:"category_id"`
+}
+
+// -----------------------------------------------------------------------------
+// ApplySuggestedCategory
+// Set the category on an UNCONFIRMED capture from the dictionary suggestion. The
+// needs_review = TRUE guard is the safety rail: it means a human has not yet
+// chosen a category, so we can only ever replace the placeholder — never clobber
+// a category a person has confirmed. :exec (not :one) so that a no-op (e.g. the
+// capture was confirmed in the meantime → zero rows) is NOT treated as an error.
+// Org-scoped, soft-delete aware.
+// -----------------------------------------------------------------------------
+func (q *Queries) ApplySuggestedCategory(ctx context.Context, arg ApplySuggestedCategoryParams) error {
+	_, err := q.db.Exec(ctx, applySuggestedCategory, arg.ID, arg.OrganisationID, arg.CategoryID)
+	return err
+}
+
 const countExpenseAttachments = `-- name: CountExpenseAttachments :one
 SELECT count(*) FROM expense_attachments
 WHERE expense_id = $1
@@ -1128,6 +1158,43 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 		&i.OcrProcessedAt,
 	)
 	return i, err
+}
+
+const getSuggestedCategory = `-- name: GetSuggestedCategory :one
+
+SELECT category_id
+FROM supplier_category_map
+WHERE organisation_id = $1
+  AND supplier_key    = lower(btrim($2::text))
+LIMIT 1
+`
+
+type GetSuggestedCategoryParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	SupplierName   string    `json:"supplier_name"`
+}
+
+// =============================================================================
+// SECTION 6b: SUPPLIER → CATEGORY DICTIONARY (auto-categorisation)
+//
+// The supplier_category_map table is POPULATED automatically by the
+// learn_supplier_category() trigger (see db/schema/schema.sql) from confirmed
+// expenses. These two queries are the CONSUME side: read a remembered category
+// for a supplier, and apply it to an unconfirmed Smart Upload capture.
+// =============================================================================
+// -----------------------------------------------------------------------------
+// GetSuggestedCategory
+// Look up the category this organisation usually files a supplier under. The
+// supplier name is normalised here with the SAME rule the trigger uses to build
+// supplier_key — lower(btrim(...)) — so reads and writes always match. Returns no
+// row when the supplier has never been seen (caller treats that as "no suggestion").
+// Org-scoped; uses the uq_supplier_category unique index.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetSuggestedCategory(ctx context.Context, arg GetSuggestedCategoryParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getSuggestedCategory, arg.OrganisationID, arg.SupplierName)
+	var category_id uuid.UUID
+	err := row.Scan(&category_id)
+	return category_id, err
 }
 
 const getVatRate = `-- name: GetVatRate :one

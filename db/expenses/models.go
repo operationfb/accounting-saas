@@ -146,6 +146,17 @@ type ExpenseRecurrence struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Learned supplier→category dictionary for auto-categorisation. Derived data: populated by the learn_supplier_category() trigger from CONFIRMED expenses only (needs_review = FALSE). Safe to rebuild from expenses.
+type SupplierCategoryMap struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	// Supplier name normalised to lower(btrim(...)) so case/whitespace variants collapse. Apply the same normalisation when looking up.
+	SupplierKey string             `json:"supplier_key"`
+	CategoryID  uuid.UUID          `json:"category_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type VExpensesFull struct {
 	ID                     uuid.UUID          `json:"id"`
 	OrganisationID         uuid.UUID          `json:"organisation_id"`
