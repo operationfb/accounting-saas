@@ -49,6 +49,11 @@ import (
 // category, which is the least-wrong default for an as-yet-unclassified receipt.
 const placeholderCategoryNominal = "6021"
 
+// placeholderDescription is the stand-in description on a Smart Upload skeleton
+// until OCR (or the user) supplies a real one. OcrService replaces it — and only
+// it (never user-entered text) — when extraction yields a description.
+const placeholderDescription = "Awaiting review"
+
 // ocrEnqueuer is the slice of OcrService that AttachmentService depends on: kick
 // off background OCR for a freshly captured attachment. Declared here (the
 // consumer side, the Go convention) and used as a nil-able dependency — when OCR
@@ -403,7 +408,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 			CreatedByUserID:       callerID,
 			CategoryID:            cat.ID,
 			DatedOn:               pgDateFromTime(time.Now()), // placeholder; OCR overwrites
-			Description:           "Awaiting review",          // placeholder
+			Description:           placeholderDescription,     // placeholder
 			GrossValueMinor:       0,                          // placeholder; OCR fills
 			NativeGrossValueMinor: 0,
 		})

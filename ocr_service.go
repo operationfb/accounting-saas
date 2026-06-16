@@ -85,6 +85,7 @@ type ExtractionResult struct {
 	SupplierName  *string         // → expenses.supplier_name
 	SupplierVAT   *string         // → expenses.supplier_vat_number (invoice parser only)
 	InvoiceNumber *string         // → expenses.invoice_number
+	Description   *string         // → expenses.description (assembled from supplier + line items)
 	Currency      *string         // ISO 4217, e.g. "GBP"
 	Date          *time.Time      // → expenses.dated_on
 	TotalMinor    *int64          // gross (VAT-inclusive) total, minor units of Currency
@@ -221,6 +222,15 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 	// money columns (FillExpenseFromOCR then leaves them at their placeholder).
 	gross, vat := moneyToFill(exp.Currency, res)
 
+	// Description: replace ONLY the skeleton's placeholder, never a description the
+	// user has already typed. OCR runs on freshly-created skeletons (so the value
+	// is the placeholder), but we guard regardless. No OCR description → keep the
+	// current value. The SQL sets description = this value verbatim.
+	description := exp.Description
+	if res.Description != nil && exp.Description == placeholderDescription {
+		description = *res.Description
+	}
+
 	// Build the "what OCR saw" JSON for ocr_extracted_data (badges, confidence
 	// highlights, and an audit trail of which processor/type was used).
 	extracted, err := json.Marshal(buildExtractedData(documentType, res))
@@ -244,6 +254,7 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 			SupplierName:          pgNullText(res.SupplierName),
 			SupplierVatNumber:     pgNullText(res.SupplierVAT),
 			InvoiceNumber:         pgNullText(res.InvoiceNumber),
+			Description:           description,
 			DatedOn:               pgDateOrNull(res.Date),
 			GrossValueMinor:       gross,
 			NativeGrossValueMinor: gross, // GBP MVP: native == expense-currency value
@@ -315,11 +326,12 @@ type extractedData struct {
 	Supplier      *string `json:"supplier,omitempty"`
 	VATNumber     *string `json:"vat_number,omitempty"`
 	InvoiceNumber *string `json:"invoice_number,omitempty"`
-	Date          *string `json:"date,omitempty"`     // ISO 8601 (YYYY-MM-DD)
-	Amount        *string `json:"amount,omitempty"`   // pounds, e.g. "42.00"
-	VAT           *string `json:"vat,omitempty"`      // pounds
-	Currency      *string `json:"currency,omitempty"` // ISO 4217
-	Confidence    string  `json:"confidence"`         // "0.93"
+	Description   *string `json:"description,omitempty"` // assembled: supplier + line items
+	Date          *string `json:"date,omitempty"`        // ISO 8601 (YYYY-MM-DD)
+	Amount        *string `json:"amount,omitempty"`      // pounds, e.g. "42.00"
+	VAT           *string `json:"vat,omitempty"`         // pounds
+	Currency      *string `json:"currency,omitempty"`    // ISO 4217
+	Confidence    string  `json:"confidence"`            // "0.93"
 }
 
 // buildExtractedData maps an ExtractionResult into the stored JSON shape.
@@ -329,6 +341,7 @@ func buildExtractedData(documentType string, res *ExtractionResult) extractedDat
 		Supplier:      res.SupplierName,
 		VATNumber:     res.SupplierVAT,
 		InvoiceNumber: res.InvoiceNumber,
+		Description:   res.Description,
 		Currency:      res.Currency,
 		Confidence:    res.Confidence.StringFixed(4),
 	}
@@ -345,6 +358,55 @@ func buildExtractedData(documentType string, res *ExtractionResult) extractedDat
 		d.VAT = &s
 	}
 	return d
+}
+
+// buildExpenseDescription assembles a human expense description from the supplier
+// and the document's line-item descriptions, per the agreed format:
+//
+//	supplier + 1 item   → "Supplier — Item"
+//	supplier + 2+ items → "Supplier — N items"
+//	supplier, no items  → "Supplier"
+//	no supplier, items  → the top item (fallback)
+//	nothing usable      → nil (so the skeleton's placeholder is kept)
+//
+// Em-dash separator; each item is trimmed and rune-capped for tidiness.
+func buildExpenseDescription(supplier *string, items []string) *string {
+	const sep = " — "
+	const maxItemRunes = 80
+
+	sup := ""
+	if supplier != nil {
+		sup = strings.TrimSpace(*supplier)
+	}
+
+	// Clean the line items: trim, drop blanks, cap length (by rune, not byte, so a
+	// multi-byte character is never split).
+	clean := make([]string, 0, len(items))
+	for _, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" {
+			continue
+		}
+		if r := []rune(it); len(r) > maxItemRunes {
+			it = strings.TrimSpace(string(r[:maxItemRunes])) + "…"
+		}
+		clean = append(clean, it)
+	}
+
+	var out string
+	switch {
+	case sup != "" && len(clean) == 0:
+		out = sup
+	case sup != "" && len(clean) == 1:
+		out = sup + sep + clean[0]
+	case sup != "" && len(clean) >= 2:
+		out = sup + sep + fmt.Sprintf("%d items", len(clean))
+	case sup == "" && len(clean) >= 1:
+		out = clean[0] // no supplier — fall back to the top item
+	default:
+		return nil // nothing usable → keep the placeholder
+	}
+	return &out
 }
 
 // minorToPoundsInt64 renders minor units (pence) as a 2dp string ("4200" → "42.00").

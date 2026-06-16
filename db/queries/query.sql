@@ -350,6 +350,7 @@ UPDATE expenses SET
     supplier_name            = COALESCE(supplier_name, $3),        -- fill only if empty
     supplier_vat_number      = COALESCE(supplier_vat_number, $4),  -- fill only if empty
     invoice_number           = COALESCE(invoice_number, $5),       -- fill only if empty
+    description              = $12,                                -- value computed in Go: OCR description, else the row's current description (placeholder kept; user text never clobbered)
     dated_on                 = COALESCE($6, dated_on),             -- prefer OCR date over placeholder
     gross_value_minor        = CASE WHEN gross_value_minor = 0        THEN $7  ELSE gross_value_minor END,
     native_gross_value_minor = CASE WHEN native_gross_value_minor = 0 THEN $8  ELSE native_gross_value_minor END,

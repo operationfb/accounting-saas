@@ -90,6 +90,7 @@ func mapDocumentToResult(doc *documentaipb.Document) *ExtractionResult {
 
 	var confSum float64
 	var confCount int
+	var lineItems []string // line_item/description values → the assembled description
 
 	for _, ent := range doc.GetEntities() {
 		confSum += float64(ent.GetConfidence())
@@ -133,6 +134,18 @@ func mapDocumentToResult(doc *documentaipb.Document) *ExtractionResult {
 					res.Date = &t
 				}
 			}
+
+		case "line_item":
+			// A line_item is a PARENT entity; its text is a nested property typed
+			// "line_item/description". Collect them in document order so the first
+			// is the "top" item used by buildExpenseDescription.
+			for _, prop := range ent.GetProperties() {
+				if prop.GetType() == "line_item/description" {
+					if d := textPtr(prop.GetMentionText()); d != nil {
+						lineItems = append(lineItems, *d)
+					}
+				}
+			}
 		}
 	}
 
@@ -140,6 +153,10 @@ func mapDocumentToResult(doc *documentaipb.Document) *ExtractionResult {
 		// Mean entity confidence, rounded to the 4dp the ocr_confidence column holds.
 		res.Confidence = decimal.NewFromFloat(confSum / float64(confCount)).Round(4)
 	}
+
+	// Assemble the expense description from the supplier + the line items the
+	// parser returned (which mapDocumentToResult previously discarded).
+	res.Description = buildExpenseDescription(res.SupplierName, lineItems)
 	return res
 }
 

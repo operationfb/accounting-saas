@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/documentai/apiv1/documentaipb"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/shopspring/decimal"
@@ -245,6 +246,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
 		supplier, vatno, invno := "Acme Ltd", "GB123456789", "INV-001"
+		descr := "Acme Ltd — Office supplies"
 		date := time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
 		total, vat, cur := int64(4200), int64(700), "GBP"
 		fake := &fakeExtractor{result: &ExtractionResult{
@@ -252,6 +254,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 			SupplierName:  &supplier,
 			SupplierVAT:   &vatno,
 			InvoiceNumber: &invno,
+			Description:   &descr,
 			Currency:      &cur,
 			Date:          &date,
 			TotalMinor:    &total,
@@ -279,6 +282,9 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		if !strings.Contains(string(extracted), "GB123456789") {
 			t.Errorf("ocr_extracted_data should carry the VAT number, got: %s", extracted)
 		}
+		if !strings.Contains(string(extracted), descr) {
+			t.Errorf("ocr_extracted_data should carry the description %q, got: %s", descr, extracted)
+		}
 
 		// Expense → fields filled; needs_review STILL true (OCR ≠ confirmation).
 		detail, err := ts.server.expenseService.GetExpenseDetail(context.Background(), devUser, devOrg, draft.ID)
@@ -300,11 +306,33 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		if detail.DatedOn != "2026-06-10" {
 			t.Errorf("dated_on: got %q, want 2026-06-10", detail.DatedOn)
 		}
+		if detail.Description != descr {
+			t.Errorf("description: got %q, want %q (assembled from OCR, replacing the placeholder)", detail.Description, descr)
+		}
 		if detail.OCRConfidence == nil {
 			t.Error("ocr_confidence should be set after OCR")
 		}
 		if !detail.NeedsReview {
 			t.Error("needs_review must STAY true after OCR (OCR is not human confirmation)")
+		}
+	})
+
+	t.Run("keeps the placeholder description when OCR finds none", func(t *testing.T) {
+		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
+		attID := mustUUID(t, draft.Attachments[0].ID)
+
+		x := "Some Supplier"
+		fake := &fakeExtractor{result: &ExtractionResult{SupplierName: &x, Confidence: decimal.NewFromInt(1)}} // no Description
+		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
+			t.Fatalf("process: %v", err)
+		}
+		var desc string
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT description FROM expenses WHERE id=$1", draft.ID).Scan(&desc); err != nil {
+			t.Fatalf("read description: %v", err)
+		}
+		if desc != placeholderDescription {
+			t.Errorf("description should remain the placeholder when OCR has none; got %q", desc)
 		}
 	})
 
@@ -519,9 +547,9 @@ func TestDocumentAILive(t *testing.T) {
 				t.Fatalf("GetExpenseDetail: %v", err)
 			}
 			t.Logf("[%s] COMPLETE — raw_text=%d chars; extracted_data=%s", c.docType, len(*rawText), string(extracted))
-			t.Logf("[%s] expense filled → supplier=%q vat_no=%q invoice_no=%q dated_on=%s gross=%s vat=%s confidence=%q",
+			t.Logf("[%s] expense filled → supplier=%q vat_no=%q invoice_no=%q description=%q dated_on=%s gross=%s vat=%s confidence=%q",
 				c.docType, deref(detail.SupplierName), deref(detail.SupplierVATNumber), deref(detail.InvoiceNumber),
-				detail.DatedOn, detail.GrossValue, detail.VATValue, deref(detail.OCRConfidence))
+				detail.Description, detail.DatedOn, detail.GrossValue, detail.VATValue, deref(detail.OCRConfidence))
 		})
 	}
 }
@@ -609,4 +637,79 @@ func buildInvoicePDF() []byte {
 // pdfEscape escapes the characters that are special inside a PDF literal string.
 func pdfEscape(s string) string {
 	return strings.NewReplacer("\\", "\\\\", "(", "\\(", ")", "\\)").Replace(s)
+}
+
+// =============================================================================
+// DESCRIPTION ASSEMBLY (unit — always runs)
+// =============================================================================
+
+// TestBuildExpenseDescription pins the supplier + line-item → description format.
+func TestBuildExpenseDescription(t *testing.T) {
+	sp := func(s string) *string { return &s }
+	cases := []struct {
+		name     string
+		supplier *string
+		items    []string
+		want     *string
+	}{
+		{"supplier, no items", sp("Pret A Manger"), nil, sp("Pret A Manger")},
+		{"supplier, one item", sp("Pret A Manger"), []string{"Flat White"}, sp("Pret A Manger — Flat White")},
+		{"supplier, three items", sp("Pret A Manger"), []string{"Flat White", "Croissant", "Juice"}, sp("Pret A Manger — 3 items")},
+		{"supplier, blank items ignored", sp("Pret A Manger"), []string{"  ", ""}, sp("Pret A Manger")},
+		{"no supplier, items → top item", nil, []string{"Flat White", "Croissant"}, sp("Flat White")},
+		{"nothing → nil", nil, nil, nil},
+		{"blank supplier, no items → nil", sp("   "), nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := buildExpenseDescription(c.supplier, c.items)
+			switch {
+			case c.want == nil && got != nil:
+				t.Errorf("got %q, want nil", *got)
+			case c.want != nil && got == nil:
+				t.Errorf("got nil, want %q", *c.want)
+			case c.want != nil && got != nil && *got != *c.want:
+				t.Errorf("got %q, want %q", *got, *c.want)
+			}
+		})
+	}
+}
+
+// TestMapDocumentLineItemsToDescription proves the line items the parser returns
+// (nested line_item/description) — previously discarded — now drive the assembled
+// description, and validates the nested entity type name.
+func TestMapDocumentLineItemsToDescription(t *testing.T) {
+	lineItem := func(desc string) *documentaipb.Document_Entity {
+		return &documentaipb.Document_Entity{
+			Type: "line_item",
+			Properties: []*documentaipb.Document_Entity{
+				{Type: "line_item/description", MentionText: desc},
+			},
+		}
+	}
+
+	t.Run("supplier + 2 line items → count", func(t *testing.T) {
+		res := mapDocumentToResult(&documentaipb.Document{
+			Entities: []*documentaipb.Document_Entity{
+				{Type: "supplier_name", MentionText: "ACME Cafe"},
+				lineItem("Flat White"),
+				lineItem("Croissant"),
+			},
+		})
+		if res.Description == nil || *res.Description != "ACME Cafe — 2 items" {
+			t.Errorf("description: got %v, want \"ACME Cafe — 2 items\"", res.Description)
+		}
+	})
+
+	t.Run("supplier + 1 line item → item text", func(t *testing.T) {
+		res := mapDocumentToResult(&documentaipb.Document{
+			Entities: []*documentaipb.Document_Entity{
+				{Type: "supplier_name", MentionText: "ACME Cafe"},
+				lineItem("Large Flat White"),
+			},
+		})
+		if res.Description == nil || *res.Description != "ACME Cafe — Large Flat White" {
+			t.Errorf("description: got %v, want \"ACME Cafe — Large Flat White\"", res.Description)
+		}
+	})
 }

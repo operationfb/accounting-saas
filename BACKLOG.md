@@ -97,9 +97,11 @@ _Last updated: 2026-06-16_
   no structured supplier VAT field, so `SupplierVAT` is nil for receipts. Add a
   `GB` + 9/12-digit regex fallback over `ocr_raw_text` (+ checksum validation).
   _File: `ocr_documentai.go`._
-- **Line-item extraction.** Both parsers return line items; we only take header
-  totals today. Capture line items for a richer review screen. _Files:
-  `ocr_documentai.go`, schema (a new `expense_lines` table)._
+- **Line-item storage.** `mapDocumentToResult` now reads `line_item/description`
+  entities to assemble the expense description, but the line items themselves
+  aren't persisted (only the derived description is). Capture them in a dedicated
+  `expense_lines` table for a richer review screen / per-line VAT. _Files:
+  `ocr_documentai.go`, `ocr_service.go`, schema (a new `expense_lines` table)._
 - **Hybrid LLM fallback on low confidence.** When `ocr_confidence` is low, fall
   back to a multimodal LLM (Gemini on Vertex, in-region) for a second opinion.
   _File: `ocr_service.go`._
