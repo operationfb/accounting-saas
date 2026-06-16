@@ -149,13 +149,6 @@ _Last updated: 2026-06-16_
   risk — and `token/payload.go` `Valid()` prints debug lines. Remove them.
   _Flagged as a background-task chip on 2026-06-11._
 
-- **Fix the dev seed password hash.** The `dev@example.com` seed row in
-  `db/schema/auth_schema.sql` ships a placeholder `password_hash` that does NOT
-  match the documented `devpassword123`. Replace it with a correct bcrypt
-  (cost 12) hash so freshly-seeded databases can log in. (The shared dev DB row
-  was already corrected by the login test; this is for fresh seeds.) _Flagged as
-  a background-task chip on 2026-06-11._
-
 ## Pre-existing TODOs noted in code (not introduced by recent work)
 
 - **Expense audit log on create.** The create transaction has a placeholder for

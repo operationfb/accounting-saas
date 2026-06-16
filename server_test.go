@@ -542,20 +542,20 @@ func TestHandleLoginUser(t *testing.T) {
 		devEmail    = "dev@example.com"
 		devPassword = "devpassword123"
 	)
-	/*
-		// Arrange: the seed row for dev@example.com ships with a PLACEHOLDER hash
-		// that does not actually match devpassword123. Set a correct bcrypt hash
-		// (cost 12, as the schema documents) so the documented dev credentials work.
-		// This is idempotent and safe to run on every test invocation.
-		hashed, err := bcrypt.GenerateFromPassword([]byte(devPassword), 12)
-		if err != nil {
-			t.Fatalf("failed to hash dev password: %v", err)
-		}
-		if _, err := ts.pool.Exec(context.Background(),
-			"UPDATE users SET password_hash = $1 WHERE email = $2", string(hashed), devEmail); err != nil {
-			t.Fatalf("failed to set dev user password: %v", err)
-		}
-	*/
+	// Arrange: the seed (db/schema/auth_schema.sql) already hashes dev@example.com's
+	// password to devpassword123, but the SHARED dev DB row can drift if someone
+	// changes that password out of band. Re-assert the documented credential here
+	// (idempotent, bcrypt cost 12) so this test — and TestHandleLoginUser_NoOrganisationFails,
+	// which copies this row's hash — stay green regardless of that drift.
+	hashed, err := bcrypt.GenerateFromPassword([]byte(devPassword), 12)
+	if err != nil {
+		t.Fatalf("failed to hash dev password: %v", err)
+	}
+	if _, err := ts.pool.Exec(context.Background(),
+		"UPDATE users SET password_hash = $1 WHERE email = $2", string(hashed), devEmail); err != nil {
+		t.Fatalf("failed to set dev user password: %v", err)
+	}
+
 	// Act: send the login request through the router.
 	bodyBytes, _ := json.Marshal(map[string]string{"email": devEmail, "password": devPassword})
 	recorder := httptest.NewRecorder()

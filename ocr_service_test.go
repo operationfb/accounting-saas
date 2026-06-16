@@ -20,12 +20,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/shopspring/decimal"
 	money "google.golang.org/genproto/googleapis/type/money"
 
@@ -444,4 +447,166 @@ func TestOCRInboxAndConfirm(t *testing.T) {
 	if containsExpense(inboxAfter, draft.ID) {
 		t.Error("a confirmed capture must leave the review inbox")
 	}
+}
+
+// =============================================================================
+// LIVE DOCUMENT AI (opt-in — makes real, billed API calls)
+// =============================================================================
+//
+// TestDocumentAILive runs a real receipt/invoice through the REAL Document AI
+// (both processors), through the genuine capture → OCR pipeline. It is the only
+// test that hits the paid API, so it is doubly gated: it skips unless GCS is
+// configured AND the DOCAI_* vars are set AND DOCAI_LIVE_TEST is set. That keeps
+// routine `go test ./...` fast and free — even with DOCAI_* configured for the
+// running app — and makes real billing strictly opt-in:
+//
+//	DOCAI_LIVE_TEST=1 go test -run TestDocumentAILive -v
+//
+// It asserts the pipeline reaches COMPLETE and that real text was extracted, and
+// logs the fields Document AI returned so you can eyeball the extraction.
+func TestDocumentAILive(t *testing.T) {
+	requireGCS(t)
+	requireDocAILive(t)
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	// Build the REAL extractor from the .env config — this is the connection
+	// (auth + API + processor ids + region) under test.
+	ext, err := newDocumentAIExtractor(context.Background(),
+		os.Getenv("DOCAI_PROJECT_ID"),
+		envOr("DOCAI_LOCATION", "eu"),
+		os.Getenv("DOCAI_INVOICE_PROCESSOR_ID"),
+		os.Getenv("DOCAI_EXPENSE_PROCESSOR_ID"))
+	if err != nil {
+		t.Fatalf("could not build Document AI extractor: %v", err)
+	}
+	ocr := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext)
+	devOrg := mustUUID(t, devOrgID)
+	pdf := buildInvoicePDF() // a valid single-page PDF with real invoice text
+
+	for _, c := range []struct{ name, docType string }{
+		{"Invoice Parser", DocumentTypeInvoice},
+		{"Expense Parser", DocumentTypeReceipt},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, c.docType, "live-"+c.docType+".pdf", pdf)
+			attID := mustUUID(t, draft.Attachments[0].ID)
+
+			// Drive the real pipeline synchronously (process is what the background
+			// goroutine calls) so the assertions aren't racy.
+			if err := ocr.process(context.Background(), attID, devOrg, c.docType); err != nil {
+				t.Fatalf("REAL Document AI process(%s) failed — check the API is enabled, the SA has 'Document AI API User', and the processor id/region are correct: %v", c.docType, err)
+			}
+
+			var status string
+			var rawText *string
+			var extracted []byte
+			if err := ts.pool.QueryRow(context.Background(),
+				"SELECT ocr_status, ocr_raw_text, ocr_extracted_data FROM expense_attachments WHERE id=$1", attID).
+				Scan(&status, &rawText, &extracted); err != nil {
+				t.Fatalf("read attachment: %v", err)
+			}
+			if status != "COMPLETE" {
+				t.Fatalf("ocr_status: got %q, want COMPLETE", status)
+			}
+			if rawText == nil || strings.TrimSpace(*rawText) == "" {
+				t.Errorf("expected Document AI to return some extracted text, got none")
+			}
+
+			// Surface what the real API actually produced (visible with -v).
+			detail, err := ts.server.expenseService.GetExpenseDetail(context.Background(), mustUUID(t, devUserID), devOrg, draft.ID)
+			if err != nil {
+				t.Fatalf("GetExpenseDetail: %v", err)
+			}
+			t.Logf("[%s] COMPLETE — raw_text=%d chars; extracted_data=%s", c.docType, len(*rawText), string(extracted))
+			t.Logf("[%s] expense filled → supplier=%q vat_no=%q invoice_no=%q dated_on=%s gross=%s vat=%s confidence=%q",
+				c.docType, deref(detail.SupplierName), deref(detail.SupplierVATNumber), deref(detail.InvoiceNumber),
+				detail.DatedOn, detail.GrossValue, detail.VATValue, deref(detail.OCRConfidence))
+		})
+	}
+}
+
+// requireDocAILive skips unless the live Document AI test is explicitly opted in
+// (DOCAI_LIVE_TEST set) and the processor config is present.
+func requireDocAILive(t *testing.T) {
+	t.Helper()
+	_ = godotenv.Load()
+	if os.Getenv("DOCAI_LIVE_TEST") == "" {
+		t.Skip("DOCAI_LIVE_TEST not set — skipping the live (billed) Document AI test")
+	}
+	if os.Getenv("DOCAI_PROJECT_ID") == "" ||
+		os.Getenv("DOCAI_INVOICE_PROCESSOR_ID") == "" ||
+		os.Getenv("DOCAI_EXPENSE_PROCESSOR_ID") == "" {
+		t.Skip("DOCAI_PROJECT_ID / DOCAI_*_PROCESSOR_ID not set — skipping live Document AI test")
+	}
+}
+
+// deref renders an optional string for logging.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// buildInvoicePDF assembles a minimal but VALID single-page PDF (correct xref
+// offsets, Helvetica base font) containing real, invoice-shaped text — enough for
+// Document AI to read. The fake sample blobs elsewhere are content-free stubs the
+// real API would reject, hence this generator.
+func buildInvoicePDF() []byte {
+	lines := []string{
+		"ACME SUPPLIES LTD",
+		"123 High Street, London, EC1A 1BB",
+		"VAT Reg No: GB123456789",
+		"",
+		"INVOICE",
+		"Invoice Number: INV-2026-001",
+		"Invoice Date: 10/06/2026",
+		"",
+		"Description              Amount",
+		"Office supplies           35.00",
+		"",
+		"Subtotal:                 35.00",
+		"VAT (20%):                 7.00",
+		"Total:                    42.00 GBP",
+	}
+
+	// Page content stream: a text object positioning each line down the page.
+	var content bytes.Buffer
+	content.WriteString("BT\n/F1 12 Tf\n")
+	y := 760
+	for _, ln := range lines {
+		fmt.Fprintf(&content, "1 0 0 1 72 %d Tm\n(%s) Tj\n", y, pdfEscape(ln))
+		y -= 20
+	}
+	content.WriteString("ET\n")
+	stream := content.Bytes()
+
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(stream), stream),
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objs)+1)
+	for i, body := range objs {
+		offsets[i+1] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n%s\nendobj\n", i+1, body)
+	}
+	xref := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for i := 1; i <= len(objs); i++ {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", offsets[i])
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, xref)
+	return buf.Bytes()
+}
+
+// pdfEscape escapes the characters that are special inside a PDF literal string.
+func pdfEscape(s string) string {
+	return strings.NewReplacer("\\", "\\\\", "(", "\\(", ")", "\\)").Replace(s)
 }
