@@ -251,6 +251,16 @@ CREATE TABLE expenses (
     supplier_vat_number     VARCHAR(30),                        -- supplier's VAT reg number (important for VAT reclaim)
     invoice_number          VARCHAR(100),                       -- supplier's invoice/receipt number
 
+    -- needs_review marks a "captured" expense that a human has not yet confirmed
+    -- — e.g. one created by "Smart Upload" (a receipt dropped in before any data
+    -- was typed), which OCR then pre-fills. It is a SEPARATE axis from `status`
+    -- above: `status` is the APPROVAL lifecycle (who signed off), while
+    -- needs_review is the DATA-CAPTURE lifecycle (has a person reviewed the
+    -- extracted figures yet?). An expense can be DRAFT *and* needs_review=TRUE at
+    -- the same time, so the two must not share a column. Defaults to FALSE so
+    -- ordinary, human-entered expenses never land in the review inbox.
+    needs_review            BOOLEAN     NOT NULL DEFAULT FALSE,
+
     -- -------------------------------------------------------------------------
     -- Soft delete & audit
     -- -------------------------------------------------------------------------
@@ -267,6 +277,9 @@ CREATE INDEX idx_expenses_org_project ON expenses (organisation_id, project_id) 
 CREATE INDEX idx_expenses_category    ON expenses (category_id)                WHERE deleted_at IS NULL;
 -- Partial index for the approval queue
 CREATE INDEX idx_expenses_submitted   ON expenses (organisation_id, submitted_at) WHERE status = 'SUBMITTED' AND deleted_at IS NULL;
+-- Partial index for the "review inbox" (Smart Upload captures awaiting confirmation).
+-- Partial so it only carries the handful of unconfirmed rows, not every expense.
+CREATE INDEX idx_expenses_needs_review ON expenses (organisation_id, created_at) WHERE needs_review = TRUE AND deleted_at IS NULL;
 -- For updated_since filtering (sync/webhook use)
 CREATE INDEX idx_expenses_updated_at  ON expenses (organisation_id, updated_at);
 
@@ -531,7 +544,14 @@ SELECT
     e.updated_at,
     -- Raw FKs (the rest of the view exposes names) — used to pre-fill the edit form.
     e.category_id,
-    e.vat_rate_id
+    e.vat_rate_id,
+    -- Capture / OCR fields. needs_review drives the Smart Upload review inbox;
+    -- ocr_confidence/ocr_processed_at let the detail screen flag low-confidence
+    -- captures. Appended LAST so CREATE OR REPLACE VIEW stays valid (Postgres only
+    -- permits adding columns to the end of an existing view's column list).
+    e.needs_review,
+    e.ocr_confidence,
+    e.ocr_processed_at
 FROM expenses e
 JOIN expense_categories ec ON ec.id = e.category_id
 LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims

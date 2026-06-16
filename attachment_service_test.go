@@ -337,7 +337,7 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 
 	// 8-byte cap, sharing the configured real storage.
 	tiny := NewAttachmentService(ts.pool, expenses.New(ts.pool), auth.New(ts.pool),
-		ts.server.attachmentService.storage, 8, 0)
+		ts.server.attachmentService.storage, nil, 8, 0)
 
 	data := samplePDF() // comfortably larger than 8 bytes
 	_, err := tiny.UploadAttachment(
@@ -440,7 +440,7 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 		}
 		badPool.Close() // every query now fails
 		badSvc := NewAttachmentService(badPool, expenses.New(badPool), auth.New(badPool),
-			ts.server.attachmentService.storage, 0, 0)
+			ts.server.attachmentService.storage, nil, 0, 0)
 
 		_, err = badSvc.UploadAttachment(
 			context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
@@ -475,6 +475,9 @@ func (p *poolClosingStorage) SignedDownloadURL(ctx context.Context, key string, 
 func (p *poolClosingStorage) Delete(ctx context.Context, key string) error {
 	return p.inner.Delete(ctx, key)
 }
+func (p *poolClosingStorage) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	return p.inner.Download(ctx, key)
+}
 func (p *poolClosingStorage) Bucket() string { return p.inner.Bucket() }
 
 // TestAttachment_OrphanCleanup verifies that when the metadata write fails after
@@ -493,7 +496,7 @@ func TestAttachment_OrphanCleanup(t *testing.T) {
 	t.Cleanup(pool.Close) // Close is idempotent; the spy may already have closed it
 
 	spy := &poolClosingStorage{inner: ts.server.attachmentService.storage, pool: pool}
-	svc := NewAttachmentService(pool, expenses.New(pool), auth.New(pool), spy, 0, 0)
+	svc := NewAttachmentService(pool, expenses.New(pool), auth.New(pool), spy, nil, 0, 0)
 
 	_, err = svc.UploadAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),

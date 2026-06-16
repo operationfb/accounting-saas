@@ -115,11 +115,18 @@ func (s *Server) registerRoutes() {
 		expenses := v1.Group("/expenses")
 		expenses.Use(authMiddleware(s.tokenMaker))
 		{
-			// GET    /api/v1/expenses       → list expenses the caller may see
-			// POST   /api/v1/expenses       → create a new expense (for the caller)
-			// GET    /api/v1/expenses/:id   → fetch one expense by UUID
+			// GET    /api/v1/expenses          → list expenses the caller may see
+			// POST   /api/v1/expenses          → create a new expense (for the caller)
+			// POST   /api/v1/expenses/capture  → "Smart Upload": create a draft from a
+			//                                     receipt + run OCR (multipart)
+			// GET    /api/v1/expenses/inbox    → captures awaiting review (needs_review)
+			// GET    /api/v1/expenses/:id      → fetch one expense by UUID
 			expenses.GET("", s.handleListExpenses)
 			expenses.POST("", s.handleCreateExpense)
+			// Static segments registered before the /:id param routes. Gin matches a
+			// literal "capture"/"inbox" ahead of the :id wildcard.
+			expenses.POST("/capture", s.handleSmartUpload)
+			expenses.GET("/inbox", s.handleListInbox)
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
 
@@ -247,6 +254,7 @@ type ExpenseResponse struct {
 	NativeGrossValue  string  `json:"native_gross_value"` // in home currency
 	VATValue          string  `json:"vat_value"`
 	Status            string  `json:"status"`
+	NeedsReview       bool    `json:"needs_review"` // TRUE while a Smart Upload capture awaits confirmation
 	ReceiptReference  *string `json:"receipt_reference,omitempty"`
 	SupplierName      *string `json:"supplier_name,omitempty"`
 	SupplierVATNumber *string `json:"supplier_vat_number,omitempty"`
@@ -299,6 +307,15 @@ type ExpenseDetailResponse struct {
 	SubmittedAt *string `json:"submitted_at,omitempty"`
 	ApprovedAt  *string `json:"approved_at,omitempty"`
 	PaidAt      *string `json:"paid_at,omitempty"`
+
+	// Capture / OCR (Smart Upload). NeedsReview drives the review inbox;
+	// OCRConfidence/OCRProcessedAt let the UI flag a low-confidence capture.
+	// Attachments carries the file list — the frontend polls the primary
+	// attachment's ocr_status here to know when OCR has filled the form.
+	NeedsReview    bool                  `json:"needs_review"`
+	OCRConfidence  *string               `json:"ocr_confidence,omitempty"`
+	OCRProcessedAt *string               `json:"ocr_processed_at,omitempty"`
+	Attachments    []*AttachmentResponse `json:"attachments"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -473,6 +490,23 @@ func (s *Server) handleListExpenses(c *gin.Context) {
 		return
 	}
 
+	c.JSON(http.StatusOK, gin.H{"expenses": list})
+}
+
+// handleListInbox handles GET /api/v1/expenses/inbox
+//
+// Returns the Smart Upload captures awaiting review (needs_review). Owners/admins
+// see the whole organisation's inbox; everyone else sees only their own captures.
+func (s *Server) handleListInbox(c *gin.Context) {
+	list, err := s.expenseService.ListInbox(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
 }
 

@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-14_
+_Last updated: 2026-06-16_
 
 ## Auth & authorization
 
@@ -82,12 +82,37 @@ _Last updated: 2026-06-14_
 
 ## Attachments & document storage
 
-- **OCR / data capture for receipts.** The `expense_attachments` table already
-  carries the phase-2 OCR columns (`ocr_status`, `ocr_raw_text`,
-  `ocr_extracted_data`, `ocr_processed_at`) and the `UpdateAttachmentOCRStatus`
-  query, but nothing populates them. Wire up a background pipeline that OCRs
-  uploaded receipts and fills these in (Datamolino-style auto-fill). _Files:
-  `attachment_service.go`, `db/queries/query.sql`._
+- **OCR retry / re-run + stale-PROCESSING recovery.** Smart Upload's OCR is
+  fire-and-forget with no retry (`OcrService.Enqueue`): a crash mid-extraction
+  leaves the row stuck in `PROCESSING`. Add (a) a startup sweep that resets stale
+  `PROCESSING` rows via the `idx_expense_attachments_ocr` index, atomically
+  claiming work with `UPDATE … WHERE ocr_status='PENDING'` so multiple Cloud Run
+  instances don't double-process, and (b) a "re-run OCR" endpoint for FAILED
+  captures. _Files: `ocr_service.go`, `db/queries/query.sql`._
+- **Processor auto-detect / run-both.** Smart Upload currently asks the user to
+  pick Receipt vs Invoice (`document_type`). Optionally auto-detect the document
+  type, or run both processors and keep the higher-confidence result. _File:
+  `ocr_documentai.go`._
+- **UK VAT-number regex for the receipt path.** The Expense (receipt) parser has
+  no structured supplier VAT field, so `SupplierVAT` is nil for receipts. Add a
+  `GB` + 9/12-digit regex fallback over `ocr_raw_text` (+ checksum validation).
+  _File: `ocr_documentai.go`._
+- **Line-item extraction.** Both parsers return line items; we only take header
+  totals today. Capture line items for a richer review screen. _Files:
+  `ocr_documentai.go`, schema (a new `expense_lines` table)._
+- **Hybrid LLM fallback on low confidence.** When `ocr_confidence` is low, fall
+  back to a multimodal LLM (Gemini on Vertex, in-region) for a second opinion.
+  _File: `ocr_service.go`._
+- **"Smart fill" onto an existing expense.** OCR only runs on Smart Upload
+  captures. Optionally let a user re-run extraction over an attachment added to an
+  *existing* expense to pre-fill its empty fields. _File: `attachment_service.go`._
+- **Richer capture state / DB-enforced completeness.** `needs_review` is a single
+  boolean. If a fuller capture lifecycle is wanted, upgrade to a `capture_status`
+  enum (AWAITING_OCR→AWAITING_REVIEW→CONFIRMED). Separately, skeleton drafts use
+  placeholder values for the NOT NULL money/date/category columns; the stricter
+  alternative is making them nullable + a CHECK requiring them once
+  `needs_review=false`, at the cost of a wider nullable-type change. _Files:
+  `db/schema/schema.sql`, `expense_service.go`._
 - **Thumbnails / previews.** Generate a small downscaled image per attachment so
   the SPA's list view doesn't fetch full-size files. This is image *resizing* for
   UX, separate from storage. _File: `attachment_service.go`._

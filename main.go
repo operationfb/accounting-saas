@@ -184,8 +184,45 @@ func main() {
 	} else {
 		log.Println("attachment storage: GCS_BUCKET not set — receipt uploads are disabled")
 	}
+
+	// -------------------------------------------------------------------------
+	// OCR extraction (Google Document AI) — "Smart Upload".
+	//
+	// Optional, exactly like GCS above. Requires DOCAI_PROJECT_ID, DOCAI_LOCATION
+	// (the multi-region — use 'eu' for UK/EU data residency), and BOTH processor
+	// ids (the Invoice Parser for invoices, the Expense Parser for receipts).
+	// When unset, Smart Upload still creates draft expenses; they just stay
+	// ocr_status=PENDING with no extraction.
+	// -------------------------------------------------------------------------
+	var docExtractor DocumentExtractor
+	if projectID := os.Getenv("DOCAI_PROJECT_ID"); projectID != "" {
+		location := envOr("DOCAI_LOCATION", "eu")
+		invoiceProc := os.Getenv("DOCAI_INVOICE_PROCESSOR_ID")
+		receiptProc := os.Getenv("DOCAI_EXPENSE_PROCESSOR_ID")
+		if invoiceProc == "" || receiptProc == "" {
+			log.Fatal("DOCAI_PROJECT_ID is set but DOCAI_INVOICE_PROCESSOR_ID and/or DOCAI_EXPENSE_PROCESSOR_ID are not")
+		}
+		ext, derr := newDocumentAIExtractor(context.Background(), projectID, location, invoiceProc, receiptProc)
+		if derr != nil {
+			log.Fatalf("could not initialise Document AI: %v", derr)
+		}
+		docExtractor = ext
+		log.Printf("OCR: Document AI in location %q (invoice + expense parsers)", location)
+	} else {
+		log.Println("OCR: DOCAI_PROJECT_ID not set — Smart Upload creates drafts without OCR")
+	}
+
+	// The background OCR worker needs BOTH storage (to re-read the file) and an
+	// extractor. Wire it in only when both exist; otherwise leave it nil so the
+	// attachment service treats OCR as disabled (a typed-nil interface is avoided
+	// by assigning only inside this guard).
+	var ocrTrigger ocrEnqueuer
+	if attachmentStorage != nil && docExtractor != nil {
+		ocrTrigger = NewOcrService(pool, queries, attachmentStorage, docExtractor)
+	}
+
 	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).
-	attachmentService := NewAttachmentService(pool, queries, authQueries, attachmentStorage, 0, 0)
+	attachmentService := NewAttachmentService(pool, queries, authQueries, attachmentStorage, ocrTrigger, 0, 0)
 
 	// Allowed CORS origins for the browser SPA. Comma-separated in
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.

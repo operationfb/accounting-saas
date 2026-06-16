@@ -88,6 +88,52 @@ func (s *Server) handleUploadAttachment(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"attachment": resp})
 }
 
+// handleSmartUpload handles POST /api/v1/expenses/capture.
+//
+// "Smart Upload": a receipt/invoice dropped in with no expense yet. Expects
+// multipart/form-data with a "file" field and a "document_type" field
+// ("receipt" | "invoice", which routes OCR to the matching Document AI
+// processor). It creates a skeleton draft, attaches the file, and kicks off
+// background OCR, then returns the new draft (with its PENDING attachment) so the
+// SPA can open the form and poll GET /expenses/:id until OCR fills it in.
+func (s *Server) handleSmartUpload(c *gin.Context) {
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+	documentType := c.PostForm("document_type")
+
+	// Cap the request body BEFORE parsing, same as handleUploadAttachment.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadRequestBytes)
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"code":    "validation_error",
+			"message": "a multipart 'file' field is required (or the upload was too large)",
+		}})
+		return
+	}
+
+	f, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"code":    "validation_error",
+			"message": "could not read the uploaded file",
+		}})
+		return
+	}
+	defer f.Close()
+
+	resp, err := s.attachmentService.CaptureFromReceipt(
+		c.Request.Context(), userID, orgID, documentType,
+		fileHeader.Filename, fileHeader.Size, f,
+	)
+	if err != nil {
+		writeAppError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"expense": resp})
+}
+
 // handleListAttachments handles GET /api/v1/expenses/:id/attachments.
 func (s *Server) handleListAttachments(c *gin.Context) {
 	list, err := s.attachmentService.ListAttachments(

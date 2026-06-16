@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,20 @@ import (
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 )
+
+// placeholderCategoryNominal is the nominal code of the catch-all category a
+// Smart Upload skeleton is filed under until the user picks a real one. '6021'
+// is "Sundries" in the seeded chart of accounts — a normal, VAT-able admin
+// category, which is the least-wrong default for an as-yet-unclassified receipt.
+const placeholderCategoryNominal = "6021"
+
+// ocrEnqueuer is the slice of OcrService that AttachmentService depends on: kick
+// off background OCR for a freshly captured attachment. Declared here (the
+// consumer side, the Go convention) and used as a nil-able dependency — when OCR
+// is not configured, Smart Upload still creates the draft, it just stays PENDING.
+type ocrEnqueuer interface {
+	Enqueue(attachmentID, orgID uuid.UUID, documentType string)
+}
 
 // allowedContentTypes maps each accepted (sniffed) MIME type to the extension we
 // give the stored object. Receipts are PDFs or photos/scans. This map doubles as
@@ -67,6 +82,7 @@ type AttachmentService struct {
 	queries     *expenses.Queries
 	authQueries auth.Querier
 	storage     Storage
+	ocr         ocrEnqueuer // nil when OCR isn't configured
 
 	maxBytes int64
 	urlTTL   time.Duration
@@ -75,8 +91,9 @@ type AttachmentService struct {
 // NewAttachmentService constructs the service. Passing maxBytes or urlTTL <= 0
 // selects the package defaults. store may be nil when the app is started without
 // GCS configured (GCS_BUCKET unset); in that case the upload/download paths
-// return a clear internal error rather than panicking.
-func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier, store Storage, maxBytes int64, urlTTL time.Duration) *AttachmentService {
+// return a clear internal error rather than panicking. ocr may be nil when
+// Document AI isn't configured; Smart Upload then creates drafts without OCR.
+func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier, store Storage, ocr ocrEnqueuer, maxBytes int64, urlTTL time.Duration) *AttachmentService {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxUploadBytes
 	}
@@ -88,6 +105,7 @@ func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQue
 		queries:     queries,
 		authQueries: authQueries,
 		storage:     store,
+		ocr:         ocr,
 		maxBytes:    maxBytes,
 		urlTTL:      urlTTL,
 	}
@@ -97,9 +115,11 @@ func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQue
 // RESPONSE DTO
 //
 // Kept here (not in server.go with the expense DTOs) to keep the attachments
-// feature self-contained. It deliberately omits internal fields — the storage
-// bucket/key and the phase-2 OCR columns — and never carries the file bytes;
-// those are fetched separately via a signed download URL.
+// feature self-contained. It never carries the file bytes (fetched separately
+// via a signed download URL) nor the internal storage bucket/key. It DOES carry
+// the OCR status + structured data (but not the bulky ocr_raw_text): the Smart
+// Upload frontend polls ocr_status to know when extraction is done and reads
+// ocr_extracted_data for the "OCR found…" badges.
 // =============================================================================
 
 // AttachmentResponse is the API shape for one attachment's metadata.
@@ -113,10 +133,17 @@ type AttachmentResponse struct {
 	Description      *string `json:"description,omitempty"`
 	UploadedByUserID string  `json:"uploaded_by_user_id"`
 	CreatedAt        string  `json:"created_at"`
+
+	// OCR (Smart Upload). OCRStatus is the polled signal: PENDING|PROCESSING are
+	// non-terminal; COMPLETE|FAILED|SKIPPED are terminal. OCRExtractedData is the
+	// raw JSONB ("what OCR saw") passed straight through as JSON.
+	OCRStatus        string          `json:"ocr_status"`
+	OCRExtractedData json.RawMessage `json:"ocr_extracted_data,omitempty"`
+	OCRProcessedAt   *string         `json:"ocr_processed_at,omitempty"`
 }
 
 // attachmentToResponse maps a generated row to the API shape. It reuses the
-// nullable-text helper from expense_service.go (same package).
+// nullable-text/timestamp helpers from expense_service.go (same package).
 func attachmentToResponse(a expenses.ExpenseAttachment) *AttachmentResponse {
 	return &AttachmentResponse{
 		ID:               a.ID.String(),
@@ -128,6 +155,11 @@ func attachmentToResponse(a expenses.ExpenseAttachment) *AttachmentResponse {
 		Description:      nullTextToPtr(a.Description),
 		UploadedByUserID: a.UploadedByUserID.String(),
 		CreatedAt:        a.CreatedAt.Time.Format(time.RFC3339),
+		OCRStatus:        a.OcrStatus,
+		// JSONB comes back as []byte; json.RawMessage passes it through verbatim.
+		// nil (no OCR yet) is omitted by the ,omitempty tag.
+		OCRExtractedData: json.RawMessage(a.OcrExtractedData),
+		OCRProcessedAt:   timestampToStringPtr(a.OcrProcessedAt),
 	}
 }
 
@@ -243,32 +275,10 @@ func (s *AttachmentService) UploadAttachment(
 		return nil, err
 	}
 
-	// ---- Validate size (the handler also hard-caps the request body) --------
-	if size <= 0 {
-		return nil, ErrValidation("uploaded file is empty", nil)
-	}
-	if size > s.maxBytes {
-		return nil, ErrPayloadTooLarge(fmt.Sprintf("file is %d bytes; the limit is %d bytes", size, s.maxBytes))
-	}
-
-	// ---- Validate the REAL content type by sniffing the bytes ---------------
-	// Never trust the client's declared Content-Type or the filename extension.
-	// http.DetectContentType inspects up to the first 512 bytes.
-	head := make([]byte, sniffLen)
-	n, err := io.ReadFull(content, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, ErrInternal(fmt.Errorf("read file header: %w", err))
-	}
-	contentType := http.DetectContentType(head[:n])
-	ext, ok := allowedContentTypes[contentType]
-	if !ok {
-		return nil, ErrUnsupportedMediaType(fmt.Sprintf("file type %q is not allowed; accepted types are PDF, JPEG and PNG", contentType))
-	}
-
-	// Rewind to the start: we consumed the header for sniffing, but the upload
-	// must stream the whole file.
-	if _, err := content.Seek(0, io.SeekStart); err != nil {
-		return nil, ErrInternal(fmt.Errorf("rewind file: %w", err))
+	// ---- Validate size + sniff the real content type ------------------------
+	contentType, ext, err := s.validateUpload(size, content)
+	if err != nil {
+		return nil, err
 	}
 
 	// ---- Storage key: server-chosen, no user input in the path --------------
@@ -318,6 +328,120 @@ func (s *AttachmentService) UploadAttachment(
 	}
 
 	return attachmentToResponse(created), nil
+}
+
+// =============================================================================
+// SMART UPLOAD (receipt-first capture)
+// =============================================================================
+
+// CaptureFromReceipt powers the "Smart Upload" button: a receipt/invoice is
+// dropped in with no expense yet, so we CREATE a skeleton draft (needs_review=
+// TRUE) with this file attached, then kick off background OCR to fill it in.
+// This is deliberately distinct from UploadAttachment ("Add file"), which
+// attaches to an EXISTING expense and runs no OCR.
+//
+// documentType ("receipt" | "invoice") routes OCR to the matching Document AI
+// processor. The returned detail response already embeds the new attachment with
+// ocr_status=PENDING, so the frontend can open the draft form and start polling.
+func (s *AttachmentService) CaptureFromReceipt(
+	ctx context.Context,
+	callerID, orgID uuid.UUID,
+	documentType string,
+	filename string,
+	size int64,
+	content io.ReadSeeker,
+) (*ExpenseDetailResponse, error) {
+	if s.storage == nil {
+		return nil, ErrInternal(errors.New("file storage is not configured (GCS_BUCKET unset)"))
+	}
+	if !validDocumentType(documentType) {
+		return nil, ErrValidation(`document_type must be "receipt" or "invoice"`, nil)
+	}
+
+	// Authorise: an active member of the org (same bar as creating an expense).
+	if _, err := s.authorize(ctx, callerID, orgID); err != nil {
+		return nil, err
+	}
+
+	// Validate size + sniff the real content type (shared with UploadAttachment).
+	contentType, ext, err := s.validateUpload(size, content)
+	if err != nil {
+		return nil, err
+	}
+
+	// Resolve the org's placeholder category ('Sundries') for the skeleton.
+	cat, err := s.queries.GetExpenseCategoryByNominalCode(ctx, expenses.GetExpenseCategoryByNominalCodeParams{
+		OrganisationID: orgID,
+		NominalCode:    placeholderCategoryNominal,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrInternal(fmt.Errorf("no placeholder category %q configured for organisation %s", placeholderCategoryNominal, orgID))
+		}
+		return nil, ErrInternal(err)
+	}
+
+	// Storage key: server-chosen. The expense id doesn't exist yet (created in the
+	// tx below), so we use a capture-scoped prefix; a hostile filename still can't
+	// escape it (the human name is kept only in file_name).
+	objectID := uuid.New()
+	key := fmt.Sprintf("orgs/%s/captures/%s%s", orgID, objectID, ext)
+
+	// 1) Bytes to GCS FIRST — same ordering as UploadAttachment: object before
+	//    metadata, so a failed DB write leaves a harmless orphan object we clean
+	//    up, never a skeleton expense pointing at a missing file.
+	if err := s.storage.Upload(ctx, key, contentType, content); err != nil {
+		return nil, ErrInternal(fmt.Errorf("upload to storage: %w", err))
+	}
+
+	// 2) One transaction: the skeleton expense + its (primary) attachment.
+	var expID, attID uuid.UUID
+	dbErr := s.withTx(ctx, func(qtx *expenses.Queries) error {
+		exp, err := qtx.CreateSkeletonExpense(ctx, expenses.CreateSkeletonExpenseParams{
+			OrganisationID:        orgID,
+			UserID:                callerID,
+			CreatedByUserID:       callerID,
+			CategoryID:            cat.ID,
+			DatedOn:               pgDateFromTime(time.Now()), // placeholder; OCR overwrites
+			Description:           "Awaiting review",          // placeholder
+			GrossValueMinor:       0,                          // placeholder; OCR fills
+			NativeGrossValueMinor: 0,
+		})
+		if err != nil {
+			return err
+		}
+		att, err := qtx.CreateExpenseAttachment(ctx, expenses.CreateExpenseAttachmentParams{
+			ExpenseID:        exp.ID,
+			OrganisationID:   orgID,
+			FileName:         sanitiseFilename(filename),
+			ContentType:      contentType,
+			FileSizeBytes:    int32(size),
+			StoragePath:      key,
+			StorageBucket:    s.storage.Bucket(),
+			Description:      pgNullText(nil), // no user description on a capture
+			IsPrimary:        true,            // first (only) file on a fresh skeleton
+			UploadedByUserID: callerID,
+		})
+		if err != nil {
+			return err
+		}
+		expID, attID = exp.ID, att.ID
+		return nil
+	})
+	if dbErr != nil {
+		s.cleanupOrphan(key)
+		return nil, ErrInternal(fmt.Errorf("create capture: %w", dbErr))
+	}
+
+	// 3) Kick off background OCR (no-op when not configured). The attachment is
+	//    PENDING; the worker drives it to a terminal state.
+	if s.ocr != nil {
+		s.ocr.Enqueue(attID, orgID, documentType)
+	}
+
+	// 4) Return the new draft (with its PENDING attachment) so the frontend can
+	//    open the form and poll GET /expenses/:id until OCR completes.
+	return buildExpenseDetail(ctx, s.queries, orgID, expID)
 }
 
 // =============================================================================
@@ -441,6 +565,39 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, callerID, orgI
 // =============================================================================
 // HELPERS
 // =============================================================================
+
+// validateUpload enforces the size cap and sniffs the REAL content type from the
+// file's magic bytes (never the client-declared type or filename extension —
+// both can lie). It returns the sniffed MIME type and the extension we store the
+// object under, and rewinds content to the start so the caller can stream the
+// whole file afterwards. Shared by UploadAttachment and CaptureFromReceipt.
+func (s *AttachmentService) validateUpload(size int64, content io.ReadSeeker) (contentType, ext string, err error) {
+	if size <= 0 {
+		return "", "", ErrValidation("uploaded file is empty", nil)
+	}
+	if size > s.maxBytes {
+		return "", "", ErrPayloadTooLarge(fmt.Sprintf("file is %d bytes; the limit is %d bytes", size, s.maxBytes))
+	}
+
+	// http.DetectContentType inspects up to the first 512 bytes.
+	head := make([]byte, sniffLen)
+	n, rerr := io.ReadFull(content, head)
+	if rerr != nil && !errors.Is(rerr, io.ErrUnexpectedEOF) && !errors.Is(rerr, io.EOF) {
+		return "", "", ErrInternal(fmt.Errorf("read file header: %w", rerr))
+	}
+	contentType = http.DetectContentType(head[:n])
+	allowedExt, ok := allowedContentTypes[contentType]
+	if !ok {
+		return "", "", ErrUnsupportedMediaType(fmt.Sprintf("file type %q is not allowed; accepted types are PDF, JPEG and PNG", contentType))
+	}
+
+	// Rewind: we consumed the header for sniffing, but the upload must stream the
+	// whole file.
+	if _, serr := content.Seek(0, io.SeekStart); serr != nil {
+		return "", "", ErrInternal(fmt.Errorf("rewind file: %w", serr))
+	}
+	return contentType, allowedExt, nil
+}
 
 // withTx runs fn inside a transaction, mirroring ExpenseService.withTransaction
 // (kept local so the attachments feature owns its own transactions).

@@ -112,6 +112,44 @@ RETURNING *;
 
 
 -- -----------------------------------------------------------------------------
+-- CreateSkeletonExpense
+-- Creates the placeholder draft behind "Smart Upload": a receipt is dropped in
+-- before any data is typed, so we insert a stub expense that OCR (and then the
+-- user) fills in. needs_review is hardcoded TRUE — that is the whole point of
+-- this row — which puts it in the review inbox until a human confirms it.
+--
+-- The caller supplies placeholders for the NOT NULL columns: category_id is the
+-- org's "Sundries" catch-all, dated_on is today, description is a marker like
+-- 'Awaiting review', and the money values are 0 (OCR fills them via
+-- FillExpenseFromOCR). Everything else uses its schema default (status DRAFT,
+-- currency GBP, VAT 0). Returns the full row so the caller has the new id.
+-- -----------------------------------------------------------------------------
+-- name: CreateSkeletonExpense :one
+INSERT INTO expenses (
+    organisation_id,
+    user_id,
+    created_by_user_id,
+    category_id,
+    dated_on,
+    description,
+    gross_value_minor,
+    native_gross_value_minor,
+    needs_review
+) VALUES (
+    $1,   -- organisation_id          UUID
+    $2,   -- user_id                  UUID (the claimant)
+    $3,   -- created_by_user_id       UUID
+    $4,   -- category_id              UUID (the org's 'Sundries' placeholder)
+    $5,   -- dated_on                 DATE (placeholder: today)
+    $6,   -- description              TEXT (placeholder: 'Awaiting review')
+    $7,   -- gross_value_minor        INTEGER (placeholder: 0 — OCR fills it)
+    $8,   -- native_gross_value_minor INTEGER (placeholder: 0)
+    TRUE  -- needs_review             always TRUE for a Smart Upload capture
+)
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
 -- GetExpense
 -- Fetch a single expense by its UUID, scoped to the organisation.
 -- We ALWAYS scope by organisation_id — never fetch by id alone.
@@ -189,6 +227,20 @@ ORDER BY submitted_at ASC;   -- oldest first so managers action the earliest cla
 
 
 -- -----------------------------------------------------------------------------
+-- ListExpensesNeedingReview
+-- The "Smart Upload review inbox": captured expenses a human has not yet
+-- confirmed. Newest first (most recently dropped-in receipt at the top). Uses the
+-- partial index idx_expenses_needs_review. Org-scoped, soft-delete aware.
+-- -----------------------------------------------------------------------------
+-- name: ListExpensesNeedingReview :many
+SELECT * FROM expenses
+WHERE organisation_id = $1
+  AND needs_review    = TRUE
+  AND deleted_at IS NULL
+ORDER BY created_at DESC;
+
+
+-- -----------------------------------------------------------------------------
 -- ListExpensesByProject
 -- All expenses linked to a specific project (for rebilling to a client).
 -- -----------------------------------------------------------------------------
@@ -262,10 +314,53 @@ UPDATE expenses SET
     stock_item_description   = $26,
     stock_quantity           = $27,
     property_id              = $28,
+    -- Saving a (reviewed) expense confirms any Smart Upload capture: clear the
+    -- review flag so it leaves the inbox. Harmless for ordinary expenses, which
+    -- are already FALSE.
+    needs_review             = FALSE,
     updated_at               = now()
 WHERE id              = $1   -- expense UUID
   AND organisation_id = $2   -- tenant scope
   AND deleted_at IS NULL     -- can't update a deleted record
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- FillExpenseFromOCR
+-- Writes OCR-extracted values onto a (skeleton) expense WITHOUT clobbering data
+-- a human already entered — the golden rule of automated capture.
+--
+--   * Text fields use COALESCE(existing, new): the new value is applied only
+--     when the column is still NULL. A non-NULL value the user typed is kept;
+--     a NULL OCR value (field not found) is a no-op.
+--   * Money fields fill only when the current value is 0 (the skeleton's
+--     placeholder). The service passes 0 when OCR found nothing or the currency
+--     did not match, so a 0 stays 0.
+--   * dated_on uses COALESCE(new, existing): a skeleton's dated_on is always the
+--     placeholder "today", so we PREFER the OCR date when present. (OCR only ever
+--     runs on a freshly created skeleton, so there is no real user date to lose.)
+--   * ocr_confidence / ocr_processed_at are OCR metadata and always set.
+--
+-- needs_review is intentionally left untouched: OCR finishing is NOT the same as
+-- a human confirming, so the row stays in the inbox until the user saves it.
+-- Org-scoped, soft-delete aware. RETURNING * so the caller can build the response.
+-- -----------------------------------------------------------------------------
+-- name: FillExpenseFromOCR :one
+UPDATE expenses SET
+    supplier_name            = COALESCE(supplier_name, $3),        -- fill only if empty
+    supplier_vat_number      = COALESCE(supplier_vat_number, $4),  -- fill only if empty
+    invoice_number           = COALESCE(invoice_number, $5),       -- fill only if empty
+    dated_on                 = COALESCE($6, dated_on),             -- prefer OCR date over placeholder
+    gross_value_minor        = CASE WHEN gross_value_minor = 0        THEN $7  ELSE gross_value_minor END,
+    native_gross_value_minor = CASE WHEN native_gross_value_minor = 0 THEN $8  ELSE native_gross_value_minor END,
+    vat_value_minor          = CASE WHEN vat_value_minor = 0          THEN $9  ELSE vat_value_minor END,
+    native_vat_value_minor   = CASE WHEN native_vat_value_minor = 0   THEN $10 ELSE native_vat_value_minor END,
+    ocr_confidence           = $11,
+    ocr_processed_at         = now(),
+    updated_at               = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
 RETURNING *;
 
 
@@ -450,19 +545,40 @@ WHERE id              = $1
 
 -- -----------------------------------------------------------------------------
 -- UpdateAttachmentOCRStatus
--- Called by the background OCR processing pipeline to record results.
--- ocr_extracted_data is JSONB — in Go this will be a []byte that your service
--- deserialises into a struct (e.g. ExtractedExpenseData).
+-- Records a TERMINAL OCR result (COMPLETE / FAILED / SKIPPED) on an attachment.
+-- ocr_extracted_data is JSONB — in Go this is a []byte the service marshals from
+-- its ExtractionResult. ocr_processed_at is stamped now() because the attachment
+-- has reached a terminal OCR state.
+-- Scoped by organisation_id (not just id): every write that touches tenant data
+-- is org-scoped, even on the internal OCR path, as defence in depth.
+-- For the PENDING→PROCESSING transition use MarkAttachmentOCRProcessing instead,
+-- which deliberately does NOT stamp ocr_processed_at.
 -- -----------------------------------------------------------------------------
 -- name: UpdateAttachmentOCRStatus :one
 UPDATE expense_attachments SET
-    ocr_status         = $2,   -- 'PROCESSING'|'COMPLETE'|'FAILED'
-    ocr_raw_text       = $3,   -- full text from OCR engine (nullable)
-    ocr_extracted_data = $4,   -- JSONB structured fields (nullable)
+    ocr_status         = $3,   -- 'COMPLETE'|'FAILED'|'SKIPPED'
+    ocr_raw_text       = $4,   -- full text from OCR engine (nullable)
+    ocr_extracted_data = $5,   -- JSONB structured fields (nullable)
     ocr_processed_at   = now(),
     updated_at         = now()
-WHERE id = $1
+WHERE id              = $1
+  AND organisation_id = $2     -- tenant scope — never skip this
 RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- MarkAttachmentOCRProcessing
+-- Flips an attachment from PENDING to PROCESSING when the OCR worker picks it up.
+-- Deliberately separate from UpdateAttachmentOCRStatus: this is a non-terminal
+-- transition, so it does NOT set ocr_processed_at (that marks completion). Org-
+-- scoped like every tenant write.
+-- -----------------------------------------------------------------------------
+-- name: MarkAttachmentOCRProcessing :exec
+UPDATE expense_attachments SET
+    ocr_status = 'PROCESSING',
+    updated_at = now()
+WHERE id              = $1
+  AND organisation_id = $2;
 
 
 -- -----------------------------------------------------------------------------
@@ -683,6 +799,20 @@ SELECT * FROM expense_categories
 WHERE organisation_id = $1
   AND is_active = TRUE
 ORDER BY category_group, nominal_code;
+
+
+-- -----------------------------------------------------------------------------
+-- GetExpenseCategoryByNominalCode
+-- Fetch one active category by its nominal code within an organisation. Smart
+-- Upload uses this to resolve the org's placeholder category ('6021' Sundries)
+-- for a skeleton expense, since category UUIDs are generated per-org and so
+-- can't be hardcoded. Org-scoped — categories are per-tenant reference data.
+-- -----------------------------------------------------------------------------
+-- name: GetExpenseCategoryByNominalCode :one
+SELECT * FROM expense_categories
+WHERE organisation_id = $1
+  AND nominal_code    = $2
+  AND is_active = TRUE;
 
 
 -- =============================================================================

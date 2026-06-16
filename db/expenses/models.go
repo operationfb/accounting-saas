@@ -55,6 +55,7 @@ type Expense struct {
 	SupplierName         pgtype.Text        `json:"supplier_name"`
 	SupplierVatNumber    pgtype.Text        `json:"supplier_vat_number"`
 	InvoiceNumber        pgtype.Text        `json:"invoice_number"`
+	NeedsReview          bool               `json:"needs_review"`
 	DeletedAt            pgtype.Timestamptz `json:"deleted_at"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
@@ -196,6 +197,9 @@ type VExpensesFull struct {
 	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
 	CategoryID             uuid.UUID          `json:"category_id"`
 	VatRateID              pgtype.UUID        `json:"vat_rate_id"`
+	NeedsReview            bool               `json:"needs_review"`
+	OcrConfidence          pgtype.Numeric     `json:"ocr_confidence"`
+	OcrProcessedAt         pgtype.Timestamptz `json:"ocr_processed_at"`
 }
 
 // Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.

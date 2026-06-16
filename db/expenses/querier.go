@@ -102,6 +102,22 @@ type Querier interface {
 	// expense rows as copies of the template.
 	// -----------------------------------------------------------------------------
 	CreateExpenseRecurrence(ctx context.Context, arg CreateExpenseRecurrenceParams) (ExpenseRecurrence, error)
+	// ^ RETURNING * tells sqlc to map the full expenses row as the return type.
+	//   sqlc will generate an Expense struct with all columns as fields.
+	// -----------------------------------------------------------------------------
+	// CreateSkeletonExpense
+	// Creates the placeholder draft behind "Smart Upload": a receipt is dropped in
+	// before any data is typed, so we insert a stub expense that OCR (and then the
+	// user) fills in. needs_review is hardcoded TRUE — that is the whole point of
+	// this row — which puts it in the review inbox until a human confirms it.
+	//
+	// The caller supplies placeholders for the NOT NULL columns: category_id is the
+	// org's "Sundries" catch-all, dated_on is today, description is a marker like
+	// 'Awaiting review', and the money values are 0 (OCR fills them via
+	// FillExpenseFromOCR). Everything else uses its schema default (status DRAFT,
+	// currency GBP, VAT 0). Returns the full row so the caller has the new id.
+	// -----------------------------------------------------------------------------
+	CreateSkeletonExpense(ctx context.Context, arg CreateSkeletonExpenseParams) (Expense, error)
 	// -----------------------------------------------------------------------------
 	// DeactivateExpenseRecurrence
 	// Stops a recurrence. Sets is_active = false rather than deleting the row
@@ -116,8 +132,27 @@ type Querier interface {
 	// :exec returns only an error.
 	// -----------------------------------------------------------------------------
 	DeleteExpenseAttachment(ctx context.Context, arg DeleteExpenseAttachmentParams) error
-	// ^ RETURNING * tells sqlc to map the full expenses row as the return type.
-	//   sqlc will generate an Expense struct with all columns as fields.
+	// -----------------------------------------------------------------------------
+	// FillExpenseFromOCR
+	// Writes OCR-extracted values onto a (skeleton) expense WITHOUT clobbering data
+	// a human already entered — the golden rule of automated capture.
+	//
+	//   * Text fields use COALESCE(existing, new): the new value is applied only
+	//     when the column is still NULL. A non-NULL value the user typed is kept;
+	//     a NULL OCR value (field not found) is a no-op.
+	//   * Money fields fill only when the current value is 0 (the skeleton's
+	//     placeholder). The service passes 0 when OCR found nothing or the currency
+	//     did not match, so a 0 stays 0.
+	//   * dated_on uses COALESCE(new, existing): a skeleton's dated_on is always the
+	//     placeholder "today", so we PREFER the OCR date when present. (OCR only ever
+	//     runs on a freshly created skeleton, so there is no real user date to lose.)
+	//   * ocr_confidence / ocr_processed_at are OCR metadata and always set.
+	//
+	// needs_review is intentionally left untouched: OCR finishing is NOT the same as
+	// a human confirming, so the row stays in the inbox until the user saves it.
+	// Org-scoped, soft-delete aware. RETURNING * so the caller can build the response.
+	// -----------------------------------------------------------------------------
+	FillExpenseFromOCR(ctx context.Context, arg FillExpenseFromOCRParams) (Expense, error)
 	// -----------------------------------------------------------------------------
 	// GetExpense
 	// Fetch a single expense by its UUID, scoped to the organisation.
@@ -133,6 +168,14 @@ type Querier interface {
 	// We scope by organisation_id to prevent cross-tenant access.
 	// -----------------------------------------------------------------------------
 	GetExpenseAttachment(ctx context.Context, arg GetExpenseAttachmentParams) (ExpenseAttachment, error)
+	// -----------------------------------------------------------------------------
+	// GetExpenseCategoryByNominalCode
+	// Fetch one active category by its nominal code within an organisation. Smart
+	// Upload uses this to resolve the org's placeholder category ('6021' Sundries)
+	// for a skeleton expense, since category UUIDs are generated per-org and so
+	// can't be hardcoded. Org-scoped — categories are per-tenant reference data.
+	// -----------------------------------------------------------------------------
+	GetExpenseCategoryByNominalCode(ctx context.Context, arg GetExpenseCategoryByNominalCodeParams) (ExpenseCategory, error)
 	// -----------------------------------------------------------------------------
 	// GetExpenseMileage
 	// Fetch the mileage sub-record for a given expense.
@@ -199,7 +242,6 @@ type Querier interface {
 	// Both from_date and to_date are inclusive (BETWEEN is inclusive in PostgreSQL).
 	// -----------------------------------------------------------------------------
 	ListExpensesByDateRange(ctx context.Context, arg ListExpensesByDateRangeParams) ([]Expense, error)
-	// oldest first so managers action the earliest claims first
 	// -----------------------------------------------------------------------------
 	// ListExpensesByProject
 	// All expenses linked to a specific project (for rebilling to a client).
@@ -217,6 +259,14 @@ type Querier interface {
 	// Useful for employee self-service: they only see their own claims.
 	// -----------------------------------------------------------------------------
 	ListExpensesByUser(ctx context.Context, arg ListExpensesByUserParams) ([]Expense, error)
+	// oldest first so managers action the earliest claims first
+	// -----------------------------------------------------------------------------
+	// ListExpensesNeedingReview
+	// The "Smart Upload review inbox": captured expenses a human has not yet
+	// confirmed. Newest first (most recently dropped-in receipt at the top). Uses the
+	// partial index idx_expenses_needs_review. Org-scoped, soft-delete aware.
+	// -----------------------------------------------------------------------------
+	ListExpensesNeedingReview(ctx context.Context, organisationID uuid.UUID) ([]Expense, error)
 	// -----------------------------------------------------------------------------
 	// ListExpensesUpdatedSince
 	// Returns all expenses modified after a given timestamp.
@@ -249,6 +299,14 @@ type Querier interface {
 	// idx_vat_rates_country for the country_code lookup.
 	// -----------------------------------------------------------------------------
 	ListVatRatesByCountry(ctx context.Context, countryCode string) ([]ListVatRatesByCountryRow, error)
+	// -----------------------------------------------------------------------------
+	// MarkAttachmentOCRProcessing
+	// Flips an attachment from PENDING to PROCESSING when the OCR worker picks it up.
+	// Deliberately separate from UpdateAttachmentOCRStatus: this is a non-terminal
+	// transition, so it does NOT set ocr_processed_at (that marks completion). Org-
+	// scoped like every tenant write.
+	// -----------------------------------------------------------------------------
+	MarkAttachmentOCRProcessing(ctx context.Context, arg MarkAttachmentOCRProcessingParams) error
 	// -----------------------------------------------------------------------------
 	// SetAttachmentPrimary
 	// Marks a single attachment as the primary one for its expense. Pair it with
@@ -290,9 +348,14 @@ type Querier interface {
 	UnsetExpensePrimary(ctx context.Context, arg UnsetExpensePrimaryParams) error
 	// -----------------------------------------------------------------------------
 	// UpdateAttachmentOCRStatus
-	// Called by the background OCR processing pipeline to record results.
-	// ocr_extracted_data is JSONB — in Go this will be a []byte that your service
-	// deserialises into a struct (e.g. ExtractedExpenseData).
+	// Records a TERMINAL OCR result (COMPLETE / FAILED / SKIPPED) on an attachment.
+	// ocr_extracted_data is JSONB — in Go this is a []byte the service marshals from
+	// its ExtractionResult. ocr_processed_at is stamped now() because the attachment
+	// has reached a terminal OCR state.
+	// Scoped by organisation_id (not just id): every write that touches tenant data
+	// is org-scoped, even on the internal OCR path, as defence in depth.
+	// For the PENDING→PROCESSING transition use MarkAttachmentOCRProcessing instead,
+	// which deliberately does NOT stamp ocr_processed_at.
 	// -----------------------------------------------------------------------------
 	UpdateAttachmentOCRStatus(ctx context.Context, arg UpdateAttachmentOCRStatusParams) (ExpenseAttachment, error)
 	// -----------------------------------------------------------------------------

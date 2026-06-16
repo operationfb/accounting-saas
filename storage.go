@@ -49,6 +49,13 @@ type Storage interface {
 	// key that does not exist is treated as success (idempotent cleanup).
 	Delete(ctx context.Context, key string) error
 
+	// Download opens the object at key for reading; the caller MUST Close the
+	// returned reader. The OCR worker uses this to re-read a receipt's bytes from
+	// storage: the original upload's reader is tied to the HTTP request, which is
+	// long gone by the time the (async, background) OCR runs. Unlike Delete, a
+	// missing object here is a genuine error — we expected to read it.
+	Download(ctx context.Context, key string) (io.ReadCloser, error)
+
 	// Bucket returns the name of the bucket objects are stored in. We record it
 	// in each attachment's storage_bucket column so a row always knows which
 	// bucket its object lives in, even if the configured bucket changes later.

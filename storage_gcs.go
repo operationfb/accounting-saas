@@ -84,6 +84,17 @@ func (g *gcsStorage) SignedDownloadURL(_ context.Context, key string, ttl time.D
 	return url, nil
 }
 
+// Download opens the object at key for streaming reads. The returned ReadCloser
+// must be closed by the caller. A missing object surfaces as an error (the OCR
+// worker expected the file to be there), unlike Delete which tolerates absence.
+func (g *gcsStorage) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	r, err := g.client.Bucket(g.bucket).Object(key).NewReader(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open object %q for read: %w", key, err)
+	}
+	return r, nil
+}
+
 // Delete removes the object at key. A missing object is treated as success so
 // that cleanup (orphan removal, attachment deletion) is idempotent.
 func (g *gcsStorage) Delete(ctx context.Context, key string) error {

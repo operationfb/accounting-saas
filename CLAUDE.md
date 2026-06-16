@@ -49,13 +49,16 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── server.go            # Gin engine + Server struct + route registration + expense handlers
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
-├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule
-├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete)
-├── storage.go           # Storage interface (Upload / SignedDownloadURL / Delete / Bucket) — abstraction over the object store
+├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
+├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
+├── ocr_service.go       # OcrService: background receipt/invoice extraction — drives the attachment ocr_status machine, fills the expense (DocumentExtractor interface + ExtractionResult)
+├── ocr_documentai.go    # documentAIExtractor: Google Document AI implementation of DocumentExtractor (Invoice + Expense parsers, EU regional endpoint, MoneyValue→pence)
+├── storage.go           # Storage interface (Upload / Download / SignedDownloadURL / Delete / Bucket) — abstraction over the object store
 ├── storage_gcs.go       # gcsStorage: the Google Cloud Storage implementation of Storage
 ├── errors.go            # AppError type + ErrorCode constants + handler→HTTP mapping
 ├── server_test.go       # Integration tests (real Postgres) for the HTTP handlers
 ├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
+├── ocr_service_test.go  # OCR/Smart Upload tests (real Postgres + GCS; Document AI faked) + money-conversion unit test
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth)
 │
 ├── db/
@@ -78,11 +81,15 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
     └── random.go        # Random test-data helpers for the integration tests
 ```
 
-Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, and `GCS_BUCKET` for receipt-attachment storage), `.gitignore`, and this `CLAUDE.md`.
+Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, `GCS_BUCKET` for receipt-attachment storage, and `DOCAI_*` for Document AI OCR), `.gitignore`, and this `CLAUDE.md`.
 
 ### Attachment storage (receipts)
 
 Expense attachments (PDF/image receipts) follow the standard split: the **file bytes live in Google Cloud Storage**, the **file metadata lives in Postgres** (`expense_attachments`). The service (`attachment_service.go`) depends on the `Storage` interface (`storage.go`); the only implementation is GCS (`storage_gcs.go`), reached via Application Default Credentials. The DB row stores the GCS object **key** in `storage_path` (never a signed URL — those are short-lived and generated on demand). GCS and Postgres are not one transaction, so an upload writes to GCS first and, if the metadata write fails, best-effort deletes the object to avoid orphans. The **first file uploaded to an expense is the primary** one; deleting the primary promotes the oldest remaining file.
+
+### OCR / "Smart Upload" (Document AI)
+
+There are two upload paths. **"Add file"** (`POST /expenses/:id/attachments`) attaches a receipt to an *existing* expense and runs **no** OCR. **"Smart Upload"** (`POST /expenses/capture`) is receipt-first: it creates a **skeleton draft** (`needs_review=TRUE`, placeholder Sundries category, `gross=0`), attaches the file, and kicks off **background OCR** (`OcrService.Enqueue` → a goroutine). The user picks Receipt or Invoice (`document_type`), which routes to the matching Document AI processor (Expense vs Invoice parser); residency is enforced by the **`eu` regional endpoint**. OCR drives the attachment's `ocr_status` (PENDING→PROCESSING→COMPLETE/FAILED/SKIPPED) and **COALESCE-fills only empty expense fields** — it never overwrites user-entered data and never clears `needs_review` (a human confirms by saving, which clears it via the normal update). `needs_review` is a **third axis**, orthogonal to the approval `status` and the attachment `ocr_status`. The Document AI call sits behind the `DocumentExtractor` interface (`ocr_documentai.go`), so tests fake it (like the only-mock-external-services rule) while still using real Postgres + GCS; money is converted `MoneyValue`→pence with `shopspring/decimal` (HALF_UP). OCR is optional: with `DOCAI_*` unset, Smart Upload still creates drafts but they stay PENDING.
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 

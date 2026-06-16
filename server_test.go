@@ -129,7 +129,7 @@ func newTestServer(t *testing.T) *testServer {
 		}
 		store = gcs
 	}
-	attachmentService := NewAttachmentService(pool, queries, authQueries, store, 0, 0)
+	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
 	server := NewServer(service, attachmentService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{

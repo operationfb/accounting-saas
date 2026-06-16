@@ -137,7 +137,7 @@ INSERT INTO expenses (
     $28,  -- stock_quantity        NUMERIC (nullable)
     $29   -- property_id           UUID (nullable)
 )
-RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
 `
 
 type CreateExpenseParams struct {
@@ -294,6 +294,7 @@ func (q *Queries) CreateExpense(ctx context.Context, arg CreateExpenseParams) (E
 		&i.SupplierName,
 		&i.SupplierVatNumber,
 		&i.InvoiceNumber,
+		&i.NeedsReview,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -551,6 +552,122 @@ func (q *Queries) CreateExpenseRecurrence(ctx context.Context, arg CreateExpense
 	return i, err
 }
 
+const createSkeletonExpense = `-- name: CreateSkeletonExpense :one
+
+
+INSERT INTO expenses (
+    organisation_id,
+    user_id,
+    created_by_user_id,
+    category_id,
+    dated_on,
+    description,
+    gross_value_minor,
+    native_gross_value_minor,
+    needs_review
+) VALUES (
+    $1,   -- organisation_id          UUID
+    $2,   -- user_id                  UUID (the claimant)
+    $3,   -- created_by_user_id       UUID
+    $4,   -- category_id              UUID (the org's 'Sundries' placeholder)
+    $5,   -- dated_on                 DATE (placeholder: today)
+    $6,   -- description              TEXT (placeholder: 'Awaiting review')
+    $7,   -- gross_value_minor        INTEGER (placeholder: 0 — OCR fills it)
+    $8,   -- native_gross_value_minor INTEGER (placeholder: 0)
+    TRUE  -- needs_review             always TRUE for a Smart Upload capture
+)
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type CreateSkeletonExpenseParams struct {
+	OrganisationID        uuid.UUID   `json:"organisation_id"`
+	UserID                uuid.UUID   `json:"user_id"`
+	CreatedByUserID       uuid.UUID   `json:"created_by_user_id"`
+	CategoryID            uuid.UUID   `json:"category_id"`
+	DatedOn               pgtype.Date `json:"dated_on"`
+	Description           string      `json:"description"`
+	GrossValueMinor       int32       `json:"gross_value_minor"`
+	NativeGrossValueMinor int32       `json:"native_gross_value_minor"`
+}
+
+// ^ RETURNING * tells sqlc to map the full expenses row as the return type.
+//
+//	sqlc will generate an Expense struct with all columns as fields.
+//
+// -----------------------------------------------------------------------------
+// CreateSkeletonExpense
+// Creates the placeholder draft behind "Smart Upload": a receipt is dropped in
+// before any data is typed, so we insert a stub expense that OCR (and then the
+// user) fills in. needs_review is hardcoded TRUE — that is the whole point of
+// this row — which puts it in the review inbox until a human confirms it.
+//
+// The caller supplies placeholders for the NOT NULL columns: category_id is the
+// org's "Sundries" catch-all, dated_on is today, description is a marker like
+// 'Awaiting review', and the money values are 0 (OCR fills them via
+// FillExpenseFromOCR). Everything else uses its schema default (status DRAFT,
+// currency GBP, VAT 0). Returns the full row so the caller has the new id.
+// -----------------------------------------------------------------------------
+func (q *Queries) CreateSkeletonExpense(ctx context.Context, arg CreateSkeletonExpenseParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, createSkeletonExpense,
+		arg.OrganisationID,
+		arg.UserID,
+		arg.CreatedByUserID,
+		arg.CategoryID,
+		arg.DatedOn,
+		arg.Description,
+		arg.GrossValueMinor,
+		arg.NativeGrossValueMinor,
+	)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deactivateExpenseRecurrence = `-- name: DeactivateExpenseRecurrence :exec
 UPDATE expense_recurrence SET
     is_active  = FALSE,
@@ -597,10 +714,125 @@ func (q *Queries) DeleteExpenseAttachment(ctx context.Context, arg DeleteExpense
 	return err
 }
 
+const fillExpenseFromOCR = `-- name: FillExpenseFromOCR :one
+UPDATE expenses SET
+    supplier_name            = COALESCE(supplier_name, $3),        -- fill only if empty
+    supplier_vat_number      = COALESCE(supplier_vat_number, $4),  -- fill only if empty
+    invoice_number           = COALESCE(invoice_number, $5),       -- fill only if empty
+    dated_on                 = COALESCE($6, dated_on),             -- prefer OCR date over placeholder
+    gross_value_minor        = CASE WHEN gross_value_minor = 0        THEN $7  ELSE gross_value_minor END,
+    native_gross_value_minor = CASE WHEN native_gross_value_minor = 0 THEN $8  ELSE native_gross_value_minor END,
+    vat_value_minor          = CASE WHEN vat_value_minor = 0          THEN $9  ELSE vat_value_minor END,
+    native_vat_value_minor   = CASE WHEN native_vat_value_minor = 0   THEN $10 ELSE native_vat_value_minor END,
+    ocr_confidence           = $11,
+    ocr_processed_at         = now(),
+    updated_at               = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type FillExpenseFromOCRParams struct {
+	ID                    uuid.UUID      `json:"id"`
+	OrganisationID        uuid.UUID      `json:"organisation_id"`
+	SupplierName          pgtype.Text    `json:"supplier_name"`
+	SupplierVatNumber     pgtype.Text    `json:"supplier_vat_number"`
+	InvoiceNumber         pgtype.Text    `json:"invoice_number"`
+	DatedOn               pgtype.Date    `json:"dated_on"`
+	GrossValueMinor       int32          `json:"gross_value_minor"`
+	NativeGrossValueMinor int32          `json:"native_gross_value_minor"`
+	VatValueMinor         int32          `json:"vat_value_minor"`
+	NativeVatValueMinor   int32          `json:"native_vat_value_minor"`
+	OcrConfidence         pgtype.Numeric `json:"ocr_confidence"`
+}
+
+// -----------------------------------------------------------------------------
+// FillExpenseFromOCR
+// Writes OCR-extracted values onto a (skeleton) expense WITHOUT clobbering data
+// a human already entered — the golden rule of automated capture.
+//
+//   - Text fields use COALESCE(existing, new): the new value is applied only
+//     when the column is still NULL. A non-NULL value the user typed is kept;
+//     a NULL OCR value (field not found) is a no-op.
+//   - Money fields fill only when the current value is 0 (the skeleton's
+//     placeholder). The service passes 0 when OCR found nothing or the currency
+//     did not match, so a 0 stays 0.
+//   - dated_on uses COALESCE(new, existing): a skeleton's dated_on is always the
+//     placeholder "today", so we PREFER the OCR date when present. (OCR only ever
+//     runs on a freshly created skeleton, so there is no real user date to lose.)
+//   - ocr_confidence / ocr_processed_at are OCR metadata and always set.
+//
+// needs_review is intentionally left untouched: OCR finishing is NOT the same as
+// a human confirming, so the row stays in the inbox until the user saves it.
+// Org-scoped, soft-delete aware. RETURNING * so the caller can build the response.
+// -----------------------------------------------------------------------------
+func (q *Queries) FillExpenseFromOCR(ctx context.Context, arg FillExpenseFromOCRParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, fillExpenseFromOCR,
+		arg.ID,
+		arg.OrganisationID,
+		arg.SupplierName,
+		arg.SupplierVatNumber,
+		arg.InvoiceNumber,
+		arg.DatedOn,
+		arg.GrossValueMinor,
+		arg.NativeGrossValueMinor,
+		arg.VatValueMinor,
+		arg.NativeVatValueMinor,
+		arg.OcrConfidence,
+	)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getExpense = `-- name: GetExpense :one
-
-
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE id              = $1   -- expense UUID
   AND organisation_id = $2   -- tenant scope — never skip this
   AND deleted_at IS NULL
@@ -611,10 +843,6 @@ type GetExpenseParams struct {
 	OrganisationID uuid.UUID `json:"organisation_id"`
 }
 
-// ^ RETURNING * tells sqlc to map the full expenses row as the return type.
-//
-//	sqlc will generate an Expense struct with all columns as fields.
-//
 // -----------------------------------------------------------------------------
 // GetExpense
 // Fetch a single expense by its UUID, scoped to the organisation.
@@ -666,6 +894,7 @@ func (q *Queries) GetExpense(ctx context.Context, arg GetExpenseParams) (Expense
 		&i.SupplierName,
 		&i.SupplierVatNumber,
 		&i.InvoiceNumber,
+		&i.NeedsReview,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -711,6 +940,45 @@ func (q *Queries) GetExpenseAttachment(ctx context.Context, arg GetExpenseAttach
 		&i.OcrExtractedData,
 		&i.OcrProcessedAt,
 		&i.UploadedByUserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getExpenseCategoryByNominalCode = `-- name: GetExpenseCategoryByNominalCode :one
+SELECT id, organisation_id, nominal_code, name, description, category_group, is_mileage, is_capital_asset, is_stock_purchase, is_active, created_at, updated_at FROM expense_categories
+WHERE organisation_id = $1
+  AND nominal_code    = $2
+  AND is_active = TRUE
+`
+
+type GetExpenseCategoryByNominalCodeParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	NominalCode    string    `json:"nominal_code"`
+}
+
+// -----------------------------------------------------------------------------
+// GetExpenseCategoryByNominalCode
+// Fetch one active category by its nominal code within an organisation. Smart
+// Upload uses this to resolve the org's placeholder category ('6021' Sundries)
+// for a skeleton expense, since category UUIDs are generated per-org and so
+// can't be hardcoded. Org-scoped — categories are per-tenant reference data.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetExpenseCategoryByNominalCode(ctx context.Context, arg GetExpenseCategoryByNominalCodeParams) (ExpenseCategory, error) {
+	row := q.db.QueryRow(ctx, getExpenseCategoryByNominalCode, arg.OrganisationID, arg.NominalCode)
+	var i ExpenseCategory
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.CategoryGroup,
+		&i.IsMileage,
+		&i.IsCapitalAsset,
+		&i.IsStockPurchase,
+		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -781,7 +1049,7 @@ func (q *Queries) GetExpenseRecurrence(ctx context.Context, expenseID uuid.UUID)
 const getExpenseWithDetails = `-- name: GetExpenseWithDetails :one
 
 
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at FROM v_expenses_full
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -852,6 +1120,9 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 		&i.UpdatedAt,
 		&i.CategoryID,
 		&i.VatRateID,
+		&i.NeedsReview,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
 	)
 	return i, err
 }
@@ -1044,7 +1315,7 @@ func (q *Queries) ListExpenseCategories(ctx context.Context, organisationID uuid
 }
 
 const listExpenses = `-- name: ListExpenses :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND deleted_at IS NULL
 ORDER BY dated_on DESC, created_at DESC
@@ -1105,6 +1376,7 @@ func (q *Queries) ListExpenses(ctx context.Context, organisationID uuid.UUID) ([
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1120,7 +1392,7 @@ func (q *Queries) ListExpenses(ctx context.Context, organisationID uuid.UUID) ([
 }
 
 const listExpensesByDateRange = `-- name: ListExpensesByDateRange :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND dated_on BETWEEN $2 AND $3   -- $2 = from_date, $3 = to_date
   AND deleted_at IS NULL
@@ -1188,6 +1460,7 @@ func (q *Queries) ListExpensesByDateRange(ctx context.Context, arg ListExpensesB
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1203,9 +1476,7 @@ func (q *Queries) ListExpensesByDateRange(ctx context.Context, arg ListExpensesB
 }
 
 const listExpensesByProject = `-- name: ListExpensesByProject :many
-
-
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND project_id      = $2
   AND deleted_at IS NULL
@@ -1217,7 +1488,6 @@ type ListExpensesByProjectParams struct {
 	ProjectID      pgtype.UUID `json:"project_id"`
 }
 
-// oldest first so managers action the earliest claims first
 // -----------------------------------------------------------------------------
 // ListExpensesByProject
 // All expenses linked to a specific project (for rebilling to a client).
@@ -1272,6 +1542,7 @@ func (q *Queries) ListExpensesByProject(ctx context.Context, arg ListExpensesByP
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1287,7 +1558,7 @@ func (q *Queries) ListExpensesByProject(ctx context.Context, arg ListExpensesByP
 }
 
 const listExpensesByStatus = `-- name: ListExpensesByStatus :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND status          = $2   -- 'DRAFT'|'SUBMITTED'|'APPROVED'|'REJECTED'|'PAID'
   AND deleted_at IS NULL
@@ -1354,6 +1625,7 @@ func (q *Queries) ListExpensesByStatus(ctx context.Context, arg ListExpensesBySt
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1369,7 +1641,7 @@ func (q *Queries) ListExpensesByStatus(ctx context.Context, arg ListExpensesBySt
 }
 
 const listExpensesByUser = `-- name: ListExpensesByUser :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND user_id         = $2
   AND deleted_at IS NULL
@@ -1436,6 +1708,89 @@ func (q *Queries) ListExpensesByUser(ctx context.Context, arg ListExpensesByUser
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpensesNeedingReview = `-- name: ListExpensesNeedingReview :many
+
+
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
+WHERE organisation_id = $1
+  AND needs_review    = TRUE
+  AND deleted_at IS NULL
+ORDER BY created_at DESC
+`
+
+// oldest first so managers action the earliest claims first
+// -----------------------------------------------------------------------------
+// ListExpensesNeedingReview
+// The "Smart Upload review inbox": captured expenses a human has not yet
+// confirmed. Newest first (most recently dropped-in receipt at the top). Uses the
+// partial index idx_expenses_needs_review. Org-scoped, soft-delete aware.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExpensesNeedingReview(ctx context.Context, organisationID uuid.UUID) ([]Expense, error) {
+	rows, err := q.db.Query(ctx, listExpensesNeedingReview, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Expense
+	for rows.Next() {
+		var i Expense
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.UserID,
+			&i.CreatedByUserID,
+			&i.CategoryID,
+			&i.DatedOn,
+			&i.Description,
+			&i.ReceiptReference,
+			&i.Currency,
+			&i.NativeCurrency,
+			&i.ExchangeRate,
+			&i.GrossValueMinor,
+			&i.NativeGrossValueMinor,
+			&i.VatRateID,
+			&i.VatRateBps,
+			&i.VatValueMinor,
+			&i.NativeVatValueMinor,
+			&i.ManualVatAmountMinor,
+			&i.VatStatus,
+			&i.EcStatus,
+			&i.ProjectID,
+			&i.RebillType,
+			&i.RebillFactor,
+			&i.RebilledInvoiceID,
+			&i.StockItemID,
+			&i.StockItemDescription,
+			&i.StockQuantity,
+			&i.CapitalAssetID,
+			&i.PropertyID,
+			&i.Status,
+			&i.SubmittedAt,
+			&i.ApprovedAt,
+			&i.ApprovedByUserID,
+			&i.PaidAt,
+			&i.RejectionNote,
+			&i.OcrConfidence,
+			&i.OcrProcessedAt,
+			&i.SupplierName,
+			&i.SupplierVatNumber,
+			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1451,7 +1806,7 @@ func (q *Queries) ListExpensesByUser(ctx context.Context, arg ListExpensesByUser
 }
 
 const listExpensesUpdatedSince = `-- name: ListExpensesUpdatedSince :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND updated_at      > $2   -- strict greater-than (caller passes their last-sync timestamp)
 ORDER BY updated_at ASC
@@ -1519,6 +1874,7 @@ func (q *Queries) ListExpensesUpdatedSince(ctx context.Context, arg ListExpenses
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1534,7 +1890,7 @@ func (q *Queries) ListExpensesUpdatedSince(ctx context.Context, arg ListExpenses
 }
 
 const listRecentExpenses = `-- name: ListRecentExpenses :many
-SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at FROM expenses
+SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE organisation_id = $1
   AND dated_on        >= CURRENT_DATE - INTERVAL '30 days'
   AND deleted_at IS NULL
@@ -1595,6 +1951,7 @@ func (q *Queries) ListRecentExpenses(ctx context.Context, organisationID uuid.UU
 			&i.SupplierName,
 			&i.SupplierVatNumber,
 			&i.InvoiceNumber,
+			&i.NeedsReview,
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1676,6 +2033,31 @@ func (q *Queries) ListVatRatesByCountry(ctx context.Context, countryCode string)
 		return nil, err
 	}
 	return items, nil
+}
+
+const markAttachmentOCRProcessing = `-- name: MarkAttachmentOCRProcessing :exec
+UPDATE expense_attachments SET
+    ocr_status = 'PROCESSING',
+    updated_at = now()
+WHERE id              = $1
+  AND organisation_id = $2
+`
+
+type MarkAttachmentOCRProcessingParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// MarkAttachmentOCRProcessing
+// Flips an attachment from PENDING to PROCESSING when the OCR worker picks it up.
+// Deliberately separate from UpdateAttachmentOCRStatus: this is a non-terminal
+// transition, so it does NOT set ocr_processed_at (that marks completion). Org-
+// scoped like every tenant write.
+// -----------------------------------------------------------------------------
+func (q *Queries) MarkAttachmentOCRProcessing(ctx context.Context, arg MarkAttachmentOCRProcessingParams) error {
+	_, err := q.db.Exec(ctx, markAttachmentOCRProcessing, arg.ID, arg.OrganisationID)
+	return err
 }
 
 const setAttachmentPrimary = `-- name: SetAttachmentPrimary :exec
@@ -1887,17 +2269,19 @@ func (q *Queries) UnsetExpensePrimary(ctx context.Context, arg UnsetExpensePrima
 
 const updateAttachmentOCRStatus = `-- name: UpdateAttachmentOCRStatus :one
 UPDATE expense_attachments SET
-    ocr_status         = $2,   -- 'PROCESSING'|'COMPLETE'|'FAILED'
-    ocr_raw_text       = $3,   -- full text from OCR engine (nullable)
-    ocr_extracted_data = $4,   -- JSONB structured fields (nullable)
+    ocr_status         = $3,   -- 'COMPLETE'|'FAILED'|'SKIPPED'
+    ocr_raw_text       = $4,   -- full text from OCR engine (nullable)
+    ocr_extracted_data = $5,   -- JSONB structured fields (nullable)
     ocr_processed_at   = now(),
     updated_at         = now()
-WHERE id = $1
+WHERE id              = $1
+  AND organisation_id = $2     -- tenant scope — never skip this
 RETURNING id, expense_id, organisation_id, file_name, content_type, file_size_bytes, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at
 `
 
 type UpdateAttachmentOCRStatusParams struct {
 	ID               uuid.UUID   `json:"id"`
+	OrganisationID   uuid.UUID   `json:"organisation_id"`
 	OcrStatus        string      `json:"ocr_status"`
 	OcrRawText       pgtype.Text `json:"ocr_raw_text"`
 	OcrExtractedData []byte      `json:"ocr_extracted_data"`
@@ -1905,13 +2289,19 @@ type UpdateAttachmentOCRStatusParams struct {
 
 // -----------------------------------------------------------------------------
 // UpdateAttachmentOCRStatus
-// Called by the background OCR processing pipeline to record results.
-// ocr_extracted_data is JSONB — in Go this will be a []byte that your service
-// deserialises into a struct (e.g. ExtractedExpenseData).
+// Records a TERMINAL OCR result (COMPLETE / FAILED / SKIPPED) on an attachment.
+// ocr_extracted_data is JSONB — in Go this is a []byte the service marshals from
+// its ExtractionResult. ocr_processed_at is stamped now() because the attachment
+// has reached a terminal OCR state.
+// Scoped by organisation_id (not just id): every write that touches tenant data
+// is org-scoped, even on the internal OCR path, as defence in depth.
+// For the PENDING→PROCESSING transition use MarkAttachmentOCRProcessing instead,
+// which deliberately does NOT stamp ocr_processed_at.
 // -----------------------------------------------------------------------------
 func (q *Queries) UpdateAttachmentOCRStatus(ctx context.Context, arg UpdateAttachmentOCRStatusParams) (ExpenseAttachment, error) {
 	row := q.db.QueryRow(ctx, updateAttachmentOCRStatus,
 		arg.ID,
+		arg.OrganisationID,
 		arg.OcrStatus,
 		arg.OcrRawText,
 		arg.OcrExtractedData,
@@ -1967,11 +2357,15 @@ UPDATE expenses SET
     stock_item_description   = $26,
     stock_quantity           = $27,
     property_id              = $28,
+    -- Saving a (reviewed) expense confirms any Smart Upload capture: clear the
+    -- review flag so it leaves the inbox. Harmless for ordinary expenses, which
+    -- are already FALSE.
+    needs_review             = FALSE,
     updated_at               = now()
 WHERE id              = $1   -- expense UUID
   AND organisation_id = $2   -- tenant scope
   AND deleted_at IS NULL     -- can't update a deleted record
-RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
 `
 
 type UpdateExpenseParams struct {
@@ -2086,6 +2480,7 @@ func (q *Queries) UpdateExpense(ctx context.Context, arg UpdateExpenseParams) (E
 		&i.SupplierName,
 		&i.SupplierVatNumber,
 		&i.InvoiceNumber,
+		&i.NeedsReview,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -2188,7 +2583,7 @@ UPDATE expenses SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
 `
 
 type UpdateExpenseStatusParams struct {
@@ -2262,6 +2657,7 @@ func (q *Queries) UpdateExpenseStatus(ctx context.Context, arg UpdateExpenseStat
 		&i.SupplierName,
 		&i.SupplierVatNumber,
 		&i.InvoiceNumber,
+		&i.NeedsReview,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

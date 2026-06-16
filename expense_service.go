@@ -168,7 +168,7 @@ type vatResult struct {
 // stored VAT fields:
 //   - no rate selected     → no VAT (NULL rate id/bps, value 0)
 //   - fixed-ratio rate     → VAT EXTRACTED from the VAT-inclusive total (see
-//                            computeFixedVAT); any client amount is IGNORED (not an error)
+//     computeFixedVAT); any client amount is IGNORED (not an error)
 //   - non-fixed-ratio rate → value = the client-supplied amount (0 if omitted)
 //
 // The selected rate must belong to the caller's organisation's country (the
@@ -369,8 +369,8 @@ func (s *ExpenseService) CreateExpense(
 		VatRateBps:            vat.RateBps,
 		VatValueMinor:         vat.ValueMinor,
 		NativeVatValueMinor:   vat.ValueMinor, // GBP: native VAT == expense-currency VAT
-		VatStatus:             "TAXABLE",   // TODO: derive EXEMPT/OUT_OF_SCOPE from the rate
-		EcStatus:              "UK_NON_EC", // correct default for post-2021 UK expenses
+		VatStatus:             "TAXABLE",      // TODO: derive EXEMPT/OUT_OF_SCOPE from the rate
+		EcStatus:              "UK_NON_EC",    // correct default for post-2021 UK expenses
 
 		// Optional string fields: convert *string to pgtype.Text
 		// pgNullText is a small helper defined at the bottom of this file.
@@ -585,7 +585,16 @@ func (s *ExpenseService) GetExpenseDetail(
 		return nil, ErrForbidden("you do not have access to this expense")
 	}
 
-	return expenseDetailToResponse(row), nil
+	// Map the detail row, then attach the file list. The Smart Upload frontend
+	// polls the primary attachment's ocr_status here to know when OCR has filled
+	// the form, so the attachments must travel with the detail response.
+	resp := expenseDetailToResponse(row)
+	atts, err := attachmentResponsesFor(ctx, s.queries, expenseUUID)
+	if err != nil {
+		return nil, err
+	}
+	resp.Attachments = atts
+	return resp, nil
 }
 
 // =============================================================================
@@ -621,6 +630,40 @@ func (s *ExpenseService) ListExpenses(
 	out := make([]*ExpenseResponse, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, expenseToResponse(row))
+	}
+	return out, nil
+}
+
+// =============================================================================
+// LISTINBOX (Smart Upload review queue)
+// =============================================================================
+
+// ListInbox returns the captured expenses awaiting human review (needs_review=
+// TRUE) — the Smart Upload inbox. Like ListExpenses, owners/admins see the whole
+// organisation's inbox; everyone else sees only the captures they created. The
+// query is org-scoped for tenant isolation; the per-user filter applies the same
+// ownership rule used elsewhere.
+func (s *ExpenseService) ListInbox(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]*ExpenseResponse, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.queries.ListExpensesNeedingReview(ctx, authOrgID)
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+
+	admin := isOrgAdmin(role)
+	out := make([]*ExpenseResponse, 0, len(rows))
+	for _, row := range rows {
+		if admin || row.UserID == authUserID {
+			out = append(out, expenseToResponse(row))
+		}
 	}
 	return out, nil
 }
@@ -741,6 +784,7 @@ func expenseToResponse(e expenses.Expense) *ExpenseResponse {
 		NativeGrossValue: nativeGrossPounds,
 		VATValue:         vatPounds,
 		Status:           e.Status,
+		NeedsReview:      e.NeedsReview, // TRUE while a Smart Upload capture awaits confirmation
 		CreatedAt:        e.CreatedAt.Time.Format(time.RFC3339),
 		UpdatedAt:        e.UpdatedAt.Time.Format(time.RFC3339),
 
@@ -822,9 +866,59 @@ func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
 		ApprovedAt:  timestampToStringPtr(e.ApprovedAt),
 		PaidAt:      timestampToStringPtr(e.PaidAt),
 
+		// Capture / OCR. needs_review drives the review inbox; the confidence +
+		// processed-at let the detail screen flag a low-confidence capture.
+		NeedsReview:    e.NeedsReview,
+		OCRConfidence:  numericToStringPtr(e.OcrConfidence),
+		OCRProcessedAt: timestampToStringPtr(e.OcrProcessedAt),
+
 		CreatedAt: e.CreatedAt.Time.Format(time.RFC3339),
 		UpdatedAt: e.UpdatedAt.Time.Format(time.RFC3339),
 	}
+}
+
+// =============================================================================
+// EXPENSE DETAIL ASSEMBLY (view + attachments)
+// =============================================================================
+
+// attachmentResponsesFor loads an expense's attachments and maps them to the API
+// shape (primary first — ListExpenseAttachments orders them). The expense itself
+// must already have been authorised by the caller.
+func attachmentResponsesFor(ctx context.Context, q *expenses.Queries, expenseID uuid.UUID) ([]*AttachmentResponse, error) {
+	atts, err := q.ListExpenseAttachments(ctx, expenseID)
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+	out := make([]*AttachmentResponse, 0, len(atts))
+	for _, a := range atts {
+		out = append(out, attachmentToResponse(a))
+	}
+	return out, nil
+}
+
+// buildExpenseDetail fetches the full detail view + attachments for an expense
+// and maps them to the API shape. It performs NO authorisation — callers must
+// have already authorised (or, like CaptureFromReceipt, just created the row as
+// the caller). Used so the capture flow returns the exact same shape the
+// frontend later polls via GET /expenses/:id.
+func buildExpenseDetail(ctx context.Context, q *expenses.Queries, orgID, expenseID uuid.UUID) (*ExpenseDetailResponse, error) {
+	row, err := q.GetExpenseWithDetails(ctx, expenses.GetExpenseWithDetailsParams{
+		ID:             expenseID,
+		OrganisationID: orgID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound("expense", expenseID.String())
+		}
+		return nil, ErrInternal(err)
+	}
+	resp := expenseDetailToResponse(row)
+	atts, err := attachmentResponsesFor(ctx, q, expenseID)
+	if err != nil {
+		return nil, err
+	}
+	resp.Attachments = atts
+	return resp, nil
 }
 
 // minorToPounds converts integer pence to a 2dp pound string ("4250" → "42.50").
