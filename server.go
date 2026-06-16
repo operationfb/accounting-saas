@@ -121,6 +121,8 @@ func (s *Server) registerRoutes() {
 			//                                     receipt + run OCR (multipart)
 			// GET    /api/v1/expenses/inbox    → captures awaiting review (needs_review)
 			// GET    /api/v1/expenses/:id      → fetch one expense by UUID
+			// PUT    /api/v1/expenses/:id      → update an editable (DRAFT/REJECTED) expense
+			// DELETE /api/v1/expenses/:id      → soft-delete an editable (DRAFT/REJECTED) expense
 			expenses.GET("", s.handleListExpenses)
 			expenses.POST("", s.handleCreateExpense)
 			// Static segments registered before the /:id param routes. Gin matches a
@@ -129,6 +131,7 @@ func (s *Server) registerRoutes() {
 			expenses.GET("/inbox", s.handleListInbox)
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
+			expenses.DELETE("/:id", s.handleDeleteExpense)
 
 			// Attachments (receipt files) are a sub-resource of an expense. They
 			// reuse the :id param for the expense — introducing a differently
@@ -470,6 +473,28 @@ func (s *Server) handleUpdateExpense(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"expense": expense})
+}
+
+// handleDeleteExpense handles DELETE /api/v1/expenses/:id
+//
+// Soft-deletes an expense (e.g. an abandoned Smart Upload draft). The service
+// enforces that the caller owns the expense (or is an owner/admin of the org) and
+// that it is still editable (DRAFT or REJECTED). Returns 204 No Content.
+func (s *Server) handleDeleteExpense(c *gin.Context) {
+	id := c.Param("id")
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	if err := s.expenseService.DeleteExpense(c.Request.Context(), userID, orgID, id); err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 // handleListExpenses handles GET /api/v1/expenses

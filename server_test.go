@@ -1067,6 +1067,165 @@ func TestHandleUpdateExpense(t *testing.T) {
 }
 
 // =============================================================================
+// EXPENSE DELETE
+// =============================================================================
+
+// deleteExpense sends DELETE /api/v1/expenses/:id with the given auth header
+// (empty = none), returning the recorder.
+func deleteExpense(t *testing.T, ts *testServer, id, authHeader string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/expenses/"+id, nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestHandleDeleteExpense covers DELETE /api/v1/expenses/:id: a soft-delete of a
+// DRAFT/REJECTED expense, its authorization, the status guard, and the motivating
+// case — removing an abandoned Smart Upload capture so it leaves the inbox.
+func TestHandleDeleteExpense(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("owner deletes own DRAFT → 204, soft-deleted, then 404", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID)
+
+		rec := deleteExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		// It's a SOFT delete: the row remains with deleted_at set.
+		var deletedAt *time.Time
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT deleted_at FROM expenses WHERE id=$1", id).Scan(&deletedAt); err != nil {
+			t.Fatalf("read deleted_at: %v", err)
+		}
+		if deletedAt == nil {
+			t.Error("expected deleted_at to be set after delete")
+		}
+
+		// And it's now invisible: GET → 404, absent from the list.
+		getRec := httptest.NewRecorder()
+		getReq, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/"+id, nil)
+		getReq.Header.Set("Authorization", bearer(t, ts, devUserID, devOrgID))
+		ts.server.router.ServeHTTP(getRec, getReq)
+		if getRec.Code != http.StatusNotFound {
+			t.Errorf("GET after delete: expected 404, got %d", getRec.Code)
+		}
+
+		listRec := httptest.NewRecorder()
+		listReq, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses", nil)
+		listReq.Header.Set("Authorization", bearer(t, ts, devUserID, devOrgID))
+		ts.server.router.ServeHTTP(listRec, listReq)
+		if contains(expenseIDsFromList(t, listRec.Body.Bytes()), id) {
+			t.Error("a deleted expense must not appear in the list")
+		}
+	})
+
+	t.Run("org owner/admin deletes a member's draft → 204", func(t *testing.T) {
+		memberID := newMemberUser(t, ts, devOrgID)
+		id := createExpenseAs(t, ts, memberID, devOrgID)
+
+		rec := deleteExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("admin deleting member's draft: expected 204, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("member cannot delete another user's expense → 403", func(t *testing.T) {
+		ownerExpense := createExpenseAs(t, ts, devUserID, devOrgID)
+		memberID := newMemberUser(t, ts, devOrgID)
+
+		rec := deleteExpense(t, ts, ownerExpense, bearer(t, ts, memberID, devOrgID))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("member deleting owner's expense: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("non-deletable status is rejected → 409", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID)
+		// Move it out of DRAFT so it can no longer be deleted.
+		if _, err := ts.pool.Exec(context.Background(),
+			"UPDATE expenses SET status='APPROVED' WHERE id=$1", id); err != nil {
+			t.Fatalf("set status: %v", err)
+		}
+		rec := deleteExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusConflict {
+			t.Errorf("deleting an APPROVED expense: expected 409, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unknown id → 404", func(t *testing.T) {
+		rec := deleteExpense(t, ts, uuid.NewString(), bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("requires auth → 401", func(t *testing.T) {
+		rec := deleteExpense(t, ts, uuid.NewString(), "")
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("another org cannot delete this org's expense → 404", func(t *testing.T) {
+		expenseA := createExpenseAs(t, ts, devUserID, devOrgID)
+		orgB, userB := newOrgWithOwner(t, ts)
+
+		// The expense isn't in org B's scope, so it's a 404 for them (existence is
+		// not revealed across tenants).
+		rec := deleteExpense(t, ts, expenseA, bearer(t, ts, userB, orgB))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("cross-tenant delete: expected 404, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("needs_review capture is deleted and leaves the inbox", func(t *testing.T) {
+		requireGCS(t) // captureAs stores a file in the real GCS dev bucket
+		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
+
+		// captureAs's own cleanup can't reclaim the GCS object once the expense is
+		// soft-deleted (DeleteAttachment won't find it), so reclaim it directly here.
+		var storageKey string
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT storage_path FROM expense_attachments WHERE id=$1", draft.Attachments[0].ID).Scan(&storageKey); err != nil {
+			t.Fatalf("read storage_path: %v", err)
+		}
+		t.Cleanup(func() { _ = ts.server.attachmentService.storage.Delete(context.Background(), storageKey) })
+
+		// It starts in the inbox.
+		caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
+		inbox, err := ts.server.expenseService.ListInbox(context.Background(), caller, org)
+		if err != nil {
+			t.Fatalf("ListInbox: %v", err)
+		}
+		if !containsExpense(inbox, draft.ID) {
+			t.Fatalf("capture %s should be in the inbox before delete", draft.ID)
+		}
+
+		// Delete it via the API → 204.
+		rec := deleteExpense(t, ts, draft.ID, bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("delete capture: expected 204, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		// ...and it has left the inbox.
+		inboxAfter, err := ts.server.expenseService.ListInbox(context.Background(), caller, org)
+		if err != nil {
+			t.Fatalf("ListInbox after delete: %v", err)
+		}
+		if containsExpense(inboxAfter, draft.ID) {
+			t.Error("a deleted capture must leave the review inbox")
+		}
+	})
+}
+
+// =============================================================================
 // EXPENSE VAT
 // =============================================================================
 

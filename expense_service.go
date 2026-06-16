@@ -542,6 +542,74 @@ func (s *ExpenseService) UpdateExpense(
 }
 
 // =============================================================================
+// DELETEEXPENSE
+// =============================================================================
+
+// DeleteExpense soft-deletes an expense (sets deleted_at) so it disappears from
+// every list and the review inbox while the row is retained for audit. The
+// motivating case is the frontend removing an abandoned Smart Upload capture, but
+// it works for any deletable expense.
+//
+// Authorisation mirrors UpdateExpense: the caller must own the expense, or be an
+// owner/admin of the organisation. Only DRAFT or REJECTED expenses may be deleted
+// — once an expense has entered the approval workflow (SUBMITTED and beyond) it is
+// a financial record that must not simply vanish.
+//
+// The fetch, the ownership/status checks, and the soft-delete all run inside one
+// transaction so the row can't change status between the check and the write.
+func (s *ExpenseService) DeleteExpense(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+	id string,
+) error {
+	expenseUUID, err := uuid.Parse(id)
+	if err != nil {
+		return ErrValidation("id is not a valid UUID", err)
+	}
+
+	// Confirm the caller is an active member and get their role.
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return err
+	}
+
+	return s.withTransaction(ctx, func(qtx *expenses.Queries) error {
+		existing, err := qtx.GetExpense(ctx, expenses.GetExpenseParams{
+			ID:             expenseUUID,
+			OrganisationID: authOrgID,
+		})
+		if err != nil {
+			// No live row for this id in the org — also covers an already-deleted
+			// expense, since GetExpense filters deleted_at IS NULL → 404.
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound("expense", id)
+			}
+			return ErrInternal(err)
+		}
+
+		// Ownership: own expense, or owner/admin of the org (mirrors UpdateExpense).
+		if existing.UserID != authUserID && !isOrgAdmin(role) {
+			return ErrForbidden("you do not have access to this expense")
+		}
+
+		// Deletable only while DRAFT or REJECTED — never once it has entered the
+		// approval workflow.
+		if existing.Status != "DRAFT" && existing.Status != "REJECTED" {
+			return ErrConflict("expense can only be deleted while it is in DRAFT or REJECTED status")
+		}
+
+		if err := qtx.SoftDeleteExpense(ctx, expenses.SoftDeleteExpenseParams{
+			ID:             expenseUUID,
+			OrganisationID: authOrgID,
+		}); err != nil {
+			return ErrInternal(err)
+		}
+		return nil
+	})
+}
+
+// =============================================================================
 // GETEXPENSE
 // =============================================================================
 
