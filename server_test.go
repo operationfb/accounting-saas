@@ -46,6 +46,7 @@ import (
 	"github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
 	util "github.com/operationfb/accounting-saas/util"
 )
@@ -132,7 +133,8 @@ func newTestServer(t *testing.T) *testServer {
 	}
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
 	contactService := NewContactService(pool, contacts.New(pool), authQueries)
-	server := NewServer(service, attachmentService, contactService, authHandler, tokenMaker, []string{testCORSOrigin})
+	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
+	server := NewServer(service, attachmentService, contactService, projectService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
 		server:      server,

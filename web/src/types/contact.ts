@@ -54,3 +54,44 @@ export type Contact = z.infer<typeof ContactSchema>
 export const ListContactsResponseSchema = z.object({
   contacts: z.array(ContactSchema).nullish(),
 })
+
+// GET /api/v1/contacts/:id, POST /api/v1/contacts, PUT /api/v1/contacts/:id all
+// return { "contact": {...} }.
+export const GetContactResponseSchema = z.object({
+  contact: ContactSchema,
+})
+
+// POST/PUT body. Mirrors the backend's CreateContactRequest (server.go). Every
+// field is optional: the form omits empty optional strings, but always sends
+// country_code / charge_vat / invoice_language and the three booleans (which carry
+// defaults). default_payment_terms_days is a COUNT OF DAYS (0 = Due on Receipt),
+// sent only when provided. Reused for both create and the full-replace PUT.
+export interface CreateContactRequest {
+  first_name?: string
+  last_name?: string
+  organisation_name?: string
+  email?: string
+  billing_email?: string
+  telephone?: string
+  mobile?: string
+
+  address_line_1?: string
+  address_line_2?: string
+  address_line_3?: string
+  town?: string
+  region?: string
+  postcode?: string
+  country_code?: string
+
+  default_payment_terms_days?: number
+  uses_contact_level_email_settings?: boolean
+  uses_contact_level_invoice_sequence?: boolean
+  display_contact_name?: boolean
+  charge_vat?: string
+  vat_registration_number?: string
+  invoice_language?: string
+
+  bank_sort_code?: string
+  bank_account_number?: string
+  bank_recipient_name?: string
+}

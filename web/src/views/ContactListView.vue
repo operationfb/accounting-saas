@@ -6,10 +6,12 @@
 //
 // Scope (per the approved plan): the TABLE is real data; the cheap controls
 // (A–Z filter, per-page, Grid/List) work client-side over the loaded list.
-// Import/Export, the saved-view dropdown, the per-row Edit/Add-new, and the
-// Active Projects / Account Balance columns are faithful but INERT placeholders —
-// the backend has no projects, balances, saved views, or import/export yet.
+// Import/Export, the saved-view dropdown, the per-row "Add new", and the Active
+// Projects / Account Balance columns are faithful but INERT placeholders — the
+// backend has no projects, balances, saved views, or import/export yet. "Add New
+// Contact", the per-row "Edit", and the contact name navigate to the entry form.
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import Select from 'primevue/select'
 import SelectButton from 'primevue/selectbutton'
 import Button from 'primevue/button'
@@ -19,9 +21,19 @@ import { formatMoney } from '@/lib/format'
 import type { Contact } from '@/types/contact'
 import type { ApiError } from '@/lib/api'
 
+const router = useRouter()
+
 const contacts = ref<Contact[]>([])
 const loading = ref(true)
 const error = ref('')
+
+// Navigation into the entry form (create / edit).
+function newContact() {
+  router.push('/contacts/new')
+}
+function openEdit(id: string) {
+  router.push(`/contacts/${id}/edit`)
+}
 
 // Saved-view dropdown — rendered but static (no saved-views feature yet).
 const savedView = ref('All contacts')
@@ -119,7 +131,7 @@ onMounted(load)
       <div class="flex gap-2.5">
         <Button label="Import Contacts" severity="secondary" outlined />
         <Button label="Export Contacts" severity="secondary" outlined />
-        <Button label="Add New Contact" />
+        <Button label="Add New Contact" @click="newContact" />
       </div>
     </div>
 
@@ -175,7 +187,7 @@ onMounted(load)
       <div v-else-if="contacts.length === 0" class="px-4 py-14 text-center">
         <p class="mb-1 font-semibold">No contacts yet</p>
         <p class="mb-4 text-sm text-fa-muted">Add your first contact to see it here.</p>
-        <Button label="Add New Contact" />
+        <Button label="Add New Contact" @click="newContact" />
       </div>
 
       <!-- Data -->
@@ -207,7 +219,13 @@ onMounted(load)
                     class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#eef1f4] text-xs font-bold text-fa-muted"
                     >{{ firstLetter(c) }}</span
                   >
-                  <span class="font-semibold text-fa-blue">{{ displayName(c) }}</span>
+                  <button
+                    type="button"
+                    class="text-left font-semibold text-fa-blue hover:underline"
+                    @click="openEdit(c.id)"
+                  >
+                    {{ displayName(c) }}
+                  </button>
                 </div>
               </td>
               <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle text-fa-muted">
@@ -220,9 +238,10 @@ onMounted(load)
                 {{ ZERO }}
               </td>
               <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3.5 text-right align-middle">
-                <!-- Inert per-row actions (no entry form yet); shown on row hover. -->
+                <!-- Per-row actions (shown on row hover). "Edit" opens the entry
+                     form; "Add new ▾" is still an inert placeholder. -->
                 <span class="invisible inline-flex gap-2 group-hover:visible">
-                  <Button label="Edit" size="small" severity="secondary" outlined />
+                  <Button label="Edit" size="small" severity="secondary" outlined @click="openEdit(c.id)" />
                   <Button
                     label="Add new"
                     icon="pi pi-angle-down"
@@ -260,7 +279,13 @@ onMounted(load)
                 >{{ firstLetter(c) }}</span
               >
               <div>
-                <div class="font-semibold text-fa-blue">{{ displayName(c) }}</div>
+                <button
+                  type="button"
+                  class="text-left font-semibold text-fa-blue hover:underline"
+                  @click="openEdit(c.id)"
+                >
+                  {{ displayName(c) }}
+                </button>
                 <div v-if="details(c)" class="text-xs text-fa-muted">{{ details(c) }}</div>
               </div>
             </div>

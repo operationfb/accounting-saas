@@ -28,6 +28,7 @@ import (
 	"github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	projects "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -100,6 +101,11 @@ func main() {
 	// Contacts: its own sqlc package + service, wired the same way as expenses.
 	contactQueries := contacts.New(pool)
 	contactService := NewContactService(pool, contactQueries, authQueries)
+
+	// Projects: depends on contactQueries to validate contact ownership when
+	// a project is created or updated (contact_id must belong to the same org).
+	projectQueries := projects.New(pool)
+	projectService := NewProjectService(pool, projectQueries, authQueries, contactQueries)
 
 	// -------------------------------------------------------------------------
 	// Auth wiring.
@@ -233,7 +239,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

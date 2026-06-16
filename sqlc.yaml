@@ -182,3 +182,52 @@ sql:
               type: "RawMessage"
           - db_type: "pg_catalog.numeric"
             go_type: "string"
+
+  # ===========================================================================
+  # PROJECTS MODULE
+  # Generates the data layer for the projects table into package `projects` at
+  # db/projects — its own domain package.
+  #
+  # All FOUR schema files are loaded in dependency order because
+  # projects_schema.sql references objects from earlier files:
+  #   - set_updated_at() trigger function  (schema.sql)
+  #   - organisations table                (auth_schema.sql)
+  #   - contacts table                     (contacts_schema.sql)
+  # omit_unused_structs keeps all prior-domain structs out of db/projects —
+  # only the Project struct (referenced by projects.sql) is emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
+      - "db/schema/projects_schema.sql"
+
+    queries: "db/queries/projects.sql"
+
+    gen:
+      go:
+        package: "projects"
+        out: "db/projects"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep expenses/auth/contacts structs (loaded only to satisfy FK deps)
+        # out of db/projects — emit only what projects.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"

@@ -7,6 +7,7 @@ import ExpenseListView from '@/views/ExpenseListView.vue'
 import ExpenseEntryView from '@/views/ExpenseEntryView.vue'
 import ExpenseDetailView from '@/views/ExpenseDetailView.vue'
 import ContactListView from '@/views/ContactListView.vue'
+import ContactEntryView from '@/views/ContactEntryView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -20,6 +21,8 @@ const router = createRouter({
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
     { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true } },
+    { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true } },
+    { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true } },
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },
