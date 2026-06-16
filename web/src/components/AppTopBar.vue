@@ -29,7 +29,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: 'Overview', caret: false },
   { label: 'Contacts', caret: false, to: '/contacts' },
-  { label: 'Work', caret: true },
+  { label: 'Projects', caret: false, to: '/projects' },
   { label: 'Bills', caret: false },
   { label: 'Expenses', caret: false, to: '/expenses' },
   { label: 'Banking', caret: true },

@@ -8,6 +8,7 @@ import ExpenseEntryView from '@/views/ExpenseEntryView.vue'
 import ExpenseDetailView from '@/views/ExpenseDetailView.vue'
 import ContactListView from '@/views/ContactListView.vue'
 import ContactEntryView from '@/views/ContactEntryView.vue'
+import ProjectListView from '@/views/ProjectListView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -23,6 +24,7 @@ const router = createRouter({
     { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true } },
     { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true } },
     { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true } },
+    { path: '/projects', name: 'projects', component: ProjectListView, meta: { requiresAuth: true } },
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },
