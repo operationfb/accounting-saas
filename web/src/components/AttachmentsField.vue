@@ -295,7 +295,7 @@ defineExpose({ commit, hasPendingChanges, reset })
 <template>
   <FaCard title="Attachment" :note="`PDF, JPEG or PNG · max ${MAX_MB} MB`">
     <FormRow label="Files">
-      <div class="flex items-center gap-2.5">
+      <div class="flex flex-wrap items-center gap-2.5">
         <Button
           type="button"
           label="Add files"
@@ -304,7 +304,11 @@ defineExpose({ commit, hasPendingChanges, reset })
           outlined
           @click="fileInput?.click()"
         />
-        <span class="text-sm text-fa-muted">Attach one or more receipts.</span>
+        <!-- Parent may inject extra actions here (e.g. Smart upload in create mode). -->
+        <slot name="files-actions" />
+        <span class="text-sm text-fa-muted">
+          <slot name="files-hint">Attach one or more receipts.</slot>
+        </span>
       </div>
       <!-- hidden native input; the styled button above proxies to it -->
       <input

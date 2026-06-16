@@ -26,6 +26,7 @@ import (
 	// These import paths match the `out` directories in sqlc.yaml.
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
+	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -95,6 +96,10 @@ func main() {
 	queries := expenses.New(pool)
 	authQueries := auth.New(pool)
 	service := NewExpenseService(pool, queries, authQueries)
+
+	// Contacts: its own sqlc package + service, wired the same way as expenses.
+	contactQueries := contacts.New(pool)
+	contactService := NewContactService(pool, contactQueries, authQueries)
 
 	// -------------------------------------------------------------------------
 	// Auth wiring.
@@ -228,7 +233,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

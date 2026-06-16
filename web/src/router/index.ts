@@ -6,6 +6,7 @@ import ResetPasswordView from '@/views/ResetPasswordView.vue'
 import ExpenseListView from '@/views/ExpenseListView.vue'
 import ExpenseEntryView from '@/views/ExpenseEntryView.vue'
 import ExpenseDetailView from '@/views/ExpenseDetailView.vue'
+import ContactListView from '@/views/ContactListView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -18,6 +19,7 @@ const router = createRouter({
     // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
+    { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true } },
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AttachmentSchema } from './attachment'
 
 // Mirrors the backend's ExpenseResponse (server.go). Money fields are decimal
 // POUND strings (e.g. "42.50"), not pence — formatted for display, never used
@@ -63,11 +64,25 @@ export const ExpenseDetailSchema = z.object({
   paid_at: z.string().nullish(),
   created_at: z.string(),
   updated_at: z.string(),
+  // OCR / Smart Upload — present on captured drafts. needs_review marks a capture
+  // awaiting human confirmation; attachments embeds the files (with ocr_status) so
+  // the entry form can poll ONE endpoint for both OCR progress and the filled fields.
+  needs_review: z.boolean().nullish(),
+  ocr_confidence: z.string().nullish(),
+  ocr_processed_at: z.string().nullish(),
+  attachments: z.array(AttachmentSchema).nullish(),
 })
 export type ExpenseDetail = z.infer<typeof ExpenseDetailSchema>
 
 // GET /api/v1/expenses/:id → { "expense": {...} }.
 export const GetExpenseResponseSchema = z.object({
+  expense: ExpenseDetailSchema,
+})
+
+// POST /api/v1/expenses/capture ("Smart Upload") → 201 { "expense": <full detail> }.
+// Unlike createExpense (which returns the lean shape), capture returns the rich
+// detail — including the embedded attachment whose ocr_status we then poll.
+export const CaptureExpenseResponseSchema = z.object({
   expense: ExpenseDetailSchema,
 })
 

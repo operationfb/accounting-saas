@@ -37,16 +37,18 @@ type Server struct {
 	router            *gin.Engine
 	expenseService    *ExpenseService
 	attachmentService *AttachmentService
+	contactService    *ContactService
 	authHandler       *AuthHandler
 	tokenMaker        token.Maker
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:    expenseService,
 		attachmentService: attachmentService,
+		contactService:    contactService,
 		authHandler:       authHandler,
 		tokenMaker:        tokenMaker,
 	}
@@ -163,6 +165,23 @@ func (s *Server) registerRoutes() {
 		{
 			// GET /api/v1/vat-rates → VAT rates valid today for the caller's org country
 			vatRates.GET("", s.handleListVATRates)
+		}
+
+		// Contact routes require a valid login. Like expenses, the organisation is
+		// taken from the bearer token, so every query is automatically org-scoped.
+		contacts := v1.Group("/contacts")
+		contacts.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET    /api/v1/contacts      → list the org's contacts
+			// POST   /api/v1/contacts      → create a contact
+			// GET    /api/v1/contacts/:id  → fetch one contact by UUID
+			// PUT    /api/v1/contacts/:id  → full update (creator or owner/admin)
+			// DELETE /api/v1/contacts/:id  → soft-delete (creator or owner/admin)
+			contacts.GET("", s.handleListContacts)
+			contacts.POST("", s.handleCreateContact)
+			contacts.GET("/:id", s.handleGetContact)
+			contacts.PUT("/:id", s.handleUpdateContact)
+			contacts.DELETE("/:id", s.handleDeleteContact)
 		}
 	}
 }
@@ -354,6 +373,123 @@ type VATRateResponse struct {
 	RateBps      int32  `json:"rate_bps"`       // basis points: 2000 = 20.00%
 	Rate         string `json:"rate"`           // display form, e.g. "20%"
 	IsFixedRatio bool   `json:"is_fixed_ratio"` // true = amount locked to gross × rate
+}
+
+// CreateContactRequest is the JSON body accepted by POST /api/v1/contacts.
+// Almost every field is optional (pointer = absent → NULL), matching the form's
+// permissive shape: a contact may be a person, a company, or both. The owning
+// organisation and creator are taken from the token, never the body.
+//
+// Notes:
+//   - charge_vat is validated by `oneof`; omitted → service default SAME_COUNTRY.
+//   - country_code omitted → service default GB (and it is upper-cased).
+//   - display_contact_name is a *bool so an omitted value can default to TRUE
+//     (the form's checked-by-default box) rather than Go's zero value false.
+//   - default_payment_terms_days is a *int32 so 0 ("Due on Receipt") is distinct
+//     from absent (no contact-level terms → NULL).
+type CreateContactRequest struct {
+	FirstName        *string `json:"first_name"`
+	LastName         *string `json:"last_name"`
+	OrganisationName *string `json:"organisation_name"`
+	Email            *string `json:"email"         binding:"omitempty,email"`
+	BillingEmail     *string `json:"billing_email" binding:"omitempty,email"`
+	Telephone        *string `json:"telephone"`
+	Mobile           *string `json:"mobile"`
+
+	AddressLine1 *string `json:"address_line_1"`
+	AddressLine2 *string `json:"address_line_2"`
+	AddressLine3 *string `json:"address_line_3"`
+	Town         *string `json:"town"`
+	Region       *string `json:"region"`
+	Postcode     *string `json:"postcode"`
+	CountryCode  string  `json:"country_code" binding:"omitempty,len=2"` // ISO 3166-1 alpha-2; defaults to GB
+
+	DefaultPaymentTermsDays         *int32  `json:"default_payment_terms_days" binding:"omitempty,min=0"`
+	UsesContactLevelEmailSettings   bool    `json:"uses_contact_level_email_settings"`
+	UsesContactLevelInvoiceSequence bool    `json:"uses_contact_level_invoice_sequence"`
+	DisplayContactName              *bool   `json:"display_contact_name"` // nil → default TRUE
+	ChargeVAT                       string  `json:"charge_vat" binding:"omitempty,oneof=ALWAYS NEVER SAME_COUNTRY"`
+	VATRegistrationNumber           *string `json:"vat_registration_number"`
+	InvoiceLanguage                 string  `json:"invoice_language"` // defaults to "en"
+
+	BankSortCode      *string `json:"bank_sort_code"`
+	BankAccountNumber *string `json:"bank_account_number"`
+	BankRecipientName *string `json:"bank_recipient_name"`
+}
+
+// UpdateContactRequest is the JSON body accepted by PUT /api/v1/contacts/:id.
+// It mirrors CreateContactRequest's editable fields — PUT is a full replace of
+// the editable representation. organisation_id and created_by are never read
+// from the body.
+type UpdateContactRequest struct {
+	FirstName        *string `json:"first_name"`
+	LastName         *string `json:"last_name"`
+	OrganisationName *string `json:"organisation_name"`
+	Email            *string `json:"email"         binding:"omitempty,email"`
+	BillingEmail     *string `json:"billing_email" binding:"omitempty,email"`
+	Telephone        *string `json:"telephone"`
+	Mobile           *string `json:"mobile"`
+
+	AddressLine1 *string `json:"address_line_1"`
+	AddressLine2 *string `json:"address_line_2"`
+	AddressLine3 *string `json:"address_line_3"`
+	Town         *string `json:"town"`
+	Region       *string `json:"region"`
+	Postcode     *string `json:"postcode"`
+	CountryCode  string  `json:"country_code" binding:"omitempty,len=2"`
+
+	DefaultPaymentTermsDays         *int32  `json:"default_payment_terms_days" binding:"omitempty,min=0"`
+	UsesContactLevelEmailSettings   bool    `json:"uses_contact_level_email_settings"`
+	UsesContactLevelInvoiceSequence bool    `json:"uses_contact_level_invoice_sequence"`
+	DisplayContactName              *bool   `json:"display_contact_name"`
+	ChargeVAT                       string  `json:"charge_vat" binding:"omitempty,oneof=ALWAYS NEVER SAME_COUNTRY"`
+	VATRegistrationNumber           *string `json:"vat_registration_number"`
+	InvoiceLanguage                 string  `json:"invoice_language"`
+
+	BankSortCode      *string `json:"bank_sort_code"`
+	BankAccountNumber *string `json:"bank_account_number"`
+	BankRecipientName *string `json:"bank_recipient_name"`
+}
+
+// ContactResponse is the JSON returned for a created/fetched/updated contact.
+// Nullable columns are returned as omitempty pointers; the never-null
+// invoicing-option fields are returned as plain values.
+type ContactResponse struct {
+	ID              string `json:"id"`
+	OrganisationID  string `json:"organisation_id"`
+	CreatedByUserID string `json:"created_by_user_id"`
+
+	FirstName        *string `json:"first_name,omitempty"`
+	LastName         *string `json:"last_name,omitempty"`
+	OrganisationName *string `json:"organisation_name,omitempty"`
+	Email            *string `json:"email,omitempty"`
+	BillingEmail     *string `json:"billing_email,omitempty"`
+	Telephone        *string `json:"telephone,omitempty"`
+	Mobile           *string `json:"mobile,omitempty"`
+
+	AddressLine1 *string `json:"address_line_1,omitempty"`
+	AddressLine2 *string `json:"address_line_2,omitempty"`
+	AddressLine3 *string `json:"address_line_3,omitempty"`
+	Town         *string `json:"town,omitempty"`
+	Region       *string `json:"region,omitempty"`
+	Postcode     *string `json:"postcode,omitempty"`
+	CountryCode  string  `json:"country_code"`
+
+	DefaultPaymentTermsDays         *int32  `json:"default_payment_terms_days,omitempty"`
+	UsesContactLevelEmailSettings   bool    `json:"uses_contact_level_email_settings"`
+	UsesContactLevelInvoiceSequence bool    `json:"uses_contact_level_invoice_sequence"`
+	DisplayContactName              bool    `json:"display_contact_name"`
+	ChargeVAT                       string  `json:"charge_vat"`
+	VATRegistrationNumber           *string `json:"vat_registration_number,omitempty"`
+	InvoiceLanguage                 string  `json:"invoice_language"`
+
+	BankSortCode      *string `json:"bank_sort_code,omitempty"`
+	BankAccountNumber *string `json:"bank_account_number,omitempty"`
+	BankRecipientName *string `json:"bank_recipient_name,omitempty"`
+
+	IsActive  bool   `json:"is_active"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // =============================================================================
@@ -576,4 +712,99 @@ func (s *Server) handleListVATRates(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"vat_rates": list})
+}
+
+// =============================================================================
+// CONTACT HANDLERS
+//
+// Thin HTTP boundary, identical in shape to the expense handlers: bind the body
+// (where applicable), take the caller + org from the token via getAuthUserID /
+// getAuthOrgID, call the service, and translate any error through AsAppError so
+// the right status + safe JSON go back.
+// =============================================================================
+
+// handleListContacts handles GET /api/v1/contacts — every contact in the
+// caller's organisation.
+func (s *Server) handleListContacts(c *gin.Context) {
+	list, err := s.contactService.ListContacts(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"contacts": list})
+}
+
+// handleCreateContact handles POST /api/v1/contacts — create one contact for the
+// caller's organisation. Returns 201 Created.
+func (s *Server) handleCreateContact(c *gin.Context) {
+	var req CreateContactRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	contact, err := s.contactService.CreateContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"contact": contact})
+}
+
+// handleGetContact handles GET /api/v1/contacts/:id.
+func (s *Server) handleGetContact(c *gin.Context) {
+	contact, err := s.contactService.GetContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"contact": contact})
+}
+
+// handleUpdateContact handles PUT /api/v1/contacts/:id — full update, allowed to
+// the contact's creator or an owner/admin of the organisation.
+func (s *Server) handleUpdateContact(c *gin.Context) {
+	var req UpdateContactRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	contact, err := s.contactService.UpdateContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), req)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"contact": contact})
+}
+
+// handleDeleteContact handles DELETE /api/v1/contacts/:id — soft-delete, allowed
+// to the contact's creator or an owner/admin. Returns 204 No Content.
+func (s *Server) handleDeleteContact(c *gin.Context) {
+	if err := s.contactService.DeleteContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id")); err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

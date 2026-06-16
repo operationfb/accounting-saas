@@ -93,3 +93,15 @@ func RandomSupplierName() string {
 	noun := nouns[rand.Intn(len(nouns))]
 	return fmt.Sprintf("%s %s Ltd", adj, noun)
 }
+
+// =============================================================================
+// CONTACT-SPECIFIC GENERATORS
+// =============================================================================
+
+// RandomContactOrgName returns a plausible, UNIQUE-ish company name for a test
+// contact. The embedded random token keeps it distinct so list/lookup assertions
+// can find exactly the row a test created.
+func RandomContactOrgName() string {
+	names := []string{"Acme", "Globex", "Initech", "Umbrella", "Soylent", "Hooli"}
+	return fmt.Sprintf("%s %s Ltd", names[rand.Intn(len(names))], RandomString(6))
+}

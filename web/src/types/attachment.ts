@@ -15,6 +15,11 @@ export const AttachmentSchema = z.object({
   description: z.string().nullish(),
   uploaded_by_user_id: z.string(),
   created_at: z.string(), // RFC3339
+  // OCR fields (Smart Upload). ocr_status drives the capture-polling state machine;
+  // the rest are for badges/audit. Absent on ordinary (non-OCR) attachments → nullish.
+  ocr_status: z.string().nullish(), // PENDING | PROCESSING | COMPLETE | FAILED | SKIPPED
+  ocr_extracted_data: z.unknown().nullish(),
+  ocr_processed_at: z.string().nullish(), // RFC3339, set when OCR reaches a terminal state
 })
 export type Attachment = z.infer<typeof AttachmentSchema>
 

@@ -3,25 +3,38 @@
 // The company button on the right opens an account dropdown (Change Password,
 // Logout).
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute, RouterLink } from 'vue-router'
 import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
-// Static nav items mirroring FreeAgent's top navigation. "My Money" is shown as
-// the active section because expenses live under it.
-const navItems = [
-  { label: 'Overview', caret: false, active: false },
-  { label: 'Contacts', caret: false, active: false },
-  { label: 'Work', caret: true, active: false },
-  { label: 'Bills', caret: false, active: false },
-  { label: 'My Money', caret: true, active: true },
-  { label: 'Banking', caret: true, active: false },
-  { label: 'Taxes', caret: true, active: false },
-  { label: 'Accounting', caret: true, active: false },
+// An item is active when the current route sits under its `to` path. Placeholder
+// items (no `to`) are never active.
+function isActive(item: NavItem): boolean {
+  return item.to ? route.path.startsWith(item.to) : false
+}
+
+// Top nav items mirroring FreeAgent's chrome. An item with `to` renders as a real
+// router link; the rest are placeholders (clickable-looking but inert) until those
+// sections exist. "Expenses" is the active section and links to the expense list.
+interface NavItem {
+  label: string
+  caret: boolean
+  to?: string
+}
+const navItems: NavItem[] = [
+  { label: 'Overview', caret: false },
+  { label: 'Contacts', caret: false, to: '/contacts' },
+  { label: 'Work', caret: true },
+  { label: 'Bills', caret: false },
+  { label: 'Expenses', caret: false, to: '/expenses' },
+  { label: 'Banking', caret: true },
+  { label: 'Taxes', caret: true },
+  { label: 'Accounting', caret: true },
 ]
 
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
@@ -53,14 +66,17 @@ function changePassword() {
   <header class="bg-fa-nav text-white">
     <nav class="mx-auto flex h-[46px] max-w-[1200px] items-stretch justify-between px-4">
       <ul class="flex items-stretch gap-0.5">
-        <li
-          v-for="item in navItems"
-          :key="item.label"
-          class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium hover:bg-fa-nav-active"
-          :class="{ 'bg-fa-nav-active': item.active }"
-        >
-          {{ item.label }}
-          <i v-if="item.caret" class="pi pi-angle-down text-[11px] opacity-[0.85]" />
+        <li v-for="item in navItems" :key="item.label" class="flex items-stretch">
+          <!-- Items with a `to` render as a real <RouterLink>; the rest are inert. -->
+          <component
+            :is="item.to ? RouterLink : 'span'"
+            :to="item.to"
+            class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium hover:bg-fa-nav-active"
+            :class="{ 'bg-fa-nav-active': isActive(item) }"
+          >
+            {{ item.label }}
+            <i v-if="item.caret" class="pi pi-angle-down text-[11px] opacity-[0.85]" />
+          </component>
         </li>
       </ul>
 

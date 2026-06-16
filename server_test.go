@@ -44,6 +44,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/operationfb/accounting-saas/db/auth"
+	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	"github.com/operationfb/accounting-saas/token"
 	util "github.com/operationfb/accounting-saas/util"
@@ -130,7 +131,8 @@ func newTestServer(t *testing.T) *testServer {
 		store = gcs
 	}
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
-	server := NewServer(service, attachmentService, authHandler, tokenMaker, []string{testCORSOrigin})
+	contactService := NewContactService(pool, contacts.New(pool), authQueries)
+	server := NewServer(service, attachmentService, contactService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
 		server:      server,

@@ -46,9 +46,10 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ```
 .
 ├── main.go              # Entry point: load .env/config, open pgx pool, build deps, start server
-├── server.go            # Gin engine + Server struct + route registration + expense handlers
+├── server.go            # Gin engine + Server struct + route registration + expense & contact handlers
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
+├── contact_service.go   # Contact business logic + request/response DTOs (CRUD, validation, creator/admin auth) for the contacts module
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
 ├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
 ├── ocr_service.go       # OcrService: background receipt/invoice extraction — drives the attachment ocr_status machine, fills the expense (DocumentExtractor interface + ExtractionResult)
@@ -60,18 +61,22 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
 ├── ocr_service_test.go  # OCR/Smart Upload tests (real Postgres + GCS; Document AI faked) + money-conversion unit test
 ├── supplier_category_test.go  # supplier→category dictionary: learn-trigger tests (DB) + auto-categorise tests (Postgres + GCS)
-├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth)
+├── contact_service_test.go  # Contacts CRUD tests (real Postgres): happy path, defaults, 0-vs-NULL terms, validation, auth, multi-tenant isolation
+├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts)
 │
 ├── db/
 │   ├── schema/          # Source-of-truth DDL (full CREATE TABLE files, not migrations)
 │   │   ├── schema.sql        # expenses module, supplier_category_map dictionary, set_updated_at() + learn_supplier_category() triggers
-│   │   └── auth_schema.sql   # auth module: users, organisations, organisation_memberships
+│   │   ├── auth_schema.sql   # auth module: users, organisations, organisation_memberships
+│   │   └── contacts_schema.sql  # contacts module: customers/suppliers (invoicing details, charge_vat, bank)
 │   ├── queries/         # Annotated SQL = sqlc input (one file per domain)
 │   │   ├── query.sql         # expenses queries
-│   │   └── auth.sql          # auth queries (CreateUser, GetUserByEmail, memberships, ...)
+│   │   ├── auth.sql          # auth queries (CreateUser, GetUserByEmail, memberships, ...)
+│   │   └── contacts.sql      # contacts queries (Create / Get / List / Update / SoftDelete)
 │   ├── seeds/           # Reproducible seed data (e.g. expense_categories.sql)
 │   ├── expenses/        # GENERATED (package expenses) — never hand-edit
-│   └── auth/            # GENERATED (package auth) — never hand-edit
+│   ├── auth/            # GENERATED (package auth) — never hand-edit
+│   └── contacts/        # GENERATED (package contacts) — never hand-edit
 │
 ├── token/              # PASETO authentication tokens
 │   ├── maker.go              # Maker interface (CreateToken / VerifyToken)
@@ -100,6 +105,18 @@ An organisation builds up a **learned mapping** from supplier to the category it
 - **Consume (in Go).** On the OCR path, `OcrService.suggestCategory` looks up `GetSuggestedCategory` for the supplier that will land on the row, and `ApplySuggestedCategory` writes it onto the capture **inside the same fill transaction**. That UPDATE is SQL-guarded by `needs_review = TRUE`, so it only ever replaces the placeholder and **never overrides a category a human chose**. A miss leaves the placeholder. The manual-entry "suggest as you type" endpoint is deferred (see `BACKLOG.md`).
 
 Like everything else, the dictionary is **organisation-scoped** (`organisation_id` leads the unique key and every lookup). Tested in `supplier_category_test.go`: the trigger directly against Postgres, and the auto-categorise loop end-to-end through the capture→OCR pipeline (Document AI faked).
+
+### Contacts module
+
+A **contact** is a customer/supplier an organisation invoices or buys from (modelled on the FreeAgent "New Contact" screen). It is a **standalone domain**, structured exactly like `auth`: its own schema file (`db/schema/contacts_schema.sql`), its own queries (`db/queries/contacts.sql`), its own sqlc block generating package `db/contacts`, a service (`contact_service.go`) and handlers/DTOs/routes in `server.go` under `/api/v1/contacts` (list, create, get, update, soft-delete).
+
+Worth knowing:
+
+- **`organisation_name` ≠ `organisation_id`.** The contact's *company name* is `organisation_name`; the owning tenant is `organisation_id` (FK). Don't conflate them.
+- **No money, but a units gotcha.** Contacts store no pence. The only numeric field, `default_payment_terms_days`, is a count of DAYS where **0 ("Due on Receipt") is distinct from NULL** ("no contact-level terms") — so the service uses the 0-preserving `pgInt32FromPtr` helper, NOT `pgNullInt32` (which maps 0→NULL).
+- **`charge_vat`** is a `VARCHAR + CHECK` enum: `ALWAYS | NEVER | SAME_COUNTRY` (the form's three options; default `SAME_COUNTRY`). Validated three ways: `oneof` binding (400), the service guard (422), and the DB CHECK.
+- **Names are permissive.** `first_name` / `last_name` / `organisation_name` are all nullable with no cross-column CHECK; the "must have a name or an org name" rule is deferred to the app layer (see `BACKLOG.md`).
+- **Auth.** Any active member may create/read/list; **update/delete require the contact's creator or an owner/admin** (mirrors the expense ownership rule). Org-scoped + soft-deleted throughout. Tested in `contact_service_test.go`.
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 

@@ -88,6 +88,28 @@ _Last updated: 2026-06-16_
   the user types the supplier. Org-scoped; read-only. _Files: `server.go`,
   `expense_service.go`._
 
+## Contacts
+
+- **Require a name or an organisation name.** The contacts table is deliberately
+  permissive — `first_name`, `last_name` and `organisation_name` are all nullable
+  with no cross-column CHECK (so a contact known only by email isn't rejected by
+  the DB). Add the FreeAgent-style rule "a contact needs a first+last name AND/OR
+  an organisation name" as an app-layer check in `ContactService.CreateContact` /
+  `UpdateContact` (return `ErrValidation`). _File: `contact_service.go`._
+- **Contact type (customer vs supplier) + active/archive.** The table has
+  `is_active`, but the CRUD endpoints don't expose archiving, and there's no
+  customer/supplier classification yet (the New Contact form had none). Add when
+  invoices/bills need to filter contacts by role. _Files:
+  `db/schema/contacts_schema.sql`, `db/queries/contacts.sql`, `contact_service.go`._
+- **Link expenses/invoices to a contact.** Contacts exist but nothing references
+  them yet. When building invoices (or attributing an expense to a supplier), add
+  a nullable `contact_id` FK + the lookup. _Files: schema, `expense_service.go` /
+  a future invoice service._
+- **List filtering, search & pagination for `GET /api/v1/contacts`.** Returns the
+  whole org's contacts, ordered by name only, unpaged. Add name/email search, an
+  active-only filter, and pagination. _Files: `contact_service.go`, `server.go`,
+  `db/queries/contacts.sql`._
+
 ## Attachments & document storage
 
 - **OCR retry / re-run + stale-PROCESSING recovery.** Smart Upload's OCR is
