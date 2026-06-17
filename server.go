@@ -34,27 +34,29 @@ import (
 // Adding a new service module (invoices, contacts, etc.) means adding a field
 // here and passing it into NewServer.
 type Server struct {
-	router            *gin.Engine
-	expenseService    *ExpenseService
-	attachmentService *AttachmentService
-	contactService    *ContactService
-	projectService    *ProjectService
-	memberService     *MemberService
-	authHandler       *AuthHandler
-	tokenMaker        token.Maker
+	router              *gin.Engine
+	expenseService      *ExpenseService
+	attachmentService   *AttachmentService
+	contactService      *ContactService
+	projectService      *ProjectService
+	memberService       *MemberService
+	organisationService *OrganisationService
+	authHandler         *AuthHandler
+	tokenMaker          token.Maker
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
 	s := &Server{
-		expenseService:    expenseService,
-		attachmentService: attachmentService,
-		contactService:    contactService,
-		projectService:    projectService,
-		memberService:     memberService,
-		authHandler:       authHandler,
-		tokenMaker:        tokenMaker,
+		expenseService:      expenseService,
+		attachmentService:   attachmentService,
+		contactService:      contactService,
+		projectService:      projectService,
+		memberService:       memberService,
+		organisationService: organisationService,
+		authHandler:         authHandler,
+		tokenMaker:          tokenMaker,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -213,6 +215,18 @@ func (s *Server) registerRoutes() {
 		{
 			// GET /api/v1/members → list the org's members (owner/admin only)
 			members.GET("", s.handleListMembers)
+		}
+
+		// Organisation routes require a valid login. There is always exactly one
+		// organisation in scope (the caller's, from the bearer token), so these act
+		// on a singleton resource — no id in the path.
+		organisation := v1.Group("/organisation")
+		organisation.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/organisation → the caller's company details (any active member)
+			// PUT /api/v1/organisation → update company details (owner/admin only)
+			organisation.GET("", s.handleGetOrganisation)
+			organisation.PUT("", s.handleUpdateOrganisation)
 		}
 	}
 }
@@ -548,6 +562,81 @@ type MemberResponse struct {
 	LastLoginAt  *string `json:"last_login_at,omitempty"`
 }
 
+// UpdateOrganisationRequest is the JSON body accepted by PUT /api/v1/organisation
+// (the Company Details screen). It carries the editable company-detail fields.
+// Fields the form does not own — slug, native_currency, timezone and (until VAT
+// is added) vrn — are deliberately absent: the service preserves them. name is
+// the organisation's primary name and is required; everything else is optional
+// (a nil pointer → NULL). The owning organisation is taken from the token.
+type UpdateOrganisationRequest struct {
+	Name        string  `json:"name" binding:"required"`
+	LegalName   *string `json:"legal_name"`
+	CompanyType *string `json:"company_type" binding:"omitempty,oneof=sole_trader partnership llp limited_company"`
+
+	CompaniesHouseNumber    *string `json:"companies_house_number"`
+	Utr                     *string `json:"utr"` // "Corporation Tax Reference" on the form
+	PayeReference           *string `json:"paye_reference"`
+	AccountsOfficeReference *string `json:"accounts_office_reference"`
+
+	AddressLine1 *string `json:"address_line_1"`
+	AddressLine2 *string `json:"address_line_2"`
+	AddressLine3 *string `json:"address_line_3"`
+	Town         *string `json:"town"`
+	Region       *string `json:"region"`
+	Postcode     *string `json:"postcode"`
+	CountryCode  string  `json:"country_code" binding:"omitempty,len=2"` // ISO 3166-1 alpha-2; defaults to GB
+
+	BusinessPhone *string `json:"business_phone"`
+	ContactEmail  *string `json:"contact_email" binding:"omitempty,email"`
+	ContactPhone  *string `json:"contact_phone"`
+	Website       *string `json:"website"`
+
+	BusinessCategory    *string `json:"business_category"`
+	BusinessDescription *string `json:"business_description"`
+}
+
+// OrganisationDetailsResponse is the JSON returned by GET/PUT /api/v1/organisation.
+// Nullable columns are omitempty pointers; the never-null fields are plain values.
+// The legacy free-text registered_address is not exposed (superseded by the
+// structured address). native_currency / timezone / plan / is_active are returned
+// read-only for the frontend even though this screen doesn't edit them.
+type OrganisationDetailsResponse struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Slug        *string `json:"slug,omitempty"`
+	LegalName   *string `json:"legal_name,omitempty"`
+	CompanyType *string `json:"company_type,omitempty"`
+
+	CompaniesHouseNumber    *string `json:"companies_house_number,omitempty"`
+	Utr                     *string `json:"utr,omitempty"`
+	Vrn                     *string `json:"vrn,omitempty"`
+	PayeReference           *string `json:"paye_reference,omitempty"`
+	AccountsOfficeReference *string `json:"accounts_office_reference,omitempty"`
+
+	AddressLine1 *string `json:"address_line_1,omitempty"`
+	AddressLine2 *string `json:"address_line_2,omitempty"`
+	AddressLine3 *string `json:"address_line_3,omitempty"`
+	Town         *string `json:"town,omitempty"`
+	Region       *string `json:"region,omitempty"`
+	Postcode     *string `json:"postcode,omitempty"`
+	CountryCode  string  `json:"country_code"`
+
+	BusinessPhone *string `json:"business_phone,omitempty"`
+	ContactEmail  *string `json:"contact_email,omitempty"`
+	ContactPhone  *string `json:"contact_phone,omitempty"`
+	Website       *string `json:"website,omitempty"`
+
+	BusinessCategory    *string `json:"business_category,omitempty"`
+	BusinessDescription *string `json:"business_description,omitempty"`
+
+	NativeCurrency string `json:"native_currency"`
+	Timezone       string `json:"timezone"`
+	Plan           string `json:"plan"`
+	IsActive       bool   `json:"is_active"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 // =============================================================================
 // HANDLERS
 // =============================================================================
@@ -876,25 +965,25 @@ type CreateProjectRequest struct {
 	// Core fields
 	ContactID              string  `json:"contact_id" binding:"required,uuid"`
 	Name                   string  `json:"name" binding:"required,min=1"`
-	Status                 string  `json:"status"`                   // defaults to "active"
+	Status                 string  `json:"status"` // defaults to "active"
 	ContractPONumber       *string `json:"contract_po_number"`
 	ProjectInvoiceSequence bool    `json:"project_invoice_sequence"`
 
 	// Time and money
-	Currency               string  `json:"currency"`                 // defaults to "GBP"
-	BudgetType             *string `json:"budget_type"`              // "hours" | "days" | "money" | nil
-	BudgetHours            *string `json:"budget_hours"`             // "H:MM" — used when budget_type="hours"
-	BudgetDays             *int32  `json:"budget_days"`              // integer — used when budget_type="days"
-	BudgetMoney            *string `json:"budget_money"`             // pound string — used when budget_type="money"
-	HoursPerDay            *string `json:"hours_per_day"`            // "H:MM" e.g. "8:00"
-	BillingRate            string  `json:"billing_rate"`             // pound string e.g. "100.00"
-	BillingRateUnit        *string `json:"billing_rate_unit"`        // "per_hour" | "per_day"
-	BillingRatePlusVAT     bool    `json:"billing_rate_plus_vat"`
+	Currency           string  `json:"currency"`          // defaults to "GBP"
+	BudgetType         *string `json:"budget_type"`       // "hours" | "days" | "money" | nil
+	BudgetHours        *string `json:"budget_hours"`      // "H:MM" — used when budget_type="hours"
+	BudgetDays         *int32  `json:"budget_days"`       // integer — used when budget_type="days"
+	BudgetMoney        *string `json:"budget_money"`      // pound string — used when budget_type="money"
+	HoursPerDay        *string `json:"hours_per_day"`     // "H:MM" e.g. "8:00"
+	BillingRate        string  `json:"billing_rate"`      // pound string e.g. "100.00"
+	BillingRateUnit    *string `json:"billing_rate_unit"` // "per_hour" | "per_day"
+	BillingRatePlusVAT bool    `json:"billing_rate_plus_vat"`
 
 	// More options
 	IsIR35                bool    `json:"is_ir35"`
-	StartDate             *string `json:"start_date"`               // "YYYY-MM-DD"
-	EndDate               *string `json:"end_date"`                 // "YYYY-MM-DD"
+	StartDate             *string `json:"start_date"` // "YYYY-MM-DD"
+	EndDate               *string `json:"end_date"`   // "YYYY-MM-DD"
 	IncludeUnbillableTime bool    `json:"include_unbillable_time"`
 }
 
@@ -915,10 +1004,10 @@ type UpdateProjectRequest struct {
 	BillingRate            string  `json:"billing_rate"`
 	BillingRateUnit        *string `json:"billing_rate_unit"`
 	BillingRatePlusVAT     bool    `json:"billing_rate_plus_vat"`
-	IsIR35                bool    `json:"is_ir35"`
-	StartDate             *string `json:"start_date"`
-	EndDate               *string `json:"end_date"`
-	IncludeUnbillableTime bool    `json:"include_unbillable_time"`
+	IsIR35                 bool    `json:"is_ir35"`
+	StartDate              *string `json:"start_date"`
+	EndDate                *string `json:"end_date"`
+	IncludeUnbillableTime  bool    `json:"include_unbillable_time"`
 }
 
 // ProjectResponse is the JSON returned for a created/fetched/updated project.
@@ -940,12 +1029,12 @@ type ProjectResponse struct {
 	BillingRate            string  `json:"billing_rate"`  // pound string
 	BillingRateUnit        *string `json:"billing_rate_unit"`
 	BillingRatePlusVAT     bool    `json:"billing_rate_plus_vat"`
-	IsIR35                bool    `json:"is_ir35"`
-	StartDate             *string `json:"start_date"`
-	EndDate               *string `json:"end_date"`
-	IncludeUnbillableTime bool    `json:"include_unbillable_time"`
-	CreatedAt             string  `json:"created_at"`
-	UpdatedAt             string  `json:"updated_at"`
+	IsIR35                 bool    `json:"is_ir35"`
+	StartDate              *string `json:"start_date"`
+	EndDate                *string `json:"end_date"`
+	IncludeUnbillableTime  bool    `json:"include_unbillable_time"`
+	CreatedAt              string  `json:"created_at"`
+	UpdatedAt              string  `json:"updated_at"`
 }
 
 // =============================================================================
@@ -1054,4 +1143,42 @@ func (s *Server) handleListMembers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"members": list})
+}
+
+// handleGetOrganisation handles GET /api/v1/organisation — the caller's
+// organisation company details. The org is taken from the token; any active
+// member may read (a non-member gets 403).
+func (s *Server) handleGetOrganisation(c *gin.Context) {
+	org, err := s.organisationService.GetOrganisation(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"organisation": org})
+}
+
+// handleUpdateOrganisation handles PUT /api/v1/organisation — update the caller's
+// organisation company details. The org is taken from the token; the service
+// restricts editing to owners/admins (a plain member gets 403).
+func (s *Server) handleUpdateOrganisation(c *gin.Context) {
+	var req UpdateOrganisationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	org, err := s.organisationService.UpdateOrganisation(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"organisation": org})
 }

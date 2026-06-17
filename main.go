@@ -111,6 +111,11 @@ func main() {
 	// organisation's members (owner/admin only). Reuses the shared authQueries.
 	memberService := NewMemberService(authQueries)
 
+	// Organisation: read/update the caller's own company details (the Company
+	// Details settings screen). Read by any active member; edit by owner/admin.
+	// Reuses the shared authQueries.
+	organisationService := NewOrganisationService(authQueries)
+
 	// -------------------------------------------------------------------------
 	// Auth wiring.
 	//
@@ -243,7 +248,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, authHandler, tokenMaker, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

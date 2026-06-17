@@ -281,23 +281,40 @@ WHERE slug = $1
 
 -- -----------------------------------------------------------------------------
 -- UpdateOrganisation
--- Updates the company-settings fields: identity, UK company/tax details and
--- locale. Billing columns and the HMRC MTD OAuth tokens are intentionally left
--- to their own dedicated flows and not touched here.
+-- Updates the company-settings fields shown on the Company Details screen:
+-- identity, the structured address, UK company/tax references, the invoice
+-- contact details, the business profile, and locale. Billing columns and the
+-- HMRC MTD OAuth tokens are intentionally left to their own dedicated flows and
+-- not touched here. The legacy registered_address column is no longer written
+-- (superseded by the structured address_line_*/town/region/postcode columns).
 -- -----------------------------------------------------------------------------
 -- name: UpdateOrganisation :one
 UPDATE organisations SET
-    name                   = $2,
-    slug                   = $3,
-    companies_house_number = $4,
-    legal_name             = $5,
-    registered_address     = $6,
-    utr                    = $7,
-    vrn                    = $8,
-    native_currency        = $9,
-    timezone               = $10,
-    country_code           = $11,
-    updated_at             = now()
+    name                      = $2,
+    slug                      = $3,
+    companies_house_number    = $4,
+    legal_name                = $5,
+    company_type              = $6,
+    address_line_1            = $7,
+    address_line_2            = $8,
+    address_line_3            = $9,
+    town                      = $10,
+    region                    = $11,
+    postcode                  = $12,
+    utr                       = $13,
+    vrn                       = $14,
+    paye_reference            = $15,
+    accounts_office_reference = $16,
+    business_phone            = $17,
+    contact_email             = $18,
+    contact_phone             = $19,
+    website                   = $20,
+    business_category         = $21,
+    business_description      = $22,
+    native_currency           = $23,
+    timezone                  = $24,
+    country_code              = $25,
+    updated_at                = now()
 WHERE id = $1
   AND deleted_at IS NULL
 RETURNING *;

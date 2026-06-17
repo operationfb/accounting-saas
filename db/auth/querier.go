@@ -199,9 +199,12 @@ type Querier interface {
 	UpdateMembershipStatus(ctx context.Context, arg UpdateMembershipStatusParams) error
 	// -----------------------------------------------------------------------------
 	// UpdateOrganisation
-	// Updates the company-settings fields: identity, UK company/tax details and
-	// locale. Billing columns and the HMRC MTD OAuth tokens are intentionally left
-	// to their own dedicated flows and not touched here.
+	// Updates the company-settings fields shown on the Company Details screen:
+	// identity, the structured address, UK company/tax references, the invoice
+	// contact details, the business profile, and locale. Billing columns and the
+	// HMRC MTD OAuth tokens are intentionally left to their own dedicated flows and
+	// not touched here. The legacy registered_address column is no longer written
+	// (superseded by the structured address_line_*/town/region/postcode columns).
 	// -----------------------------------------------------------------------------
 	UpdateOrganisation(ctx context.Context, arg UpdateOrganisationParams) (Organisation, error)
 	// -----------------------------------------------------------------------------

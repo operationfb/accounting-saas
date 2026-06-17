@@ -66,11 +66,26 @@ type Organisation struct {
 	CompaniesHouseNumber pgtype.Text `json:"companies_house_number"`
 	LegalName            pgtype.Text `json:"legal_name"`
 	RegisteredAddress    pgtype.Text `json:"registered_address"`
+	CompanyType          pgtype.Text `json:"company_type"`
+	AddressLine1         pgtype.Text `json:"address_line_1"`
+	AddressLine2         pgtype.Text `json:"address_line_2"`
+	AddressLine3         pgtype.Text `json:"address_line_3"`
+	Town                 pgtype.Text `json:"town"`
+	Region               pgtype.Text `json:"region"`
+	Postcode             pgtype.Text `json:"postcode"`
 	// HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.
 	Utr pgtype.Text `json:"utr"`
 	// VAT Registration Number. Format: GB + 9 digits. NULL if not VAT-registered.
-	Vrn              pgtype.Text `json:"vrn"`
-	IsMtdVatEnrolled bool        `json:"is_mtd_vat_enrolled"`
+	Vrn                     pgtype.Text `json:"vrn"`
+	PayeReference           pgtype.Text `json:"paye_reference"`
+	AccountsOfficeReference pgtype.Text `json:"accounts_office_reference"`
+	IsMtdVatEnrolled        bool        `json:"is_mtd_vat_enrolled"`
+	BusinessPhone           pgtype.Text `json:"business_phone"`
+	ContactEmail            pgtype.Text `json:"contact_email"`
+	ContactPhone            pgtype.Text `json:"contact_phone"`
+	Website                 pgtype.Text `json:"website"`
+	BusinessCategory        pgtype.Text `json:"business_category"`
+	BusinessDescription     pgtype.Text `json:"business_description"`
 	// HMRC MTD OAuth access token. TODO: encrypt at rest before production.
 	MtdAccessToken       pgtype.Text        `json:"mtd_access_token"`
 	MtdRefreshToken      pgtype.Text        `json:"mtd_refresh_token"`

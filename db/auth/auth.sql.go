@@ -179,7 +179,7 @@ INSERT INTO organisations (
     $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
     $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateOrganisationParams struct {
@@ -215,9 +215,24 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.CompaniesHouseNumber,
 		&i.LegalName,
 		&i.RegisteredAddress,
+		&i.CompanyType,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.Town,
+		&i.Region,
+		&i.Postcode,
 		&i.Utr,
 		&i.Vrn,
+		&i.PayeReference,
+		&i.AccountsOfficeReference,
 		&i.IsMtdVatEnrolled,
+		&i.BusinessPhone,
+		&i.ContactEmail,
+		&i.ContactPhone,
+		&i.Website,
+		&i.BusinessCategory,
+		&i.BusinessDescription,
 		&i.MtdAccessToken,
 		&i.MtdRefreshToken,
 		&i.MtdTokenExpiresAt,
@@ -399,7 +414,7 @@ func (q *Queries) GetMembershipByInviteToken(ctx context.Context, inviteToken pg
 }
 
 const getOrganisation = `-- name: GetOrganisation :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -418,9 +433,24 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.CompaniesHouseNumber,
 		&i.LegalName,
 		&i.RegisteredAddress,
+		&i.CompanyType,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.Town,
+		&i.Region,
+		&i.Postcode,
 		&i.Utr,
 		&i.Vrn,
+		&i.PayeReference,
+		&i.AccountsOfficeReference,
 		&i.IsMtdVatEnrolled,
+		&i.BusinessPhone,
+		&i.ContactEmail,
+		&i.ContactPhone,
+		&i.Website,
+		&i.BusinessCategory,
+		&i.BusinessDescription,
 		&i.MtdAccessToken,
 		&i.MtdRefreshToken,
 		&i.MtdTokenExpiresAt,
@@ -440,7 +470,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 }
 
 const getOrganisationBySlug = `-- name: GetOrganisationBySlug :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE slug = $1
   AND deleted_at IS NULL
 `
@@ -460,9 +490,24 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.CompaniesHouseNumber,
 		&i.LegalName,
 		&i.RegisteredAddress,
+		&i.CompanyType,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.Town,
+		&i.Region,
+		&i.Postcode,
 		&i.Utr,
 		&i.Vrn,
+		&i.PayeReference,
+		&i.AccountsOfficeReference,
 		&i.IsMtdVatEnrolled,
+		&i.BusinessPhone,
+		&i.ContactEmail,
+		&i.ContactPhone,
+		&i.Website,
+		&i.BusinessCategory,
+		&i.BusinessDescription,
 		&i.MtdAccessToken,
 		&i.MtdRefreshToken,
 		&i.MtdTokenExpiresAt,
@@ -728,7 +773,7 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 
 const listOrganisationsForUser = `-- name: ListOrganisationsForUser :many
 SELECT
-    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.utr, o.vrn, o.is_mtd_vat_enrolled, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.is_active, o.created_at, o.updated_at, o.deleted_at,
+    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.is_mtd_vat_enrolled, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.is_active, o.created_at, o.updated_at, o.deleted_at,
     m.role
 FROM organisations o
 JOIN organisation_memberships m ON m.organisation_id = o.id
@@ -739,30 +784,45 @@ ORDER BY o.name
 `
 
 type ListOrganisationsForUserRow struct {
-	ID                   uuid.UUID          `json:"id"`
-	Name                 string             `json:"name"`
-	Slug                 pgtype.Text        `json:"slug"`
-	CompaniesHouseNumber pgtype.Text        `json:"companies_house_number"`
-	LegalName            pgtype.Text        `json:"legal_name"`
-	RegisteredAddress    pgtype.Text        `json:"registered_address"`
-	Utr                  pgtype.Text        `json:"utr"`
-	Vrn                  pgtype.Text        `json:"vrn"`
-	IsMtdVatEnrolled     bool               `json:"is_mtd_vat_enrolled"`
-	MtdAccessToken       pgtype.Text        `json:"mtd_access_token"`
-	MtdRefreshToken      pgtype.Text        `json:"mtd_refresh_token"`
-	MtdTokenExpiresAt    pgtype.Timestamptz `json:"mtd_token_expires_at"`
-	Plan                 string             `json:"plan"`
-	TrialEndsAt          pgtype.Timestamptz `json:"trial_ends_at"`
-	StripeCustomerID     pgtype.Text        `json:"stripe_customer_id"`
-	StripeSubscriptionID pgtype.Text        `json:"stripe_subscription_id"`
-	NativeCurrency       string             `json:"native_currency"`
-	CountryCode          string             `json:"country_code"`
-	Timezone             string             `json:"timezone"`
-	IsActive             bool               `json:"is_active"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
-	DeletedAt            pgtype.Timestamptz `json:"deleted_at"`
-	Role                 OrganisationRole   `json:"role"`
+	ID                      uuid.UUID          `json:"id"`
+	Name                    string             `json:"name"`
+	Slug                    pgtype.Text        `json:"slug"`
+	CompaniesHouseNumber    pgtype.Text        `json:"companies_house_number"`
+	LegalName               pgtype.Text        `json:"legal_name"`
+	RegisteredAddress       pgtype.Text        `json:"registered_address"`
+	CompanyType             pgtype.Text        `json:"company_type"`
+	AddressLine1            pgtype.Text        `json:"address_line_1"`
+	AddressLine2            pgtype.Text        `json:"address_line_2"`
+	AddressLine3            pgtype.Text        `json:"address_line_3"`
+	Town                    pgtype.Text        `json:"town"`
+	Region                  pgtype.Text        `json:"region"`
+	Postcode                pgtype.Text        `json:"postcode"`
+	Utr                     pgtype.Text        `json:"utr"`
+	Vrn                     pgtype.Text        `json:"vrn"`
+	PayeReference           pgtype.Text        `json:"paye_reference"`
+	AccountsOfficeReference pgtype.Text        `json:"accounts_office_reference"`
+	IsMtdVatEnrolled        bool               `json:"is_mtd_vat_enrolled"`
+	BusinessPhone           pgtype.Text        `json:"business_phone"`
+	ContactEmail            pgtype.Text        `json:"contact_email"`
+	ContactPhone            pgtype.Text        `json:"contact_phone"`
+	Website                 pgtype.Text        `json:"website"`
+	BusinessCategory        pgtype.Text        `json:"business_category"`
+	BusinessDescription     pgtype.Text        `json:"business_description"`
+	MtdAccessToken          pgtype.Text        `json:"mtd_access_token"`
+	MtdRefreshToken         pgtype.Text        `json:"mtd_refresh_token"`
+	MtdTokenExpiresAt       pgtype.Timestamptz `json:"mtd_token_expires_at"`
+	Plan                    string             `json:"plan"`
+	TrialEndsAt             pgtype.Timestamptz `json:"trial_ends_at"`
+	StripeCustomerID        pgtype.Text        `json:"stripe_customer_id"`
+	StripeSubscriptionID    pgtype.Text        `json:"stripe_subscription_id"`
+	NativeCurrency          string             `json:"native_currency"`
+	CountryCode             string             `json:"country_code"`
+	Timezone                string             `json:"timezone"`
+	IsActive                bool               `json:"is_active"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `json:"deleted_at"`
+	Role                    OrganisationRole   `json:"role"`
 }
 
 // -----------------------------------------------------------------------------
@@ -787,9 +847,24 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.CompaniesHouseNumber,
 			&i.LegalName,
 			&i.RegisteredAddress,
+			&i.CompanyType,
+			&i.AddressLine1,
+			&i.AddressLine2,
+			&i.AddressLine3,
+			&i.Town,
+			&i.Region,
+			&i.Postcode,
 			&i.Utr,
 			&i.Vrn,
+			&i.PayeReference,
+			&i.AccountsOfficeReference,
 			&i.IsMtdVatEnrolled,
+			&i.BusinessPhone,
+			&i.ContactEmail,
+			&i.ContactPhone,
+			&i.Website,
+			&i.BusinessCategory,
+			&i.BusinessDescription,
 			&i.MtdAccessToken,
 			&i.MtdRefreshToken,
 			&i.MtdTokenExpiresAt,
@@ -1025,41 +1100,72 @@ func (q *Queries) UpdateMembershipStatus(ctx context.Context, arg UpdateMembersh
 
 const updateOrganisation = `-- name: UpdateOrganisation :one
 UPDATE organisations SET
-    name                   = $2,
-    slug                   = $3,
-    companies_house_number = $4,
-    legal_name             = $5,
-    registered_address     = $6,
-    utr                    = $7,
-    vrn                    = $8,
-    native_currency        = $9,
-    timezone               = $10,
-    country_code           = $11,
-    updated_at             = now()
+    name                      = $2,
+    slug                      = $3,
+    companies_house_number    = $4,
+    legal_name                = $5,
+    company_type              = $6,
+    address_line_1            = $7,
+    address_line_2            = $8,
+    address_line_3            = $9,
+    town                      = $10,
+    region                    = $11,
+    postcode                  = $12,
+    utr                       = $13,
+    vrn                       = $14,
+    paye_reference            = $15,
+    accounts_office_reference = $16,
+    business_phone            = $17,
+    contact_email             = $18,
+    contact_phone             = $19,
+    website                   = $20,
+    business_category         = $21,
+    business_description      = $22,
+    native_currency           = $23,
+    timezone                  = $24,
+    country_code              = $25,
+    updated_at                = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, utr, vrn, is_mtd_vat_enrolled, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationParams struct {
-	ID                   uuid.UUID   `json:"id"`
-	Name                 string      `json:"name"`
-	Slug                 pgtype.Text `json:"slug"`
-	CompaniesHouseNumber pgtype.Text `json:"companies_house_number"`
-	LegalName            pgtype.Text `json:"legal_name"`
-	RegisteredAddress    pgtype.Text `json:"registered_address"`
-	Utr                  pgtype.Text `json:"utr"`
-	Vrn                  pgtype.Text `json:"vrn"`
-	NativeCurrency       string      `json:"native_currency"`
-	Timezone             string      `json:"timezone"`
-	CountryCode          string      `json:"country_code"`
+	ID                      uuid.UUID   `json:"id"`
+	Name                    string      `json:"name"`
+	Slug                    pgtype.Text `json:"slug"`
+	CompaniesHouseNumber    pgtype.Text `json:"companies_house_number"`
+	LegalName               pgtype.Text `json:"legal_name"`
+	CompanyType             pgtype.Text `json:"company_type"`
+	AddressLine1            pgtype.Text `json:"address_line_1"`
+	AddressLine2            pgtype.Text `json:"address_line_2"`
+	AddressLine3            pgtype.Text `json:"address_line_3"`
+	Town                    pgtype.Text `json:"town"`
+	Region                  pgtype.Text `json:"region"`
+	Postcode                pgtype.Text `json:"postcode"`
+	Utr                     pgtype.Text `json:"utr"`
+	Vrn                     pgtype.Text `json:"vrn"`
+	PayeReference           pgtype.Text `json:"paye_reference"`
+	AccountsOfficeReference pgtype.Text `json:"accounts_office_reference"`
+	BusinessPhone           pgtype.Text `json:"business_phone"`
+	ContactEmail            pgtype.Text `json:"contact_email"`
+	ContactPhone            pgtype.Text `json:"contact_phone"`
+	Website                 pgtype.Text `json:"website"`
+	BusinessCategory        pgtype.Text `json:"business_category"`
+	BusinessDescription     pgtype.Text `json:"business_description"`
+	NativeCurrency          string      `json:"native_currency"`
+	Timezone                string      `json:"timezone"`
+	CountryCode             string      `json:"country_code"`
 }
 
 // -----------------------------------------------------------------------------
 // UpdateOrganisation
-// Updates the company-settings fields: identity, UK company/tax details and
-// locale. Billing columns and the HMRC MTD OAuth tokens are intentionally left
-// to their own dedicated flows and not touched here.
+// Updates the company-settings fields shown on the Company Details screen:
+// identity, the structured address, UK company/tax references, the invoice
+// contact details, the business profile, and locale. Billing columns and the
+// HMRC MTD OAuth tokens are intentionally left to their own dedicated flows and
+// not touched here. The legacy registered_address column is no longer written
+// (superseded by the structured address_line_*/town/region/postcode columns).
 // -----------------------------------------------------------------------------
 func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisationParams) (Organisation, error) {
 	row := q.db.QueryRow(ctx, updateOrganisation,
@@ -1068,9 +1174,23 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		arg.Slug,
 		arg.CompaniesHouseNumber,
 		arg.LegalName,
-		arg.RegisteredAddress,
+		arg.CompanyType,
+		arg.AddressLine1,
+		arg.AddressLine2,
+		arg.AddressLine3,
+		arg.Town,
+		arg.Region,
+		arg.Postcode,
 		arg.Utr,
 		arg.Vrn,
+		arg.PayeReference,
+		arg.AccountsOfficeReference,
+		arg.BusinessPhone,
+		arg.ContactEmail,
+		arg.ContactPhone,
+		arg.Website,
+		arg.BusinessCategory,
+		arg.BusinessDescription,
 		arg.NativeCurrency,
 		arg.Timezone,
 		arg.CountryCode,
@@ -1083,9 +1203,24 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.CompaniesHouseNumber,
 		&i.LegalName,
 		&i.RegisteredAddress,
+		&i.CompanyType,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.Town,
+		&i.Region,
+		&i.Postcode,
 		&i.Utr,
 		&i.Vrn,
+		&i.PayeReference,
+		&i.AccountsOfficeReference,
 		&i.IsMtdVatEnrolled,
+		&i.BusinessPhone,
+		&i.ContactEmail,
+		&i.ContactPhone,
+		&i.Website,
+		&i.BusinessCategory,
+		&i.BusinessDescription,
 		&i.MtdAccessToken,
 		&i.MtdRefreshToken,
 		&i.MtdTokenExpiresAt,

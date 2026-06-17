@@ -121,6 +121,30 @@ _Last updated: 2026-06-17_
   active-only filter, and pagination. _Files: `contact_service.go`, `server.go`,
   `db/queries/contacts.sql`._
 
+## Organisation / Company details
+
+- **Backfill + drop `registered_address`.** The structured address columns
+  (`address_line_1..3`, `town`, `region`, `postcode`) supersede the legacy
+  free-text `registered_address`, which is no longer written but kept for
+  back-compat. Backfill any existing data into the structured columns, then drop
+  the column in a later additive migration. _File: `db/schema/auth_schema.sql`._
+- **`business_category` as a controlled list.** Currently a free VARCHAR (the
+  frontend dropdown constrains it). If the category list firms up, promote it to a
+  DB enum / reference table with a CHECK or FK. _Files: `db/schema/auth_schema.sql`,
+  `organisation_service.go`._
+- **Enforce `company_type` "set once".** The form notes that changing company type
+  requires a fresh account. The column is freely editable today; add a rule
+  (app-layer or trigger) that blocks changing it once set, if that policy is wanted.
+  _Files: `organisation_service.go`, `db/schema/auth_schema.sql`._
+- **Surface VAT on Company Details.** `vrn` exists but isn't on this form yet, so
+  the service preserves it via read-modify-write. When VAT is added to the screen,
+  add `vrn` (+ any VAT scheme) to `UpdateOrganisationRequest` and validate the
+  `GB` + 9/12-digit format. _Files: `organisation_service.go`, `server.go`._
+- **Format validation for UK references.** `paye_reference`,
+  `accounts_office_reference` and `postcode` are stored as free text. Add format
+  checks (PAYE `NNN/XXNNNNN`, Accounts Office `NNNXXNNNNNNNN`, UK postcode) in the
+  service. _File: `organisation_service.go`._
+
 ## Projects (frontend / SPA)
 
 - **Inline "add new contact" from the project form.** The New/Edit Project form's

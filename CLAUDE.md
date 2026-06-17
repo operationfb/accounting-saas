@@ -50,6 +50,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
 ├── contact_service.go   # Contact business logic + request/response DTOs (CRUD, validation, creator/admin auth) for the contacts module
+├── organisation_service.go  # OrganisationService: read/update the org's own "Company Details" (GET/PUT /api/v1/organisation; member read, owner/admin edit)
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
 ├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
 ├── ocr_service.go       # OcrService: background receipt/invoice extraction — drives the attachment ocr_status machine, fills the expense (DocumentExtractor interface + ExtractionResult)
@@ -62,12 +63,13 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── ocr_service_test.go  # OCR/Smart Upload tests (real Postgres + GCS; Document AI faked) + money-conversion unit test
 ├── supplier_category_test.go  # supplier→category dictionary: learn-trigger tests (DB) + auto-categorise tests (Postgres + GCS)
 ├── contact_service_test.go  # Contacts CRUD tests (real Postgres): happy path, defaults, 0-vs-NULL terms, validation, auth, multi-tenant isolation
+├── organisation_service_test.go  # Company Details tests (real Postgres): update round-trip, member read, owner/admin-only edit, validation, field preservation, isolation
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts)
 │
 ├── db/
 │   ├── schema/          # Source-of-truth DDL (full CREATE TABLE files, not migrations)
 │   │   ├── schema.sql        # expenses module, supplier_category_map dictionary, set_updated_at() + learn_supplier_category() triggers
-│   │   ├── auth_schema.sql   # auth module: users, organisations, organisation_memberships
+│   │   ├── auth_schema.sql   # auth module: users, organisations (incl. Company Details fields), organisation_memberships
 │   │   └── contacts_schema.sql  # contacts module: customers/suppliers (invoicing details, charge_vat, bank)
 │   ├── queries/         # Annotated SQL = sqlc input (one file per domain)
 │   │   ├── query.sql         # expenses queries
@@ -124,6 +126,18 @@ Worth knowing:
 - **`charge_vat`** is a `VARCHAR + CHECK` enum: `ALWAYS | NEVER | SAME_COUNTRY` (the form's three options; default `SAME_COUNTRY`). Validated three ways: `oneof` binding (400), the service guard (422), and the DB CHECK.
 - **Names are permissive.** `first_name` / `last_name` / `organisation_name` are all nullable with no cross-column CHECK; the "must have a name or an org name" rule is deferred to the app layer (see `BACKLOG.md`).
 - **Auth.** Any active member may create/read/list; **update/delete require the contact's creator or an owner/admin** (mirrors the expense ownership rule). Org-scoped + soft-deleted throughout. Tested in `contact_service_test.go`.
+
+### Organisation / Company details
+
+The **Company Details** screen (modelled on FreeAgent's) lives entirely on the existing `organisations` table — it is **not** a separate domain. Rather than a 1:1 `organisation_details` table, the missing fields were **added as nullable columns** to `organisations` (`db/schema/auth_schema.sql`), beside the company/tax fields already there (`legal_name`, `companies_house_number`, `utr`, `vrn`, `country_code`). New columns: `company_type` (CHECK enum: `sole_trader|partnership|llp|limited_company`), a structured address (`address_line_1..3`, `town`, `region`, `postcode`), `paye_reference`, `accounts_office_reference`, `business_phone`, `contact_email`, `contact_phone`, `website`, `business_category`, `business_description`. The legacy free-text `registered_address` is **deprecated** (kept for back-compat, no longer written; see `BACKLOG.md`).
+
+`OrganisationService` (`organisation_service.go`) is a thin layer over the existing `auth` queries (like `MemberService`), with handlers/DTOs/routes in `server.go` under **`/api/v1/organisation`** — a singleton resource (the org comes from the token, so there is no id in the path):
+
+- **`GET`** returns the full company details — **any active member** may read.
+- **`PUT`** updates them — **owner/admin only** (`isOrgAdmin`); reuses `GetOrganisation` / `UpdateOrganisation` (`db/queries/auth.sql`).
+- **Field mapping.** The form's "Company name" → `name`, "Company Registration Number" → `companies_house_number`, "Corporation Tax Reference" → `utr`, "Country" → `country_code` (existing columns; `legal_name` is also exposed).
+- **Read-modify-write.** PUT fetches the row first and passes through the columns this form does not own (`slug`, `native_currency`, `timezone`, and — until VAT is added to the form — `vrn`) so a save can't wipe them.
+- **Validation.** `company_type` and `country_code` are checked three ways: `oneof` / `len` binding (400), the service guards `normaliseCompanyType` / `normaliseCountryCode` (422), and the DB CHECK. Tested in `organisation_service_test.go`.
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 

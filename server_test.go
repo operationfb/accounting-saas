@@ -135,7 +135,8 @@ func newTestServer(t *testing.T) *testServer {
 	contactService := NewContactService(pool, contacts.New(pool), authQueries)
 	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
 	memberService := NewMemberService(authQueries)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, authHandler, tokenMaker, []string{testCORSOrigin})
+	organisationService := NewOrganisationService(authQueries)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, authHandler, tokenMaker, []string{testCORSOrigin})
 
 	return &testServer{
 		server:      server,

@@ -69,15 +69,34 @@ CREATE TABLE organisations (
     -- UK company information
     -- These are optional — a sole trader won't have a companies house number.
     -- -------------------------------------------------------------------------
-    companies_house_number  VARCHAR(20),                -- 8-digit UK Companies House number
+    companies_house_number  VARCHAR(20),                -- 8-digit UK Companies House number ("Company Registration Number" on the form)
     legal_name              VARCHAR(200),               -- registered legal name if different from trading name
-    registered_address      TEXT,                       -- full address as a text block for now
+    registered_address      TEXT,                       -- legacy free-text address; superseded by the
+                                                        -- structured columns below (kept for back-compat)
+
+    -- Legal form of the business. In the product this is set once at signup
+    -- (changing it requires a fresh account), so it stays nullable here and is
+    -- constrained by a CHECK rather than NOT NULL. Codes are snake_case; the
+    -- frontend maps them to labels ("Limited Company", etc.).
+    company_type            VARCHAR(40)
+                            CHECK (company_type IS NULL OR company_type IN
+                                  ('sole_trader','partnership','llp','limited_company')),
+
+    -- Structured registered/trading address — the Company Details screen edits
+    -- these. Mirrors the contacts table's address columns for consistency.
+    address_line_1          VARCHAR(200),
+    address_line_2          VARCHAR(200),
+    address_line_3          VARCHAR(200),
+    town                    VARCHAR(100),
+    region                  VARCHAR(100),               -- "Region or State"
+    postcode                VARCHAR(20),
 
     -- -------------------------------------------------------------------------
     -- UK tax information
     -- -------------------------------------------------------------------------
     -- UTR = Unique Taxpayer Reference, assigned by HMRC to every UK taxpayer.
-    -- Required for Self Assessment and Corporation Tax submissions.
+    -- Required for Self Assessment and Corporation Tax submissions. This is the
+    -- form's "Corporation Tax Reference" (a.k.a. COTAX reference).
     utr                     VARCHAR(20),
 
     -- VAT Registration Number. Format: GB + 9 digits (e.g. 'GB123456789').
@@ -85,9 +104,27 @@ CREATE TABLE organisations (
     -- When present, this is passed to HMRC MTD VAT API calls.
     vrn                     VARCHAR(20),
 
+    -- PAYE employer reference (e.g. '120/RF11544') and the linked Accounts Office
+    -- reference (e.g. '120PZ03790092'), used for payroll/RTI. Both optional — a
+    -- sole trader with no employees won't have them.
+    paye_reference              VARCHAR(20),
+    accounts_office_reference   VARCHAR(20),
+
     -- Whether this organisation is enrolled in MTD for VAT.
     -- Drives whether we show the VAT Return submission workflow.
     is_mtd_vat_enrolled     BOOLEAN     NOT NULL DEFAULT FALSE,
+
+    -- -------------------------------------------------------------------------
+    -- Company contact details & business profile (Company Details screen)
+    -- The "Other details" (shown on invoices/estimates) and "About your business"
+    -- sections of the form. All optional.
+    -- -------------------------------------------------------------------------
+    business_phone          VARCHAR(30),                -- general business phone number
+    contact_email           VARCHAR(320),               -- contact email shown on invoices/estimates
+    contact_phone           VARCHAR(30),                -- contact phone shown on invoices/estimates
+    website                 VARCHAR(255),
+    business_category       VARCHAR(100),               -- e.g. 'Marketing & Advertising' (free text for now)
+    business_description    TEXT,
 
     -- -------------------------------------------------------------------------
     -- HMRC MTD OAuth tokens (Phase 2 — TrueLayer/MTD integration)
