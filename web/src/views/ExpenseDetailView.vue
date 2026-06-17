@@ -8,6 +8,7 @@ import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { getExpense } from '@/services/expenses.service'
+import { getProject } from '@/services/projects.service'
 import { listAttachments, getDownloadUrl } from '@/services/attachments.service'
 import { formatMoney, formatDate, formatDateTime, formatBytes } from '@/lib/format'
 import type { ExpenseDetail } from '@/types/expense'
@@ -21,6 +22,9 @@ const id = route.params.id as string
 const expense = ref<ExpenseDetail | null>(null)
 const loading = ref(true)
 const error = ref<ApiError | null>(null)
+// Resolved name for the linked project_id (the detail API returns only the id).
+// Best-effort: a hard-deleted project (404) just leaves this blank.
+const projectName = ref('')
 
 // Attachments load independently of the expense (separate endpoint).
 const attachments = ref<Attachment[]>([])
@@ -35,8 +39,18 @@ const uploadNotice = computed(() => route.query.attach === 'partial')
 async function load() {
   loading.value = true
   error.value = null
+  projectName.value = ''
   try {
     expense.value = await getExpense(id)
+    // Resolve the linked project's name for display (the detail response carries
+    // only project_id). Best-effort — a hard-deleted project 404s, left blank.
+    if (expense.value.project_id) {
+      try {
+        projectName.value = (await getProject(expense.value.project_id)).name
+      } catch {
+        projectName.value = ''
+      }
+    }
   } catch (err) {
     // A 401 is already handled by apiFetch (logout + redirect). Anything else
     // (404 / 403 / 422 / 500) lands here and is shown as an error state.
@@ -118,6 +132,9 @@ const rows = computed(() => {
   if (e.supplier_vat_number) out.push({ label: 'Supplier VAT number', value: e.supplier_vat_number })
   if (e.invoice_number) out.push({ label: 'Invoice number', value: e.invoice_number })
   if (e.receipt_reference) out.push({ label: 'Receipt reference', value: e.receipt_reference })
+
+  // Linked project (name resolved separately; omitted until/unless it resolves).
+  if (e.project_id && projectName.value) out.push({ label: 'Project', value: projectName.value })
 
   if (e.rebill_type) out.push({ label: 'Rebill type', value: e.rebill_type })
   if (e.rebill_factor) out.push({ label: 'Rebill factor', value: e.rebill_factor })

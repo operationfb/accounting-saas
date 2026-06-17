@@ -122,6 +122,9 @@ export interface CreateExpenseRequest {
   // The claimant the expense is for. Omitted → the caller (the normal case).
   // Setting it to another user is owner/admin-only and re-authorised server-side.
   user_id?: string
+  // Optional project the expense is booked to (the "Is this a project expense?"
+  // card). Omitted → not a project expense.
+  project_id?: string
 }
 
 // POST /api/v1/expenses → 201 { "expense": <lean ExpenseResponse> }. We only

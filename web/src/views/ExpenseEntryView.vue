@@ -2,8 +2,8 @@
 // Expense form — DUAL-MODE:
 //   /expenses/new        → create  (POST /api/v1/expenses)
 //   /expenses/:id/edit   → edit    (PUT  /api/v1/expenses/:id), pre-filled from the record
-// Supported fields are live (incl. VAT rate + amount); the Attachment / Project /
-// Recurring sections + the VAT-options radios stay disabled ("coming soon").
+// Supported fields are live (incl. VAT rate + amount, attachments, and the
+// project link); the Recurring section + the VAT-options radios stay disabled.
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute, onBeforeRouteLeave } from 'vue-router'
 import InputText from 'primevue/inputtext'
@@ -33,6 +33,8 @@ import type { ApiError } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
 import { listMembers } from '@/services/members.service'
 import type { OrganisationMember } from '@/types/member'
+import { listProjects } from '@/services/projects.service'
+import type { Project } from '@/types/project'
 
 const router = useRouter()
 const route = useRoute()
@@ -202,10 +204,45 @@ const form = reactive({
   supplierVat: '',
   invoiceNumber: '',
   receiptReference: '',
+  projectId: '', // linked project (the "Is this a project expense?" card); '' = none
 })
 const currencyOptions = ['GBP', 'EUR', 'USD']
 const currencySymbols: Record<string, string> = { GBP: '£', EUR: '€', USD: '$' }
 const currencySymbol = computed(() => currencySymbols[form.currency] ?? '')
+
+// --- projects (the "Is this a project expense?" card) ---
+// Linking an expense to a project is optional and open to any member. listProjects
+// returns all statuses; the picker offers ACTIVE projects (plus the currently
+// linked one in edit mode, so an archived link still shows). Loaded on mount
+// (create) and inside loadForEdit().
+const projects = ref<Project[]>([])
+const projectsLoading = ref(false)
+const projectsError = ref('')
+
+async function loadProjects() {
+  projectsLoading.value = true
+  projectsError.value = ''
+  try {
+    projects.value = await listProjects()
+  } catch (err) {
+    projectsError.value = (err as ApiError)?.message ?? 'Could not load projects.'
+  } finally {
+    projectsLoading.value = false
+  }
+}
+
+// "— None —" (not a project expense) + the active projects. In edit mode, if the
+// linked project isn't active, include it anyway so the selection still shows.
+const projectOptions = computed(() => {
+  const opts = [{ label: '— None —', value: '' }]
+  const active = projects.value.filter((p) => p.status === 'active')
+  for (const p of active) opts.push({ label: p.name, value: p.id })
+  if (form.projectId && !active.some((p) => p.id === form.projectId)) {
+    const linked = projects.value.find((p) => p.id === form.projectId)
+    if (linked) opts.push({ label: linked.name, value: linked.id })
+  }
+  return opts
+})
 
 const selectedVatRate = computed(() => vatRates.value.find((r) => r.id === form.vatRate) ?? null)
 const isFixedRatio = computed(() => selectedVatRate.value?.is_fixed_ratio ?? false)
@@ -246,7 +283,6 @@ const vatAmountLiveError = computed(() => {
 
 // --- disabled "coming soon" sections — kept for layout, never sent ---
 const vatOption = ref('uk')
-const project = ref('-- None --')
 const recurrence = ref('-- Does Not Recur --')
 
 // --- edit-mode load state ---
@@ -263,7 +299,7 @@ async function loadForEdit() {
     // Reference data FIRST so the pre-selected options exist on the dropdowns.
     // For an admin, also load members so the disabled claimant picker can show the
     // claimant's name (an admin may be editing another user's draft).
-    const refData = [loadCategories(), loadVatRates()]
+    const refData = [loadCategories(), loadVatRates(), loadProjects()]
     if (auth.isOrgAdmin) refData.push(loadMembers())
     await Promise.all(refData)
     const exp = await getExpense(editId)
@@ -273,6 +309,7 @@ async function loadForEdit() {
     }
     hydrating.value = true
     form.claimantId = exp.user_id // the claimant (shown read-only in edit mode)
+    form.projectId = exp.project_id ?? '' // linked project (editable in edit mode)
     form.category = exp.category_id
     form.datedOn = new Date(`${exp.dated_on}T00:00:00`) // local midnight, no tz shift
     form.currency = exp.currency
@@ -324,6 +361,7 @@ onMounted(() => {
   } else {
     loadCategories()
     loadVatRates()
+    loadProjects()
     // Only owners/admins get the member picker; everyone else is pinned to self.
     if (auth.isOrgAdmin) loadMembers()
   }
@@ -408,6 +446,8 @@ function buildPayload(): CreateExpenseRequest {
     // Claimant. Defaults to self; only owner/admin can pick someone else. Sent on
     // create; the update endpoint ignores it (the claimant isn't editable).
     user_id: form.claimantId || undefined,
+    // Linked project ('' = not a project expense). Editable on create and update.
+    project_id: form.projectId || undefined,
   }
 }
 
@@ -424,6 +464,7 @@ function resetForm() {
   form.supplierVat = ''
   form.invoiceNumber = ''
   form.receiptReference = ''
+  form.projectId = ''
   for (const k of Object.keys(errors)) delete errors[k]
 }
 
@@ -943,10 +984,25 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
       </FaCard>
 
-      <!-- Project — coming soon (disabled) -->
-      <FaCard title="Is this a project expense?" note="Coming soon">
+      <!-- Project — link this expense to a project (optional). -->
+      <FaCard title="Is this a project expense?">
         <FormRow label="Link to project" label-for="project">
-          <Select id="project" v-model="project" :options="['-- None --']" class="w-72" disabled />
+          <Select
+            id="project"
+            v-model="form.projectId"
+            :options="projectOptions"
+            option-label="label"
+            option-value="value"
+            :placeholder="projectsLoading ? 'Loading…' : '— None —'"
+            :loading="projectsLoading"
+            filter
+            filter-placeholder="Search projects"
+            class="w-72"
+          />
+          <p v-if="projectsError" class="text-xs text-[#c0392b]">
+            {{ projectsError }}
+            <button type="button" class="underline" @click="loadProjects">Retry</button>
+          </p>
         </FormRow>
       </FaCard>
 

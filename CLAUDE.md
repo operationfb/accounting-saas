@@ -106,6 +106,13 @@ An organisation builds up a **learned mapping** from supplier to the category it
 
 Like everything else, the dictionary is **organisation-scoped** (`organisation_id` leads the unique key and every lookup). Tested in `supplier_category_test.go`: the trigger directly against Postgres, and the auto-categorise loop end-to-end through the capture→OCR pipeline (Document AI faked).
 
+### Claimant & on-behalf expense entry
+
+An expense carries **two** user FKs: `user_id` is the **claimant** (whose expense it is) and `created_by_user_id` is who **recorded** it. Normally identical, but they diverge when an admin files for someone else:
+
+- **On create**, an **owner/admin** may set `user_id` to another user (the optional `user_id` field on `CreateExpenseRequest`). `CreateExpense` authorises it: the caller must be owner/admin **and** the target must be an **active member of the same org** (checked via the org-scoped `GetMembership`, so a claimant from another tenant returns no rows → rejected); otherwise 403/422. `created_by_user_id` always stays the caller, preserving the audit of who actually entered it. The claimant is **not editable on update** — `UpdateExpense` never reads `user_id`. Covered by the "CREATE ON BEHALF" suite in `server_test.go`.
+- **The picker.** The frontend's **Claimant** dropdown (expense form, directly above Category) is populated by **`GET /api/v1/members`** (`member_service.go`, `MemberService`) — **owner/admin only** (403 otherwise; returns members of all statuses, the UI filters to `active`). A non-owner/admin sees the dropdown **disabled and pinned to themselves**. The caller's role reaches the SPA via `organisation.role` in the login response (stored as `auth.isOrgAdmin`).
+
 ### Contacts module
 
 A **contact** is a customer/supplier an organisation invoices or buys from (modelled on the FreeAgent "New Contact" screen). It is a **standalone domain**, structured exactly like `auth`: its own schema file (`db/schema/contacts_schema.sql`), its own queries (`db/queries/contacts.sql`), its own sqlc block generating package `db/contacts`, a service (`contact_service.go`) and handlers/DTOs/routes in `server.go` under `/api/v1/contacts` (list, create, get, update, soft-delete).

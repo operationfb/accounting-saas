@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-16_
+_Last updated: 2026-06-17_
 
 ## Auth & authorization
 
@@ -79,6 +79,25 @@ _Last updated: 2026-06-16_
   existing `GetSuggestedCategory` query so the SPA can pre-select the category as
   the user types the supplier. Org-scoped; read-only. _Files: `server.go`,
   `expense_service.go`._
+- **Validate the project link on expense create/update (multi-tenant hardening).**
+  `CreateExpense`/`UpdateExpense` accept `project_id` (now sent by the activated
+  "Is this a project expense?" card) but don't verify it belongs to the caller's
+  organisation — a crafted request could link an expense to another org's project.
+  Add an org-scoped check (inject the projects querier into `ExpenseService` and look
+  the project up by `(id, organisation_id)`, mirroring the claimant `GetMembership`
+  check). _Files: `expense_service.go`, `main.go`._
+- **Expense rebilling (project expenses).** The `expenses` table has `rebill_type`
+  (`cost|markup|price`) + `rebill_factor`, and the detail view already renders them,
+  but the form only links a project (no rebilling UI) and the backend does no
+  validation. Add rebilling controls to the project card plus service validation
+  (rebill_type enum, the all-three-together combination → 422 not a DB 500), and
+  decide the markup representation (store a multiplier vs a percentage). _Files:
+  `web/src/views/ExpenseEntryView.vue`, `expense_service.go`, `server.go`._
+- **Project name in the expense detail response.** `ExpenseDetailView` resolves the
+  linked project's name with a second `GET /projects/:id` call. To drop the extra
+  round-trip, LEFT JOIN `projects` in the `v_expenses_full` view and expose
+  `project_name` on `ExpenseDetailResponse` (like `category_name`). _Files:
+  `db/schema/schema.sql`, `server.go`, `expense_service.go`._
 
 ## Contacts
 
