@@ -1006,8 +1006,8 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
       </FaCard>
 
-      <!-- Recurring — coming soon (disabled) -->
-      <FaCard title="Recurring options" note="Coming soon">
+      <!-- Recurring — coming soon, hidden for now. Remove v-if="false" to show it. -->
+      <FaCard v-if="false" title="Recurring options" note="Coming soon">
         <FormRow label="This expense recurs" label-for="recurs">
           <Select id="recurs" v-model="recurrence" :options="['-- Does Not Recur --']" class="w-72" disabled />
         </FormRow>
