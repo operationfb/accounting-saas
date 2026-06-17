@@ -415,7 +415,8 @@ INSERT INTO expense_attachments (
     storage_bucket,
     description,
     is_primary,
-    uploaded_by_user_id
+    uploaded_by_user_id,
+    content_hash
 ) VALUES (
     $1,   -- expense_id           UUID
     $2,   -- organisation_id      UUID
@@ -426,9 +427,10 @@ INSERT INTO expense_attachments (
     $7,   -- storage_bucket       VARCHAR e.g. 'myapp-expense-documents-prod'
     $8,   -- description          TEXT (nullable — user label for this file)
     $9,   -- is_primary           BOOLEAN
-    $10   -- uploaded_by_user_id  UUID
+    $10,  -- uploaded_by_user_id  UUID
+    $11   -- content_hash         VARCHAR (nullable — hex SHA-256 of the file bytes)
 )
-RETURNING id, expense_id, organisation_id, file_name, content_type, file_size_bytes, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at
+RETURNING id, expense_id, organisation_id, file_name, content_type, file_size_bytes, content_hash, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at
 `
 
 type CreateExpenseAttachmentParams struct {
@@ -442,6 +444,7 @@ type CreateExpenseAttachmentParams struct {
 	Description      pgtype.Text `json:"description"`
 	IsPrimary        bool        `json:"is_primary"`
 	UploadedByUserID uuid.UUID   `json:"uploaded_by_user_id"`
+	ContentHash      pgtype.Text `json:"content_hash"`
 }
 
 // =============================================================================
@@ -465,6 +468,7 @@ func (q *Queries) CreateExpenseAttachment(ctx context.Context, arg CreateExpense
 		arg.Description,
 		arg.IsPrimary,
 		arg.UploadedByUserID,
+		arg.ContentHash,
 	)
 	var i ExpenseAttachment
 	err := row.Scan(
@@ -474,6 +478,7 @@ func (q *Queries) CreateExpenseAttachment(ctx context.Context, arg CreateExpense
 		&i.FileName,
 		&i.ContentType,
 		&i.FileSizeBytes,
+		&i.ContentHash,
 		&i.StoragePath,
 		&i.StorageBucket,
 		&i.Description,
@@ -935,6 +940,37 @@ func (q *Queries) FillExpenseFromOCR(ctx context.Context, arg FillExpenseFromOCR
 	return i, err
 }
 
+const findDuplicateReceipt = `-- name: FindDuplicateReceipt :one
+SELECT a.expense_id
+FROM expense_attachments a
+JOIN expenses e ON e.id = a.expense_id
+WHERE a.organisation_id = $1
+  AND e.user_id         = $2
+  AND a.content_hash    = $3
+  AND e.deleted_at IS NULL
+LIMIT 1
+`
+
+type FindDuplicateReceiptParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	UserID         uuid.UUID   `json:"user_id"`
+	ContentHash    pgtype.Text `json:"content_hash"`
+}
+
+// -----------------------------------------------------------------------------
+// FindDuplicateReceipt
+// Content-level dedupe for the email channel: is there already a NON-DELETED
+// expense for this claimant in this org whose attachment has the identical
+// content hash? Returns that expense's id if so (the caller then skips
+// re-capturing the same file). Hits idx_expense_attachments_content_hash.
+// -----------------------------------------------------------------------------
+func (q *Queries) FindDuplicateReceipt(ctx context.Context, arg FindDuplicateReceiptParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, findDuplicateReceipt, arg.OrganisationID, arg.UserID, arg.ContentHash)
+	var expense_id uuid.UUID
+	err := row.Scan(&expense_id)
+	return expense_id, err
+}
+
 const getExpense = `-- name: GetExpense :one
 SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE id              = $1   -- expense UUID
@@ -1009,7 +1045,7 @@ func (q *Queries) GetExpense(ctx context.Context, arg GetExpenseParams) (Expense
 const getExpenseAttachment = `-- name: GetExpenseAttachment :one
 
 
-SELECT id, expense_id, organisation_id, file_name, content_type, file_size_bytes, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at FROM expense_attachments
+SELECT id, expense_id, organisation_id, file_name, content_type, file_size_bytes, content_hash, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at FROM expense_attachments
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -1035,6 +1071,7 @@ func (q *Queries) GetExpenseAttachment(ctx context.Context, arg GetExpenseAttach
 		&i.FileName,
 		&i.ContentType,
 		&i.FileSizeBytes,
+		&i.ContentHash,
 		&i.StoragePath,
 		&i.StorageBucket,
 		&i.Description,
@@ -1357,7 +1394,7 @@ func (q *Queries) ListDueRecurrences(ctx context.Context) ([]ExpenseRecurrence, 
 }
 
 const listExpenseAttachments = `-- name: ListExpenseAttachments :many
-SELECT id, expense_id, organisation_id, file_name, content_type, file_size_bytes, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at FROM expense_attachments
+SELECT id, expense_id, organisation_id, file_name, content_type, file_size_bytes, content_hash, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at FROM expense_attachments
 WHERE expense_id = $1
 ORDER BY is_primary DESC, created_at ASC
 `
@@ -1383,6 +1420,7 @@ func (q *Queries) ListExpenseAttachments(ctx context.Context, expenseID uuid.UUI
 			&i.FileName,
 			&i.ContentType,
 			&i.FileSizeBytes,
+			&i.ContentHash,
 			&i.StoragePath,
 			&i.StorageBucket,
 			&i.Description,
@@ -2828,7 +2866,7 @@ UPDATE expense_attachments SET
     updated_at         = now()
 WHERE id              = $1
   AND organisation_id = $2     -- tenant scope — never skip this
-RETURNING id, expense_id, organisation_id, file_name, content_type, file_size_bytes, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at
+RETURNING id, expense_id, organisation_id, file_name, content_type, file_size_bytes, content_hash, storage_path, storage_bucket, description, is_primary, ocr_status, ocr_raw_text, ocr_extracted_data, ocr_processed_at, uploaded_by_user_id, created_at, updated_at
 `
 
 type UpdateAttachmentOCRStatusParams struct {
@@ -2866,6 +2904,7 @@ func (q *Queries) UpdateAttachmentOCRStatus(ctx context.Context, arg UpdateAttac
 		&i.FileName,
 		&i.ContentType,
 		&i.FileSizeBytes,
+		&i.ContentHash,
 		&i.StoragePath,
 		&i.StorageBucket,
 		&i.Description,

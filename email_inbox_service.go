@@ -24,6 +24,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html"
@@ -135,9 +137,21 @@ func (s *EmailInboxService) Ingest(ctx context.Context, in *InboundEmail) (Inges
 	// --- 4. Capture each file attachment as a draft. ------------------------
 	var (
 		drafts int
+		dupes  int
 		notes  []string
 	)
 	for i, att := range in.Attachments {
+		// Content-level dedupe: if this exact file already became an expense for
+		// this claimant, skip it. Catches the same receipt re-sent as a separate
+		// email (a new Message-Id, which the event-level dedupe can't catch).
+		if dupID, isDup, err := s.duplicateOf(ctx, claimantID, orgID, att); err != nil {
+			return s.fail(ctx, eventID, fmt.Errorf("dedupe attachment %d: %w", i+1, err))
+		} else if isDup {
+			notes = append(notes, fmt.Sprintf("attachment %d (%s): duplicate of expense %s, skipped", i+1, att.Filename, dupID))
+			dupes++
+			continue
+		}
+
 		if err := s.captureAttachment(ctx, claimantID, orgID, att); err != nil {
 			var appErr *AppError
 			if errors.As(err, &appErr) && appErr.Code != ErrCodeInternal {
@@ -168,9 +182,15 @@ func (s *EmailInboxService) Ingest(ctx context.Context, in *InboundEmail) (Inges
 	}
 
 	// --- 6. Record the outcome. ---------------------------------------------
+	// processed if we created any draft; else if every attachment was a duplicate
+	// of an existing one, say so distinctly; else nothing was capturable.
 	status := "processed"
 	if drafts == 0 {
-		status = "ignored_no_attachments"
+		if dupes > 0 {
+			status = "ignored_duplicate"
+		} else {
+			status = "ignored_no_attachments"
+		}
 	}
 	return s.finish(ctx, eventID, status, orgID, len(in.Attachments), drafts, strings.Join(notes, "; "))
 }
@@ -226,6 +246,26 @@ func (s *EmailInboxService) fail(ctx context.Context, eventID uuid.UUID, cause e
 		Note:   pgNullText(nilIfEmpty(truncate(cause.Error(), 500))),
 	})
 	return IngestOutcome{}, ErrInternal(cause)
+}
+
+// duplicateOf hashes the attachment's bytes and asks whether this claimant
+// already has a non-deleted expense built from the identical file. A read/open
+// error returns "not a duplicate" (capture will surface the bad file properly);
+// only a DB lookup error propagates (→ the caller 500s and Mailgun retries).
+func (s *EmailInboxService) duplicateOf(ctx context.Context, claimantID, orgID uuid.UUID, att InboundAttachment) (uuid.UUID, bool, error) {
+	r, err := att.Open()
+	if err != nil {
+		return uuid.Nil, false, nil
+	}
+	if c, ok := r.(io.Closer); ok {
+		defer c.Close()
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return uuid.Nil, false, nil
+	}
+	hash := hex.EncodeToString(h.Sum(nil))
+	return s.attachments.FindDuplicateReceipt(ctx, orgID, claimantID, hash)
 }
 
 // captureAttachment streams one file into the existing capture pipeline. The
@@ -436,7 +476,7 @@ func (s *EmailInboxService) provisionLocalPart(ctx context.Context, userID, orgI
 // re-delivery of its Message-Id should be skipped (vs reprocessed).
 func isTerminalStatus(status string) bool {
 	switch status {
-	case "processed", "ignored_unknown_address", "ignored_sender_not_member", "ignored_no_attachments":
+	case "processed", "ignored_unknown_address", "ignored_sender_not_member", "ignored_no_attachments", "ignored_duplicate":
 		return true
 	default:
 		return false

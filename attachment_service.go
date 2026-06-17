@@ -26,6 +26,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -294,9 +296,13 @@ func (s *AttachmentService) UploadAttachment(
 	key := fmt.Sprintf("orgs/%s/expenses/%s/%s%s", orgID, eid, objectID, ext)
 
 	// ---- 1) Write the bytes to GCS FIRST ------------------------------------
-	if err := s.storage.Upload(ctx, key, contentType, content); err != nil {
+	// Hash the bytes as they stream to GCS (io.TeeReader) — one read pass, no
+	// extra I/O — so this file can later be deduped by content hash.
+	hasher := sha256.New()
+	if err := s.storage.Upload(ctx, key, contentType, io.TeeReader(content, hasher)); err != nil {
 		return nil, ErrInternal(fmt.Errorf("upload to storage: %w", err))
 	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
 
 	// ---- 2) Record metadata; the first file becomes primary -----------------
 	var created expenses.ExpenseAttachment
@@ -316,6 +322,7 @@ func (s *AttachmentService) UploadAttachment(
 			Description:      pgNullText(description),
 			IsPrimary:        count == 0, // first file on this expense → primary (default)
 			UploadedByUserID: callerID,
+			ContentHash:      pgNullText(&contentHash),
 		})
 		if err != nil {
 			return err
@@ -394,10 +401,13 @@ func (s *AttachmentService) CaptureFromReceipt(
 
 	// 1) Bytes to GCS FIRST — same ordering as UploadAttachment: object before
 	//    metadata, so a failed DB write leaves a harmless orphan object we clean
-	//    up, never a skeleton expense pointing at a missing file.
-	if err := s.storage.Upload(ctx, key, contentType, content); err != nil {
+	//    up, never a skeleton expense pointing at a missing file. Hash while
+	//    streaming (io.TeeReader) so re-sent receipts can be deduped by content.
+	hasher := sha256.New()
+	if err := s.storage.Upload(ctx, key, contentType, io.TeeReader(content, hasher)); err != nil {
 		return nil, ErrInternal(fmt.Errorf("upload to storage: %w", err))
 	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
 
 	// 2) One transaction: the skeleton expense + its (primary) attachment.
 	var expID, attID uuid.UUID
@@ -426,6 +436,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 			Description:      pgNullText(nil), // no user description on a capture
 			IsPrimary:        true,            // first (only) file on a fresh skeleton
 			UploadedByUserID: callerID,
+			ContentHash:      pgNullText(&contentHash),
 		})
 		if err != nil {
 			return err
@@ -447,6 +458,30 @@ func (s *AttachmentService) CaptureFromReceipt(
 	// 4) Return the new draft (with its PENDING attachment) so the frontend can
 	//    open the form and poll GET /expenses/:id until OCR completes.
 	return buildExpenseDetail(ctx, s.queries, orgID, expID)
+}
+
+// FindDuplicateReceipt reports whether the given claimant already has a
+// NON-DELETED expense in this org whose attachment has the identical content
+// hash — i.e. the same file was captured before. Returns that expense's id and
+// true on a hit, (uuid.Nil, false) on a miss. The email channel uses this to skip
+// re-sent receipts: a fresh email gets a new Message-Id, so the Message-Id
+// dedupe alone wouldn't catch them.
+func (s *AttachmentService) FindDuplicateReceipt(ctx context.Context, orgID, claimantID uuid.UUID, contentHash string) (uuid.UUID, bool, error) {
+	if contentHash == "" {
+		return uuid.Nil, false, nil
+	}
+	existingID, err := s.queries.FindDuplicateReceipt(ctx, expenses.FindDuplicateReceiptParams{
+		OrganisationID: orgID,
+		UserID:         claimantID,
+		ContentHash:    pgNullText(&contentHash),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, false, nil
+		}
+		return uuid.Nil, false, ErrInternal(fmt.Errorf("find duplicate receipt: %w", err))
+	}
+	return existingID, true, nil
 }
 
 // =============================================================================

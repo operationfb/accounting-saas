@@ -18,23 +18,23 @@ function isActive(item: NavItem): boolean {
   return item.to ? route.path.startsWith(item.to) : false
 }
 
-// Top nav items mirroring FreeAgent's chrome. An item with `to` renders as a real
-// router link; the rest are placeholders (clickable-looking but inert) until those
-// sections exist. "Expenses" is the active section and links to the expense list.
+// Top nav items mirroring FreeAgent's chrome. Each visible item has a `to` and
+// renders as a real router link. Placeholder sections without a page yet are
+// commented out (hidden) for now — uncomment one to bring it back.
 interface NavItem {
   label: string
   caret: boolean
   to?: string
 }
 const navItems: NavItem[] = [
-  { label: 'Overview', caret: false },
+  // { label: 'Overview', caret: false },
   { label: 'Contacts', caret: false, to: '/contacts' },
   { label: 'Projects', caret: false, to: '/projects' },
-  { label: 'Bills', caret: false },
+  // { label: 'Bills', caret: false },
   { label: 'Expenses', caret: false, to: '/expenses' },
-  { label: 'Banking', caret: true },
-  { label: 'Taxes', caret: true },
-  { label: 'Accounting', caret: true },
+  // { label: 'Banking', caret: true },
+  // { label: 'Taxes', caret: true },
+  // { label: 'Accounting', caret: true },
 ]
 
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.

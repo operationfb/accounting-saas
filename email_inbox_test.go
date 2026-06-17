@@ -462,6 +462,66 @@ func TestEmailInboxCapture(t *testing.T) {
 			t.Errorf("draft count after retry: got %d, want 1", n)
 		}
 	})
+
+	t.Run("same file re-sent as a NEW email (distinct Message-Id) is deduped", func(t *testing.T) {
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+		send := func() (IngestOutcome, error) {
+			return ts.emailInboxService.Ingest(ctx, &InboundEmail{
+				MessageID:   newMessageID(t, ts), // a DIFFERENT Message-Id each send
+				Recipient:   local + "@" + testInboxDomain,
+				From:        ownerEmailFor(ownerID),
+				Attachments: []InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
+			})
+		}
+
+		first, err := send()
+		if err != nil {
+			t.Fatalf("first send: %v", err)
+		}
+		if first.Status != "processed" || first.DraftsCreated != 1 {
+			t.Fatalf("first send: got %+v, want processed/1", first)
+		}
+
+		second, err := send() // identical file bytes, fresh Message-Id
+		if err != nil {
+			t.Fatalf("second send: %v", err)
+		}
+		if second.Status != "ignored_duplicate" || second.DraftsCreated != 0 {
+			t.Errorf("second send: got %+v, want ignored_duplicate/0", second)
+		}
+		if n := draftCountForOrg(t, ts, orgID); n != 1 {
+			t.Errorf("draft count after re-send: got %d, want 1 (no duplicate)", n)
+		}
+	})
+
+	t.Run("a DIFFERENT file to the same inbox is not deduped", func(t *testing.T) {
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+
+		if _, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+			MessageID:   newMessageID(t, ts),
+			Recipient:   local + "@" + testInboxDomain,
+			From:        ownerEmailFor(ownerID),
+			Attachments: []InboundAttachment{inboundFile("a.pdf", samplePDF())},
+		}); err != nil {
+			t.Fatalf("first send: %v", err)
+		}
+
+		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+			MessageID:   newMessageID(t, ts),
+			Recipient:   local + "@" + testInboxDomain,
+			From:        ownerEmailFor(ownerID),
+			Attachments: []InboundAttachment{inboundFile("b.png", samplePNG())}, // different bytes
+		})
+		if err != nil {
+			t.Fatalf("second send: %v", err)
+		}
+		if out.Status != "processed" || out.DraftsCreated != 1 {
+			t.Errorf("different file: got %+v, want processed/1", out)
+		}
+		if n := draftCountForOrg(t, ts, orgID); n != 2 {
+			t.Errorf("draft count: got %d, want 2 (two distinct files)", n)
+		}
+	})
 }
 
 // =============================================================================

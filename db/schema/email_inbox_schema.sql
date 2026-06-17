@@ -54,6 +54,7 @@ CREATE TABLE inbound_email_events (
                             'ignored_unknown_address',     -- recipient didn't resolve to a member
                             'ignored_sender_not_member',   -- sender isn't an active member of the org
                             'ignored_no_attachments',      -- nothing capturable (no file, no renderable body)
+                            'ignored_duplicate',           -- every attachment was an exact duplicate of an existing draft
                             'error'                        -- unexpected failure
                         )),
 

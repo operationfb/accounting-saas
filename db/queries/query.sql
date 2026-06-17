@@ -574,7 +574,8 @@ INSERT INTO expense_attachments (
     storage_bucket,
     description,
     is_primary,
-    uploaded_by_user_id
+    uploaded_by_user_id,
+    content_hash
 ) VALUES (
     $1,   -- expense_id           UUID
     $2,   -- organisation_id      UUID
@@ -585,7 +586,8 @@ INSERT INTO expense_attachments (
     $7,   -- storage_bucket       VARCHAR e.g. 'myapp-expense-documents-prod'
     $8,   -- description          TEXT (nullable — user label for this file)
     $9,   -- is_primary           BOOLEAN
-    $10   -- uploaded_by_user_id  UUID
+    $10,  -- uploaded_by_user_id  UUID
+    $11   -- content_hash         VARCHAR (nullable — hex SHA-256 of the file bytes)
 )
 RETURNING *;
 
@@ -611,6 +613,24 @@ ORDER BY is_primary DESC, created_at ASC;
 SELECT * FROM expense_attachments
 WHERE id              = $1
   AND organisation_id = $2;
+
+
+-- -----------------------------------------------------------------------------
+-- FindDuplicateReceipt
+-- Content-level dedupe for the email channel: is there already a NON-DELETED
+-- expense for this claimant in this org whose attachment has the identical
+-- content hash? Returns that expense's id if so (the caller then skips
+-- re-capturing the same file). Hits idx_expense_attachments_content_hash.
+-- -----------------------------------------------------------------------------
+-- name: FindDuplicateReceipt :one
+SELECT a.expense_id
+FROM expense_attachments a
+JOIN expenses e ON e.id = a.expense_id
+WHERE a.organisation_id = $1
+  AND e.user_id         = $2
+  AND a.content_hash    = $3
+  AND e.deleted_at IS NULL
+LIMIT 1;
 
 
 -- -----------------------------------------------------------------------------

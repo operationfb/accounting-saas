@@ -358,6 +358,7 @@ CREATE TABLE expense_attachments (
     file_name           VARCHAR(255) NOT NULL,              -- original filename e.g. 'receipt_jan.pdf'
     content_type        VARCHAR(100) NOT NULL,              -- MIME type: 'image/jpeg', 'application/pdf'
     file_size_bytes     INTEGER     NOT NULL,               -- size in bytes (max 10MB enforced in app layer)
+    content_hash        VARCHAR(64),                        -- hex SHA-256 of the file bytes; used to dedupe re-sent receipts (same file, new email Message-Id). NULL for rows created before this column.
     storage_path        TEXT        NOT NULL,               -- GCS object path e.g. 'orgs/abc/expenses/xyz/receipt.pdf'
     storage_bucket      VARCHAR(100) NOT NULL,              -- GCS bucket name
 
@@ -381,6 +382,8 @@ CREATE TABLE expense_attachments (
 
 CREATE INDEX idx_expense_attachments_expense ON expense_attachments (expense_id);
 CREATE INDEX idx_expense_attachments_org     ON expense_attachments (organisation_id);
+-- Content-dedupe lookup: "does this claimant already have an attachment with this hash?"
+CREATE INDEX idx_expense_attachments_content_hash ON expense_attachments (organisation_id, content_hash) WHERE content_hash IS NOT NULL;
 -- Index for the OCR processing queue
 CREATE INDEX idx_expense_attachments_ocr     ON expense_attachments (ocr_status, created_at) WHERE ocr_status IN ('PENDING','PROCESSING');
 

@@ -265,12 +265,24 @@ _Last updated: 2026-06-17_
   `inbound_email_events.sender`. Extend `CaptureFromReceipt` with a
   claimant/creator split (matching the on-behalf model) and pass the resolved
   sender. _Files: `attachment_service.go`, `email_inbox_service.go`._
-- **Recover/refine stalled ingests.** A webhook that 500s after claiming the
-  Message-Id but before finishing leaves a non-terminal `inbound_email_events`
-  row; Mailgun's retry reprocesses it, which can duplicate any drafts already
-  created on the first attempt. Add per-attachment idempotency (key drafts by
-  Message-Id + index) and a sweep for stuck `received`/`error` rows (like the OCR
+- **Recover stalled ingests.** A webhook that 500s after claiming the Message-Id
+  but before finishing leaves a non-terminal `inbound_email_events` row; Mailgun's
+  retry reprocesses it. The content-hash dedupe now stops that retry from
+  duplicating already-created drafts (their file hash is found and skipped), so
+  the remaining gap is just a sweep for stuck `received`/`error` rows (like the OCR
   stale-`PROCESSING` item). _Files: `email_inbox_service.go`, `db/queries/email_inbox.sql`._
+- **Concurrent-duplicate race (TOCTOU).** The content dedupe is read-then-check,
+  so two *identical* emails arriving truly concurrently could both pass the check
+  before either's draft commits → a duplicate. Tighten with an advisory lock keyed
+  on `(org, claimant, content_hash)` or a careful unique constraint if it bites.
+  _File: `email_inbox_service.go`._
+- **Fuzzy / amount-based dedupe.** The content hash only catches the *identical*
+  file; a re-scanned or re-photographed receipt (different bytes, same purchase)
+  slips through. After OCR fills supplier+amount+date, optionally flag likely
+  duplicates for review. _Files: `ocr_service.go`, `expense_service.go`._
+- **Backfill `content_hash`.** Attachment rows created before this column are NULL,
+  so cross-history dedupe misses them. A one-off job could re-read each GCS object
+  and populate the hash. _File: `attachment_service.go`._
 - **Oversized emails.** The webhook parses inline attachments and caps the body at
   `maxInboundEmailBytes` (35 MiB); a larger email fails to parse. Add a
   store-and-fetch fallback (Mailgun `store()` + retrieve via the API) for emails

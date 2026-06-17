@@ -166,6 +166,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	FillExpenseFromOCR(ctx context.Context, arg FillExpenseFromOCRParams) (Expense, error)
 	// -----------------------------------------------------------------------------
+	// FindDuplicateReceipt
+	// Content-level dedupe for the email channel: is there already a NON-DELETED
+	// expense for this claimant in this org whose attachment has the identical
+	// content hash? Returns that expense's id if so (the caller then skips
+	// re-capturing the same file). Hits idx_expense_attachments_content_hash.
+	// -----------------------------------------------------------------------------
+	FindDuplicateReceipt(ctx context.Context, arg FindDuplicateReceiptParams) (uuid.UUID, error)
+	// -----------------------------------------------------------------------------
 	// GetExpense
 	// Fetch a single expense by its UUID, scoped to the organisation.
 	// We ALWAYS scope by organisation_id — never fetch by id alone.

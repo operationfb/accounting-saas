@@ -63,12 +63,13 @@ type Expense struct {
 
 // Receipt/invoice files attached to an expense. Multiple per expense supported.
 type ExpenseAttachment struct {
-	ID             uuid.UUID `json:"id"`
-	ExpenseID      uuid.UUID `json:"expense_id"`
-	OrganisationID uuid.UUID `json:"organisation_id"`
-	FileName       string    `json:"file_name"`
-	ContentType    string    `json:"content_type"`
-	FileSizeBytes  int32     `json:"file_size_bytes"`
+	ID             uuid.UUID   `json:"id"`
+	ExpenseID      uuid.UUID   `json:"expense_id"`
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	FileName       string      `json:"file_name"`
+	ContentType    string      `json:"content_type"`
+	FileSizeBytes  int32       `json:"file_size_bytes"`
+	ContentHash    pgtype.Text `json:"content_hash"`
 	// GCS object path within storage_bucket. Never store a full signed URL here — generate those on demand.
 	StoragePath      string             `json:"storage_path"`
 	StorageBucket    string             `json:"storage_bucket"`
