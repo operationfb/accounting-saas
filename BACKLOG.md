@@ -230,6 +230,43 @@ _Last updated: 2026-06-17_
   leave the same `CreateAuditEntry` TODO as `CreateExpense`. _File:
   `attachment_service.go`._
 
+## Email-to-expense (Mailgun inbound)
+
+- **Record the real submitter as `created_by`.** v1 sets both the claimant and
+  `created_by_user_id` to the inbox owner; the actual sender survives only in
+  `inbound_email_events.sender`. Extend `CaptureFromReceipt` with a
+  claimant/creator split (matching the on-behalf model) and pass the resolved
+  sender. _Files: `attachment_service.go`, `email_inbox_service.go`._
+- **Recover/refine stalled ingests.** A webhook that 500s after claiming the
+  Message-Id but before finishing leaves a non-terminal `inbound_email_events`
+  row; Mailgun's retry reprocesses it, which can duplicate any drafts already
+  created on the first attempt. Add per-attachment idempotency (key drafts by
+  Message-Id + index) and a sweep for stuck `received`/`error` rows (like the OCR
+  stale-`PROCESSING` item). _Files: `email_inbox_service.go`, `db/queries/email_inbox.sql`._
+- **Oversized emails.** The webhook parses inline attachments and caps the body at
+  `maxInboundEmailBytes` (35 MiB); a larger email fails to parse. Add a
+  store-and-fetch fallback (Mailgun `store()` + retrieve via the API) for emails
+  over the forward limit. _File: `email_inbox_handler.go`._
+- **Keep the original message.** Persist the raw HTML/.eml alongside the rendered
+  `email-body.pdf` for audit and re-extraction. _Files: `email_inbox_service.go`, schema._
+- **Better HTML extraction.** For HTML-body receipts a text/LLM extractor may beat
+  OCR-on-rendered-PDF; also add an "is this actually a receipt?" heuristic so
+  non-receipt body emails don't create junk drafts. _Files: `email_inbox_service.go`, `ocr_service.go`._
+- **Anti-spoofing.** The sender gate trusts the (spoofable) `From` header. Enforce
+  Mailgun's DKIM/SPF/DMARC verdicts before accepting. _File: `email_inbox_handler.go`._
+- **SSRF hardening for rendering.** Gotenberg renders arbitrary email HTML, which
+  can fetch referenced URLs. Run it network-isolated and disable/limit
+  remote-resource fetching. _Ops + `html_renderer.go`._
+- **Multi-recipient fan-out.** An email addressed to several of our inbox addresses
+  currently captures only the first match; optionally create a draft for each
+  addressed member (needs draft-level dedupe per recipient). _File: `email_inbox_service.go`._
+- **Address rotation.** The inbox address is read-only in v1; add a
+  regenerate/revoke endpoint for a leaked address. _Files: `email_inbox_service.go`, `db/queries/auth.sql`._
+- **Abuse rate-limiting.** The public webhook is unthrottled; add per-sender /
+  per-address limits. _File: `email_inbox_handler.go`._
+- **`inbound_email_events` retention.** The event log holds PII (sender/recipient/
+  subject); add a retention/purge policy. _Files: schema + a periodic sweep._
+
 ## Cleanups (also flagged as background tasks)
 
 - **Strip `[DEBUG]` token logging.** `token/paseto_maker.go` `VerifyToken` logs

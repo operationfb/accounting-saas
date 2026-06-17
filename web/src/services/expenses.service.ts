@@ -62,6 +62,33 @@ export async function updateExpense(id: string, payload: CreateExpenseRequest): 
   return CreateExpenseResponseSchema.parse(data).expense
 }
 
+// The status transitions the backend accepts on POST /expenses/:id/status
+// (expense_status.go). `reject` additionally requires a note.
+export type ExpenseStatusAction = 'submit' | 'approve' | 'reject' | 'reopen'
+
+// POST /api/v1/expenses/:id/status — move an expense along the approval chain:
+//   submit   DRAFT → SUBMITTED     (claimant on own, or owner/admin)
+//   approve  SUBMITTED → APPROVED  (owner/admin only)
+//   reject   SUBMITTED → REJECTED  (owner/admin only; rejectionNote required)
+//   reopen   REJECTED → DRAFT      (claimant on own, or owner/admin)
+// Returns the updated (lean) expense. The backend enforces the legal transition
+// (409 if the expense isn't in the required `from` status), authorisation (403),
+// and the rejection-note rule (422) — all surfaced as an ApiError. The detail view
+// re-fetches the rich record afterwards rather than relying on this lean shape.
+export async function changeExpenseStatus(
+  id: string,
+  action: ExpenseStatusAction,
+  rejectionNote?: string,
+): Promise<Expense> {
+  const body: { action: ExpenseStatusAction; rejection_note?: string } = { action }
+  if (action === 'reject') body.rejection_note = rejectionNote ?? ''
+  const data = await apiFetch<unknown>(`/expenses/${encodeURIComponent(id)}/status`, {
+    method: 'POST',
+    body,
+  })
+  return CreateExpenseResponseSchema.parse(data).expense
+}
+
 // POST /api/v1/expenses/capture — "Smart Upload". Uploads a receipt/invoice; the
 // backend creates a skeleton DRAFT (needs_review=true), attaches the file, and runs
 // background OCR. Multipart, like uploadAttachment — `document_type` must be the

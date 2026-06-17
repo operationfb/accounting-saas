@@ -361,6 +361,21 @@ CREATE TABLE organisation_memberships (
     invited_by_user_id UUID REFERENCES users(id),      -- NULL for the founding owner (no one invited them)
 
     -- -------------------------------------------------------------------------
+    -- Receipt inbox (email-to-expense)
+    -- Each (user, organisation) pair gets one human-readable email address that
+    -- receipts can be forwarded to. We store only the LOCAL PART here (e.g.
+    -- 'aydin.gunal.acme-ltd'); the full address is local_part || '@' || the
+    -- configured INBOX_DOMAIN, so the domain can change without a data migration.
+    -- UNIQUE makes the address globally unique, so an inbound email routes with a
+    -- single-column lookup. It is NULL until provisioned (generated lazily the
+    -- first time the user views it); Postgres treats NULLs as distinct under
+    -- UNIQUE, so many un-provisioned rows coexist. Deactivating the membership
+    -- (status <> 'active') stops the address resolving — see GetMembershipByInboxLocalPart.
+    -- -------------------------------------------------------------------------
+    inbox_local_part              VARCHAR(255) UNIQUE,
+    inbox_local_part_generated_at TIMESTAMPTZ,
+
+    -- -------------------------------------------------------------------------
     -- Audit
     -- -------------------------------------------------------------------------
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

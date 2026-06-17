@@ -4,16 +4,21 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
+import Textarea from 'primevue/textarea'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { getExpense } from '@/services/expenses.service'
+import { useAuthStore } from '@/stores/auth'
+import { getExpense, changeExpenseStatus, type ExpenseStatusAction } from '@/services/expenses.service'
 import { getProject } from '@/services/projects.service'
 import { listAttachments, getDownloadUrl } from '@/services/attachments.service'
 import { formatMoney, formatDate, formatDateTime, formatBytes } from '@/lib/format'
 import type { ExpenseDetail } from '@/types/expense'
 import type { Attachment } from '@/types/attachment'
 import type { ApiError } from '@/lib/api'
+
+const auth = useAuthStore()
 
 const route = useRoute()
 const router = useRouter()
@@ -148,6 +153,73 @@ const rows = computed(() => {
   return out
 })
 
+// --- status actions (the approval chain) ---
+// Visibility mirrors the backend's rules (expense_status.go): submit/reopen may be
+// done by the claimant on their own expense OR an owner/admin; approve/reject are
+// owner/admin only. The backend re-checks all of this — these flags just hide
+// buttons the caller couldn't use anyway.
+const isMine = computed(() => !!expense.value && expense.value.user_id === auth.user?.id)
+const canSubmit = computed(() => expense.value?.status === 'DRAFT' && (isMine.value || auth.isOrgAdmin))
+const canApprove = computed(() => expense.value?.status === 'SUBMITTED' && auth.isOrgAdmin)
+const canReject = computed(() => expense.value?.status === 'SUBMITTED' && auth.isOrgAdmin)
+const canReopen = computed(() => expense.value?.status === 'REJECTED' && (isMine.value || auth.isOrgAdmin))
+
+const acting = ref(false)
+const actionError = ref('')
+const actionSuccess = ref('')
+
+const SUCCESS_MSG: Record<ExpenseStatusAction, string> = {
+  submit: 'Expense submitted for approval.',
+  approve: 'Expense approved.',
+  reject: 'Expense rejected.',
+  reopen: 'Expense reopened — it’s a draft again.',
+}
+
+async function runAction(action: ExpenseStatusAction, note?: string) {
+  if (acting.value) return
+  actionError.value = ''
+  actionSuccess.value = ''
+  acting.value = true
+  try {
+    await changeExpenseStatus(id, action, note)
+    // Re-fetch the RICH detail so the status tag, timestamps and (on reject) the
+    // reason all refresh — the status endpoint only returns the lean shape.
+    await load()
+    actionSuccess.value = SUCCESS_MSG[action]
+  } catch (err) {
+    // 403 (role/ownership), 409 (illegal transition), 422 (missing note) land here.
+    actionError.value = (err as ApiError)?.message ?? 'Could not update the expense status.'
+  } finally {
+    acting.value = false
+  }
+}
+
+// Reject needs a reason — collected in a small dialog (the backend 422s on empty).
+const rejectDialog = ref(false)
+const rejectNote = ref('')
+const rejectNoteError = ref('')
+
+function openReject() {
+  rejectNote.value = ''
+  rejectNoteError.value = ''
+  rejectDialog.value = true
+}
+async function confirmReject() {
+  if (rejectNote.value.trim() === '') {
+    rejectNoteError.value = 'Enter a reason for rejecting this expense.'
+    return
+  }
+  rejectDialog.value = false
+  await runAction('reject', rejectNote.value.trim())
+}
+
+// Approve is terminal (APPROVED has no transition out), so confirm it first.
+const approveDialog = ref(false)
+async function confirmApprove() {
+  approveDialog.value = false
+  await runAction('approve')
+}
+
 function backToList() {
   router.push('/expenses')
 }
@@ -168,16 +240,76 @@ function backToList() {
         <h1 class="text-[22px] font-bold">Expense</h1>
         <StatusTag v-if="expense" :status="expense.status" />
       </div>
-      <div class="flex gap-2.5">
-        <!-- Edit only for editable statuses (the backend enforces DRAFT/REJECTED). -->
+      <div class="flex flex-wrap gap-2.5">
+        <!-- Status actions (the approval chain). Each shows only when the caller
+             could perform it (status + role/ownership); the backend re-checks. -->
+        <Button
+          v-if="canSubmit"
+          label="Submit expense"
+          icon="pi pi-send"
+          :loading="acting"
+          @click="runAction('submit')"
+        />
+        <Button
+          v-if="canApprove"
+          label="Approve"
+          icon="pi pi-check"
+          severity="success"
+          :loading="acting"
+          @click="approveDialog = true"
+        />
+        <Button
+          v-if="canReject"
+          label="Reject"
+          icon="pi pi-times"
+          severity="danger"
+          :loading="acting"
+          @click="openReject"
+        />
+        <Button
+          v-if="canReopen"
+          label="Reopen"
+          icon="pi pi-undo"
+          :loading="acting"
+          @click="runAction('reopen')"
+        />
+        <!-- Edit only for editable statuses (the backend enforces DRAFT/REJECTED).
+             Secondary tone so the green status action (Submit/Reopen) reads as the
+             primary CTA next to it. -->
         <Button
           v-if="expense && (expense.status === 'DRAFT' || expense.status === 'REJECTED')"
           label="Edit"
           icon="pi pi-pencil"
+          severity="secondary"
           @click="router.push(`/expenses/${id}/edit`)"
         />
         <Button label="Back to list" severity="secondary" outlined @click="backToList" />
       </div>
+    </div>
+
+    <!-- Status-action feedback (submit/approve/reject/reopen). -->
+    <div
+      v-if="actionError"
+      class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-sm text-[#c0392b]"
+      role="alert"
+    >
+      {{ actionError }}
+    </div>
+    <div
+      v-if="actionSuccess"
+      class="mb-4 rounded border border-[#cfe9c7] bg-[#eaf7e6] px-3 py-2 text-sm text-[#3f8038]"
+      role="status"
+    >
+      {{ actionSuccess }}
+    </div>
+
+    <!-- Why a rejected expense was sent back, so the claimant can fix + resubmit. -->
+    <div
+      v-if="expense && expense.status === 'REJECTED' && expense.rejection_note"
+      class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2.5 text-sm text-[#c0392b]"
+      role="note"
+    >
+      <span class="font-semibold">Reason for rejection:</span> {{ expense.rejection_note }}
     </div>
 
     <FaCard title="Expense details">
@@ -255,5 +387,67 @@ function backToList() {
         <p v-else class="py-2 text-sm text-fa-muted">No attachments.</p>
       </template>
     </FaCard>
+
+    <!-- Reject dialog: capture the required reason before rejecting. -->
+    <Dialog
+      v-model:visible="rejectDialog"
+      modal
+      header="Reject expense"
+      :style="{ width: '30rem' }"
+      :closable="!acting"
+    >
+      <p class="mb-3 text-sm text-fa-muted">
+        Tell the claimant why this expense is being rejected — they’ll see this reason and can
+        correct and resubmit.
+      </p>
+      <Textarea
+        v-model="rejectNote"
+        rows="3"
+        class="w-full"
+        :invalid="!!rejectNoteError"
+        placeholder="e.g. Missing VAT receipt"
+      />
+      <p v-if="rejectNoteError" class="mt-1 text-xs text-[#c0392b]">{{ rejectNoteError }}</p>
+      <template #footer>
+        <button
+          type="button"
+          class="mr-3 font-semibold text-fa-blue hover:underline disabled:opacity-50"
+          :disabled="acting"
+          @click="rejectDialog = false"
+        >
+          Cancel
+        </button>
+        <Button label="Reject expense" severity="danger" :loading="acting" @click="confirmReject" />
+      </template>
+    </Dialog>
+
+    <!-- Approve confirm: APPROVED is terminal (no reopen), so make it deliberate. -->
+    <Dialog
+      v-model:visible="approveDialog"
+      modal
+      header="Approve expense"
+      :style="{ width: '28rem' }"
+      :closable="!acting"
+    >
+      <p class="text-sm text-fa-muted">
+        Approve this expense? Once approved it can’t be edited or reopened.
+      </p>
+      <template #footer>
+        <button
+          type="button"
+          class="mr-3 font-semibold text-fa-blue hover:underline disabled:opacity-50"
+          :disabled="acting"
+          @click="approveDialog = false"
+        >
+          Cancel
+        </button>
+        <Button
+          label="Approve expense"
+          severity="success"
+          :loading="acting"
+          @click="confirmApprove"
+        />
+      </template>
+    </Dialog>
   </AppLayout>
 </template>

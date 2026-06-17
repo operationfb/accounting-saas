@@ -41,13 +41,18 @@ type Server struct {
 	projectService      *ProjectService
 	memberService       *MemberService
 	organisationService *OrganisationService
+	emailInboxService   *EmailInboxService
 	authHandler         *AuthHandler
 	tokenMaker          token.Maker
+
+	// mailgunSigningKey authenticates the inbound-email webhook (HMAC). Empty
+	// when the channel isn't configured, in which case the webhook isn't mounted.
+	mailgunSigningKey string
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, authHandler *AuthHandler, tokenMaker token.Maker, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:      expenseService,
 		attachmentService:   attachmentService,
@@ -55,8 +60,10 @@ func NewServer(expenseService *ExpenseService, attachmentService *AttachmentServ
 		projectService:      projectService,
 		memberService:       memberService,
 		organisationService: organisationService,
+		emailInboxService:   emailInboxService,
 		authHandler:         authHandler,
 		tokenMaker:          tokenMaker,
+		mailgunSigningKey:   mailgunSigningKey,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -229,6 +236,26 @@ func (s *Server) registerRoutes() {
 			// PUT /api/v1/organisation → update company details (owner/admin only)
 			organisation.GET("", s.handleGetOrganisation)
 			organisation.PUT("", s.handleUpdateOrganisation)
+		}
+
+		// Email-to-expense (Mailgun inbound). The webhook is PUBLIC — it carries
+		// no bearer token and is authenticated by Mailgun's HMAC signature in the
+		// handler — so it's mounted only when the channel is fully configured.
+		if s.emailInboxService != nil && s.mailgunSigningKey != "" {
+			webhooks := v1.Group("/webhooks")
+			{
+				// POST /api/v1/webhooks/mailgun/inbound → one parsed inbound email
+				webhooks.POST("/mailgun/inbound", s.handleMailgunInbound)
+			}
+		}
+
+		// The receipt-inbox address display is a normal authed route. The handler
+		// reports enabled:false when the channel is off, so it's always safe to mount.
+		inboxAddress := v1.Group("/inbox-address")
+		inboxAddress.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/inbox-address → the caller's receipt-forwarding address
+			inboxAddress.GET("", s.handleGetInboxAddress)
 		}
 	}
 }

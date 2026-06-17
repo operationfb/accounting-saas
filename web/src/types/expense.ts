@@ -62,6 +62,8 @@ export const ExpenseDetailSchema = z.object({
   rebill_factor: z.string().nullish(),
   submitted_at: z.string().nullish(),
   approved_at: z.string().nullish(),
+  approved_by_user_id: z.string().nullish(), // raw FK of the approver (no name exposed yet)
+  rejection_note: z.string().nullish(), // reason captured on reject; shown when REJECTED
   paid_at: z.string().nullish(),
   created_at: z.string(),
   updated_at: z.string(),

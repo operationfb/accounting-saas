@@ -105,17 +105,19 @@ type Organisation struct {
 }
 
 type OrganisationMembership struct {
-	ID               uuid.UUID          `json:"id"`
-	OrganisationID   uuid.UUID          `json:"organisation_id"`
-	UserID           uuid.UUID          `json:"user_id"`
-	Role             OrganisationRole   `json:"role"`
-	Status           string             `json:"status"`
-	InviteToken      pgtype.Text        `json:"invite_token"`
-	InviteSentAt     pgtype.Timestamptz `json:"invite_sent_at"`
-	InviteAcceptedAt pgtype.Timestamptz `json:"invite_accepted_at"`
-	InvitedByUserID  pgtype.UUID        `json:"invited_by_user_id"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                        uuid.UUID          `json:"id"`
+	OrganisationID            uuid.UUID          `json:"organisation_id"`
+	UserID                    uuid.UUID          `json:"user_id"`
+	Role                      OrganisationRole   `json:"role"`
+	Status                    string             `json:"status"`
+	InviteToken               pgtype.Text        `json:"invite_token"`
+	InviteSentAt              pgtype.Timestamptz `json:"invite_sent_at"`
+	InviteAcceptedAt          pgtype.Timestamptz `json:"invite_accepted_at"`
+	InvitedByUserID           pgtype.UUID        `json:"invited_by_user_id"`
+	InboxLocalPart            pgtype.Text        `json:"inbox_local_part"`
+	InboxLocalPartGeneratedAt pgtype.Timestamptz `json:"inbox_local_part_generated_at"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
 }
 
 // Platform-level identity. One row per person. A user belongs to one or more organisations via organisation_memberships.

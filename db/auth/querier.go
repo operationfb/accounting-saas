@@ -88,6 +88,16 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	GetMembership(ctx context.Context, arg GetMembershipParams) (OrganisationMembership, error)
 	// -----------------------------------------------------------------------------
+	// GetMembershipByInboxLocalPart
+	// Resolves a receipt-inbox address (its local part) to the (claimant) user and
+	// organisation it belongs to — the routing step for an inbound email. Returns a
+	// row ONLY when the whole chain is live: the membership is active, the user is
+	// active and not soft-deleted, and the organisation is not soft-deleted. So a
+	// deactivated member's (or a deleted user's/org's) address simply stops
+	// resolving. The lookup is a single-column hit on the UNIQUE inbox_local_part index.
+	// -----------------------------------------------------------------------------
+	GetMembershipByInboxLocalPart(ctx context.Context, inboxLocalPart pgtype.Text) (GetMembershipByInboxLocalPartRow, error)
+	// -----------------------------------------------------------------------------
 	// GetMembershipByInviteToken
 	// Resolves a pending membership from its invite token (idx_memberships_invite_token).
 	// -----------------------------------------------------------------------------
@@ -166,6 +176,17 @@ type Querier interface {
 	// Called on registration and on "resend verification email".
 	// -----------------------------------------------------------------------------
 	SetEmailVerificationToken(ctx context.Context, arg SetEmailVerificationTokenParams) error
+	// -----------------------------------------------------------------------------
+	// SetMembershipInboxLocalPart
+	// Provisions the receipt-inbox address for a membership. The `inbox_local_part
+	// IS NULL` guard makes generation idempotent and race-safe: it only ever fills an
+	// unset address, never overwrites one. Returns the value on success; matches no
+	// row (pgx.ErrNoRows) when the address was already set (e.g. by a concurrent
+	// request) — the caller then re-reads it. A clash with another membership's
+	// address raises a unique_violation, which the caller catches to retry with a
+	// different candidate.
+	// -----------------------------------------------------------------------------
+	SetMembershipInboxLocalPart(ctx context.Context, arg SetMembershipInboxLocalPartParams) (pgtype.Text, error)
 	// -----------------------------------------------------------------------------
 	// SetPasswordResetToken
 	// Begins the forgot-password flow: stores the reset token and send time, keyed

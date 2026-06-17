@@ -45,6 +45,7 @@ import (
 
 	"github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
+	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
@@ -59,10 +60,11 @@ import (
 // We build it once in TestMain and reuse it — opening a DB pool is expensive
 // and we don't want to do it for every individual test case.
 type testServer struct {
-	server      *Server
-	pool        *pgxpool.Pool
-	tokenMaker  token.Maker
-	emailSender *fakeEmailSender
+	server            *Server
+	pool              *pgxpool.Pool
+	tokenMaker        token.Maker
+	emailSender       *fakeEmailSender
+	emailInboxService *EmailInboxService
 }
 
 // testSymmetricKey is a fixed 32-byte key used only by tests to build a PASETO
@@ -75,6 +77,14 @@ const testCORSOrigin = "http://localhost:3000"
 
 // testAppBaseURL is the frontend base the test server builds reset links against.
 const testAppBaseURL = "http://localhost:5173"
+
+// testInboxDomain is the receipt-inbox domain the test email-to-expense channel
+// is built with, e.g. "alpha@receipts.test".
+const testInboxDomain = "receipts.test"
+
+// testMailgunSigningKey is the fixed HMAC key the test server verifies inbound
+// webhooks against, so signature tests can compute a valid signature.
+const testMailgunSigningKey = "test-mailgun-signing-key"
 
 // newTestServer connects to the real database and builds a Server instance
 // configured for testing. It mirrors what main() does, but reads from .env
@@ -136,13 +146,19 @@ func newTestServer(t *testing.T) *testServer {
 	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
 	memberService := NewMemberService(authQueries)
 	organisationService := NewOrganisationService(authQueries)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, authHandler, tokenMaker, []string{testCORSOrigin})
+	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
+	// tests don't need a Gotenberg server) and a fixed signing key (so signature
+	// tests can compute a valid HMAC). Capture still flows through the real
+	// attachment service, so attachment/HTML tests require GCS like other captures.
+	emailInboxService := NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 
 	return &testServer{
-		server:      server,
-		pool:        pool,
-		tokenMaker:  tokenMaker,
-		emailSender: emailSender,
+		server:            server,
+		pool:              pool,
+		tokenMaker:        tokenMaker,
+		emailSender:       emailSender,
+		emailInboxService: emailInboxService,
 	}
 }
 

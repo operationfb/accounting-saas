@@ -27,6 +27,7 @@ import (
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
+	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	projects "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
@@ -244,11 +245,44 @@ func main() {
 	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).
 	attachmentService := NewAttachmentService(pool, queries, authQueries, attachmentStorage, ocrTrigger, 0, 0)
 
+	// -------------------------------------------------------------------------
+	// Email-to-expense (Mailgun inbound webhook).
+	//
+	// Optional, like GCS/OCR above. Independent switches:
+	//   - INBOX_DOMAIN                 enables per-(user,org) receipt addresses
+	//                                  and the channel itself.
+	//   - MAILGUN_INBOUND_SIGNING_KEY  authenticates the inbound webhook (HMAC);
+	//                                  without it the address still displays but
+	//                                  the webhook route isn't mounted.
+	//   - GOTENBERG_URL                enables HTML-body receipts (render → PDF).
+	// Everything captured lands in OUR Postgres + GCS via the attachment service.
+	// -------------------------------------------------------------------------
+	var htmlRenderer HTMLRenderer
+	if gotenbergURL := os.Getenv("GOTENBERG_URL"); gotenbergURL != "" {
+		htmlRenderer = newGotenbergRenderer(gotenbergURL)
+		log.Printf("email inbox: HTML-body rendering via Gotenberg at %s", gotenbergURL)
+	} else {
+		log.Println("email inbox: GOTENBERG_URL not set — HTML-body receipts are skipped")
+	}
+
+	mailgunSigningKey := os.Getenv("MAILGUN_INBOUND_SIGNING_KEY")
+	var emailInboxService *EmailInboxService
+	if inboxDomain := os.Getenv("INBOX_DOMAIN"); inboxDomain != "" {
+		emailInboxService = NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, htmlRenderer, inboxDomain)
+		if mailgunSigningKey == "" {
+			log.Printf("email inbox: INBOX_DOMAIN=%q set but MAILGUN_INBOUND_SIGNING_KEY empty — address display works, inbound webhook disabled", inboxDomain)
+		} else {
+			log.Printf("email inbox: enabled for domain %q", inboxDomain)
+		}
+	} else {
+		log.Println("email inbox: INBOX_DOMAIN not set — email-to-expense disabled")
+	}
+
 	// Allowed CORS origins for the browser SPA. Comma-separated in
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, authHandler, tokenMaker, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.

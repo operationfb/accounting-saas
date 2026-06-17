@@ -46,7 +46,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ```
 .
 ├── main.go              # Entry point: load .env/config, open pgx pool, build deps, start server
-├── server.go            # Gin engine + Server struct + route registration + expense & contact handlers
+├── server.go            # Gin engine + Server struct + route registration (incl. the public Mailgun webhook + /inbox-address) + expense & contact handlers
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
 ├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
@@ -58,6 +58,10 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── ocr_documentai.go    # documentAIExtractor: Google Document AI implementation of DocumentExtractor (Invoice + Expense parsers, EU regional endpoint, MoneyValue→pence)
 ├── storage.go           # Storage interface (Upload / Download / SignedDownloadURL / Delete / Bucket) — abstraction over the object store
 ├── storage_gcs.go       # gcsStorage: the Google Cloud Storage implementation of Storage
+├── inbound_email.go     # Email-to-expense: provider-neutral InboundEmail/InboundAttachment types + Mailgun HMAC signature check
+├── html_renderer.go     # HTMLRenderer interface + gotenbergRenderer (HTML email body → PDF, for receipts that arrive with no attachment)
+├── email_inbox_service.go   # EmailInboxService: Ingest (dedupe → route → sender-check → capture → HTML fallback) + GetOrCreateInboxAddress
+├── email_inbox_handler.go   # HTTP handlers: POST /webhooks/mailgun/inbound (public, HMAC) + GET /inbox-address (authed)
 ├── errors.go            # AppError type + ErrorCode constants + handler→HTTP mapping
 ├── server_test.go       # Integration tests (real Postgres) for the HTTP handlers
 ├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
@@ -66,21 +70,25 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── contact_service_test.go  # Contacts CRUD tests (real Postgres): happy path, defaults, 0-vs-NULL terms, validation, auth, multi-tenant isolation
 ├── organisation_service_test.go  # Company Details tests (real Postgres): update round-trip, member read, owner/admin-only edit, validation, field preservation, isolation
 ├── expense_status_test.go  # Status state-machine tests (real Postgres): each transition + its column effects, 409 illegal moves, authz (admin-only vs claimant), 400/422 validation, 404 isolation
-├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts)
+├── email_inbox_test.go  # Email-to-expense tests (real Postgres + GCS; Mailgun & Gotenberg faked): routing, sender/cross-tenant auth, capture, HTML body, dedupe, signature, address generation
+├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts, projects, email_inbox)
 │
 ├── db/
 │   ├── schema/          # Source-of-truth DDL (full CREATE TABLE files, not migrations)
 │   │   ├── schema.sql        # expenses module, supplier_category_map dictionary, set_updated_at() + learn_supplier_category() triggers
 │   │   ├── auth_schema.sql   # auth module: users, organisations (incl. Company Details fields), organisation_memberships
-│   │   └── contacts_schema.sql  # contacts module: customers/suppliers (invoicing details, charge_vat, bank)
+│   │   ├── contacts_schema.sql  # contacts module: customers/suppliers (invoicing details, charge_vat, bank)
+│   │   └── email_inbox_schema.sql  # email-to-expense: inbound_email_events (dedupe + audit). The inbox ADDRESS columns live on organisation_memberships in auth_schema.sql
 │   ├── queries/         # Annotated SQL = sqlc input (one file per domain)
 │   │   ├── query.sql         # expenses queries
 │   │   ├── auth.sql          # auth queries (CreateUser, GetUserByEmail, memberships, ...)
-│   │   └── contacts.sql      # contacts queries (Create / Get / List / Update / SoftDelete)
+│   │   ├── contacts.sql      # contacts queries (Create / Get / List / Update / SoftDelete)
+│   │   └── email_inbox.sql   # email-to-expense queries (Claim / Finish / GetByMessageID for the inbound-email event log)
 │   ├── seeds/           # Reproducible seed data (e.g. expense_categories.sql)
 │   ├── expenses/        # GENERATED (package expenses) — never hand-edit
 │   ├── auth/            # GENERATED (package auth) — never hand-edit
-│   └── contacts/        # GENERATED (package contacts) — never hand-edit
+│   ├── contacts/        # GENERATED (package contacts) — never hand-edit
+│   └── email_inbox/     # GENERATED (package email_inbox) — never hand-edit
 │
 ├── token/              # PASETO authentication tokens
 │   ├── maker.go              # Maker interface (CreateToken / VerifyToken)
@@ -91,7 +99,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
     └── random.go        # Random test-data helpers for the integration tests
 ```
 
-Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, `GCS_BUCKET` for receipt-attachment storage, and `DOCAI_*` for Document AI OCR), `.gitignore`, and this `CLAUDE.md`.
+Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, `GCS_BUCKET` for receipt-attachment storage, `DOCAI_*` for Document AI OCR, `INBOX_DOMAIN` + `MAILGUN_INBOUND_SIGNING_KEY` for the email-to-expense channel, and `GOTENBERG_URL` for HTML-body rendering), `.gitignore`, and this `CLAUDE.md`.
 
 ### Attachment storage (receipts)
 
@@ -167,6 +175,15 @@ The **Company Details** screen (modelled on FreeAgent's) lives entirely on the e
 - **Field mapping.** The form's "Company name" → `name`, "Company Registration Number" → `companies_house_number`, "Corporation Tax Reference" → `utr`, "Country" → `country_code` (existing columns; `legal_name` is also exposed).
 - **Read-modify-write.** PUT fetches the row first and passes through the columns this form does not own (`slug`, `native_currency`, `timezone`, and — until VAT is added to the form — `vrn`) so a save can't wipe them.
 - **Validation.** `company_type` and `country_code` are checked three ways: `oneof` / `len` binding (400), the service guards `normaliseCompanyType` / `normaliseCountryCode` (422), and the DB CHECK. Tested in `organisation_service_test.go`.
+
+### Email-to-expense (Mailgun inbound)
+
+Users forward receipt files to a **dedicated email address per (user, organisation)** and each becomes a **draft expense**. It is an ingestion channel onto the existing Smart-Upload pipeline — not a new expense path.
+
+- **Push, and our DB is the system of record.** Mailgun receives the mail and **POSTs it (parsed, attachments inline) to `POST /api/v1/webhooks/mailgun/inbound`** (`email_inbox_handler.go`). We read the `To`/files straight from the payload and persist to **our** Postgres + GCS; Mailgun's message store is never read back. The webhook is **public** but **HMAC-verified** (`verifyMailgunSignature`, `MAILGUN_INBOUND_SIGNING_KEY`) — it carries no bearer token. **Persist-then-ack:** it returns 200 only after a durable write, a transient failure returns 500 so Mailgun retries, and the **Message-Id dedupe** (the `email_inbox` domain's `inbound_email_events`) makes that retry safe (a re-delivery of a finished email is skipped; a half-done one is reprocessed).
+- **Addressing: `{name}.{org-slug}@INBOX_DOMAIN`** (e.g. `aydin.gunal.acme-ltd@…`), one per membership, stored as `inbox_local_part` on `organisation_memberships` (UNIQUE, generated lazily, **read-only** via `GET /api/v1/inbox-address`). It is **human-readable, not a secret**, so authorisation is the **sender check**: the `From` must be an **active member of the address's org** (`senderIsActiveMember`) — which rejects cross-tenant and external senders. The address identifies the **claimant**; v1 sets `created_by` = claimant too and records the true submitter in `inbound_email_events.sender`.
+- **Capture.** Each attachment goes through the existing `AttachmentService.CaptureFromReceipt` with `document_type="receipt"` (**always** the Expense parser — auto-detect is deferred). A bad-MIME file is skipped (others still captured). When there's **no usable attachment**, the **HTML body is rendered to a PDF** (`HTMLRenderer` → Gotenberg, `GOTENBERG_URL`; optional like GCS/DocAI) and captured as `email-body.pdf`.
+- **Module shape.** The `email_inbox` domain mirrors the others (`db/schema/email_inbox_schema.sql`, `db/queries/email_inbox.sql`, its own sqlc block → `db/email_inbox`) and holds only the inbound-email event log; the inbox **address** itself is an `auth`-domain concern (a column on `organisation_memberships`). Tested in `email_inbox_test.go` (real Postgres + GCS; Mailgun + Gotenberg faked).
 
 > Update this section whenever the structure changes meaningfully — it should always reflect reality.
 

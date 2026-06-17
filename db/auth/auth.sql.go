@@ -20,7 +20,7 @@ UPDATE organisation_memberships SET
     invite_token       = NULL,
     updated_at         = now()
 WHERE invite_token = $1
-RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, created_at, updated_at
+RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at
 `
 
 // -----------------------------------------------------------------------------
@@ -41,6 +41,8 @@ func (q *Queries) AcceptInvite(ctx context.Context, inviteToken pgtype.Text) (Or
 		&i.InviteSentAt,
 		&i.InviteAcceptedAt,
 		&i.InvitedByUserID,
+		&i.InboxLocalPart,
+		&i.InboxLocalPartGeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -65,7 +67,7 @@ INSERT INTO organisation_memberships (
     now(),     -- invite_sent_at
     $5         -- invited_by_user_id  UUID     (the admin who sent the invite)
 )
-RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, created_at, updated_at
+RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at
 `
 
 type CreateInvitedMembershipParams struct {
@@ -100,6 +102,8 @@ func (q *Queries) CreateInvitedMembership(ctx context.Context, arg CreateInvited
 		&i.InviteSentAt,
 		&i.InviteAcceptedAt,
 		&i.InvitedByUserID,
+		&i.InboxLocalPart,
+		&i.InboxLocalPartGeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -119,7 +123,7 @@ INSERT INTO organisation_memberships (
     $3,   -- role             organisation_role  ('owner'|'admin'|'member'|'accountant'|'read_only')
     $4    -- status           VARCHAR            ('active'|'invited'|'suspended'|'deactivated')
 )
-RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, created_at, updated_at
+RETURNING id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at
 `
 
 type CreateMembershipParams struct {
@@ -158,6 +162,8 @@ func (q *Queries) CreateMembership(ctx context.Context, arg CreateMembershipPara
 		&i.InviteSentAt,
 		&i.InviteAcceptedAt,
 		&i.InvitedByUserID,
+		&i.InboxLocalPart,
+		&i.InboxLocalPartGeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -350,7 +356,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 }
 
 const getMembership = `-- name: GetMembership :one
-SELECT id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, created_at, updated_at FROM organisation_memberships
+SELECT id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at FROM organisation_memberships
 WHERE organisation_id = $1
   AND user_id         = $2
 `
@@ -379,14 +385,49 @@ func (q *Queries) GetMembership(ctx context.Context, arg GetMembershipParams) (O
 		&i.InviteSentAt,
 		&i.InviteAcceptedAt,
 		&i.InvitedByUserID,
+		&i.InboxLocalPart,
+		&i.InboxLocalPartGeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const getMembershipByInboxLocalPart = `-- name: GetMembershipByInboxLocalPart :one
+SELECT m.user_id, m.organisation_id
+FROM organisation_memberships m
+JOIN users u         ON u.id = m.user_id
+JOIN organisations o ON o.id = m.organisation_id
+WHERE m.inbox_local_part = $1
+  AND m.status     = 'active'
+  AND u.is_active  = TRUE
+  AND u.deleted_at IS NULL
+  AND o.deleted_at IS NULL
+`
+
+type GetMembershipByInboxLocalPartRow struct {
+	UserID         uuid.UUID `json:"user_id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// GetMembershipByInboxLocalPart
+// Resolves a receipt-inbox address (its local part) to the (claimant) user and
+// organisation it belongs to — the routing step for an inbound email. Returns a
+// row ONLY when the whole chain is live: the membership is active, the user is
+// active and not soft-deleted, and the organisation is not soft-deleted. So a
+// deactivated member's (or a deleted user's/org's) address simply stops
+// resolving. The lookup is a single-column hit on the UNIQUE inbox_local_part index.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetMembershipByInboxLocalPart(ctx context.Context, inboxLocalPart pgtype.Text) (GetMembershipByInboxLocalPartRow, error) {
+	row := q.db.QueryRow(ctx, getMembershipByInboxLocalPart, inboxLocalPart)
+	var i GetMembershipByInboxLocalPartRow
+	err := row.Scan(&i.UserID, &i.OrganisationID)
+	return i, err
+}
+
 const getMembershipByInviteToken = `-- name: GetMembershipByInviteToken :one
-SELECT id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, created_at, updated_at FROM organisation_memberships
+SELECT id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at FROM organisation_memberships
 WHERE invite_token = $1
 `
 
@@ -407,6 +448,8 @@ func (q *Queries) GetMembershipByInviteToken(ctx context.Context, inviteToken pg
 		&i.InviteSentAt,
 		&i.InviteAcceptedAt,
 		&i.InvitedByUserID,
+		&i.InboxLocalPart,
+		&i.InboxLocalPartGeneratedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -961,6 +1004,40 @@ type SetEmailVerificationTokenParams struct {
 func (q *Queries) SetEmailVerificationToken(ctx context.Context, arg SetEmailVerificationTokenParams) error {
 	_, err := q.db.Exec(ctx, setEmailVerificationToken, arg.ID, arg.EmailVerificationToken)
 	return err
+}
+
+const setMembershipInboxLocalPart = `-- name: SetMembershipInboxLocalPart :one
+UPDATE organisation_memberships SET
+    inbox_local_part              = $3,
+    inbox_local_part_generated_at = now(),
+    updated_at                    = now()
+WHERE organisation_id = $1
+  AND user_id         = $2
+  AND inbox_local_part IS NULL
+RETURNING inbox_local_part
+`
+
+type SetMembershipInboxLocalPartParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	UserID         uuid.UUID   `json:"user_id"`
+	InboxLocalPart pgtype.Text `json:"inbox_local_part"`
+}
+
+// -----------------------------------------------------------------------------
+// SetMembershipInboxLocalPart
+// Provisions the receipt-inbox address for a membership. The `inbox_local_part
+// IS NULL` guard makes generation idempotent and race-safe: it only ever fills an
+// unset address, never overwrites one. Returns the value on success; matches no
+// row (pgx.ErrNoRows) when the address was already set (e.g. by a concurrent
+// request) — the caller then re-reads it. A clash with another membership's
+// address raises a unique_violation, which the caller catches to retry with a
+// different candidate.
+// -----------------------------------------------------------------------------
+func (q *Queries) SetMembershipInboxLocalPart(ctx context.Context, arg SetMembershipInboxLocalPartParams) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, setMembershipInboxLocalPart, arg.OrganisationID, arg.UserID, arg.InboxLocalPart)
+	var inbox_local_part pgtype.Text
+	err := row.Scan(&inbox_local_part)
+	return inbox_local_part, err
 }
 
 const setPasswordResetToken = `-- name: SetPasswordResetToken :one

@@ -488,3 +488,45 @@ UPDATE organisation_memberships SET
     updated_at         = now()
 WHERE invite_token = $1
 RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- GetMembershipByInboxLocalPart
+-- Resolves a receipt-inbox address (its local part) to the (claimant) user and
+-- organisation it belongs to — the routing step for an inbound email. Returns a
+-- row ONLY when the whole chain is live: the membership is active, the user is
+-- active and not soft-deleted, and the organisation is not soft-deleted. So a
+-- deactivated member's (or a deleted user's/org's) address simply stops
+-- resolving. The lookup is a single-column hit on the UNIQUE inbox_local_part index.
+-- -----------------------------------------------------------------------------
+-- name: GetMembershipByInboxLocalPart :one
+SELECT m.user_id, m.organisation_id
+FROM organisation_memberships m
+JOIN users u         ON u.id = m.user_id
+JOIN organisations o ON o.id = m.organisation_id
+WHERE m.inbox_local_part = $1
+  AND m.status     = 'active'
+  AND u.is_active  = TRUE
+  AND u.deleted_at IS NULL
+  AND o.deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- SetMembershipInboxLocalPart
+-- Provisions the receipt-inbox address for a membership. The `inbox_local_part
+-- IS NULL` guard makes generation idempotent and race-safe: it only ever fills an
+-- unset address, never overwrites one. Returns the value on success; matches no
+-- row (pgx.ErrNoRows) when the address was already set (e.g. by a concurrent
+-- request) — the caller then re-reads it. A clash with another membership's
+-- address raises a unique_violation, which the caller catches to retry with a
+-- different candidate.
+-- -----------------------------------------------------------------------------
+-- name: SetMembershipInboxLocalPart :one
+UPDATE organisation_memberships SET
+    inbox_local_part              = $3,
+    inbox_local_part_generated_at = now(),
+    updated_at                    = now()
+WHERE organisation_id = $1
+  AND user_id         = $2
+  AND inbox_local_part IS NULL
+RETURNING inbox_local_part;
