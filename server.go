@@ -21,6 +21,8 @@ package main
 // =============================================================================
 
 import (
+	"encoding/csv"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -137,6 +139,7 @@ func (s *Server) registerRoutes() {
 			// POST   /api/v1/expenses/capture  → "Smart Upload": create a draft from a
 			//                                     receipt + run OCR (multipart)
 			// GET    /api/v1/expenses/inbox    → captures awaiting review (needs_review)
+			// GET    /api/v1/expenses/export   → download all visible expenses as CSV
 			// GET    /api/v1/expenses/:id      → fetch one expense by UUID
 			// PUT    /api/v1/expenses/:id      → update an editable (DRAFT/REJECTED) expense
 			// DELETE /api/v1/expenses/:id      → soft-delete an editable (DRAFT/REJECTED) expense
@@ -147,6 +150,7 @@ func (s *Server) registerRoutes() {
 			// literal "capture"/"inbox" ahead of the :id wildcard.
 			expenses.POST("/capture", s.handleSmartUpload)
 			expenses.GET("/inbox", s.handleListInbox)
+			expenses.GET("/export", s.handleExportExpenses)
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
 			expenses.DELETE("/:id", s.handleDeleteExpense)
@@ -900,6 +904,41 @@ func (s *Server) handleListExpenses(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
+}
+
+// handleExportExpenses handles GET /api/v1/expenses/export
+//
+// Streams the caller's visible expenses as a CSV download. Owners/admins get the
+// whole organisation; everyone else only their own — the same visibility rule as
+// the list endpoint. The column set matches the import template shipped at
+// web/public/expense_import_template.csv, so an exported file can be re-imported.
+func (s *Server) handleExportExpenses(c *gin.Context) {
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	rows, err := s.expenseService.ExportExpenses(c.Request.Context(), userID, orgID)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	// Past this point we commit to a 200: set the download headers, then stream
+	// the CSV straight to the response writer. Write errors here only happen if
+	// the client disconnects mid-stream — there's nothing useful to return.
+	filename := fmt.Sprintf("expenses-%s.csv", time.Now().Format("2006-01-02"))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write(expenseExportHeader) // header row first
+	for _, r := range rows {
+		_ = w.Write(r.record())
+	}
+	w.Flush()
 }
 
 // handleListInbox handles GET /api/v1/expenses/inbox

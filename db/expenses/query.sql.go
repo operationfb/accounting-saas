@@ -1865,6 +1865,187 @@ func (q *Queries) ListExpensesByUser(ctx context.Context, arg ListExpensesByUser
 	return items, nil
 }
 
+const listExpensesFull = `-- name: ListExpensesFull :many
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+WHERE organisation_id = $1
+ORDER BY dated_on DESC, created_at DESC
+`
+
+// -----------------------------------------------------------------------------
+// ListExpensesFull
+// The whole organisation's expenses joined with category (name + nominal code),
+// VAT and EC status via the v_expenses_full view — the rich shape the CSV export
+// needs (the lean ListExpenses lacks category name / ec_status / vat rate).
+// Mirrors ListExpenses (same org scope + ordering); the view already applies the
+// soft-delete filter.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExpensesFull(ctx context.Context, organisationID uuid.UUID) ([]VExpensesFull, error) {
+	rows, err := q.db.Query(ctx, listExpensesFull, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VExpensesFull
+	for rows.Next() {
+		var i VExpensesFull
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.UserID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.Description,
+			&i.ReceiptReference,
+			&i.InvoiceNumber,
+			&i.SupplierName,
+			&i.SupplierVatNumber,
+			&i.Currency,
+			&i.NativeCurrency,
+			&i.ExchangeRate,
+			&i.GrossValueMinor,
+			&i.NativeGrossValueMinor,
+			&i.VatRateBps,
+			&i.VatValueMinor,
+			&i.NativeVatValueMinor,
+			&i.ManualVatAmountMinor,
+			&i.VatStatus,
+			&i.EcStatus,
+			&i.ProjectID,
+			&i.RebillType,
+			&i.RebillFactor,
+			&i.RebilledInvoiceID,
+			&i.StockItemID,
+			&i.StockQuantity,
+			&i.CapitalAssetID,
+			&i.Status,
+			&i.SubmittedAt,
+			&i.ApprovedAt,
+			&i.ApprovedByUserID,
+			&i.PaidAt,
+			&i.CategoryNominalCode,
+			&i.CategoryName,
+			&i.CategoryIsMileage,
+			&i.CategoryIsCapitalAsset,
+			&i.Miles,
+			&i.VehicleType,
+			&i.EngineType,
+			&i.EngineSize,
+			&i.ReclaimMileage,
+			&i.InitialRatePpm,
+			&i.ReducedRatePpm,
+			&i.RebillRatePpm,
+			&i.ReimbursementMinor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CategoryID,
+			&i.VatRateID,
+			&i.NeedsReview,
+			&i.OcrConfidence,
+			&i.OcrProcessedAt,
+			&i.RejectionNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExpensesFullByUser = `-- name: ListExpensesFullByUser :many
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+WHERE organisation_id = $1
+  AND user_id         = $2
+ORDER BY dated_on DESC, created_at DESC
+`
+
+type ListExpensesFullByUserParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+// -----------------------------------------------------------------------------
+// ListExpensesFullByUser
+// Same as ListExpensesFull but scoped to a single claimant — the export a plain
+// member gets (they only ever see their own expenses).
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExpensesFullByUser(ctx context.Context, arg ListExpensesFullByUserParams) ([]VExpensesFull, error) {
+	rows, err := q.db.Query(ctx, listExpensesFullByUser, arg.OrganisationID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VExpensesFull
+	for rows.Next() {
+		var i VExpensesFull
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.UserID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.Description,
+			&i.ReceiptReference,
+			&i.InvoiceNumber,
+			&i.SupplierName,
+			&i.SupplierVatNumber,
+			&i.Currency,
+			&i.NativeCurrency,
+			&i.ExchangeRate,
+			&i.GrossValueMinor,
+			&i.NativeGrossValueMinor,
+			&i.VatRateBps,
+			&i.VatValueMinor,
+			&i.NativeVatValueMinor,
+			&i.ManualVatAmountMinor,
+			&i.VatStatus,
+			&i.EcStatus,
+			&i.ProjectID,
+			&i.RebillType,
+			&i.RebillFactor,
+			&i.RebilledInvoiceID,
+			&i.StockItemID,
+			&i.StockQuantity,
+			&i.CapitalAssetID,
+			&i.Status,
+			&i.SubmittedAt,
+			&i.ApprovedAt,
+			&i.ApprovedByUserID,
+			&i.PaidAt,
+			&i.CategoryNominalCode,
+			&i.CategoryName,
+			&i.CategoryIsMileage,
+			&i.CategoryIsCapitalAsset,
+			&i.Miles,
+			&i.VehicleType,
+			&i.EngineType,
+			&i.EngineSize,
+			&i.ReclaimMileage,
+			&i.InitialRatePpm,
+			&i.ReducedRatePpm,
+			&i.RebillRatePpm,
+			&i.ReimbursementMinor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CategoryID,
+			&i.VatRateID,
+			&i.NeedsReview,
+			&i.OcrConfidence,
+			&i.OcrProcessedAt,
+			&i.RejectionNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpensesNeedingReview = `-- name: ListExpensesNeedingReview :many
 
 

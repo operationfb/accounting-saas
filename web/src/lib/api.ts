@@ -66,6 +66,43 @@ export async function apiUpload<T>(
   return handleResponse<T>(res, skipAuthRedirect)
 }
 
+// Download a non-JSON response (e.g. the CSV export) as a Blob. The bearer-attach
+// and the 401 → logout+redirect behaviour are identical to apiFetch, but on
+// success we hand back the raw Blob instead of parsing JSON. On a NON-2xx the
+// body IS JSON (the backend's error shape), so we parse + normalise it the same
+// way handleResponse does — the caller catches a plain ApiError either way.
+export async function apiDownload(
+  path: string,
+  options: { skipAuthRedirect?: boolean } = {},
+): Promise<Blob> {
+  const { skipAuthRedirect = false } = options
+
+  const headers: Record<string, string> = {}
+  attachBearer(headers)
+
+  const res = await fetch(`${BASE_URL}${path}`, { method: 'GET', headers })
+
+  if (!res.ok) {
+    let data: unknown = null
+    try {
+      data = await res.json()
+    } catch {
+      data = null
+    }
+    const err = normaliseError(res.status, data)
+    if (res.status === 401 && !skipAuthRedirect) {
+      useAuthStore().logout()
+      const current = router.currentRoute.value
+      if (current.name !== 'login') {
+        void router.replace({ name: 'login', query: { redirect: current.fullPath } })
+      }
+    }
+    throw err
+  }
+
+  return res.blob()
+}
+
 // Attach the PASETO bearer token from the auth store, when we have one.
 function attachBearer(headers: Record<string, string>): void {
   const token = useAuthStore().token

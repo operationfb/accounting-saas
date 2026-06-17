@@ -2,17 +2,19 @@
 // Expenses list — the "expense view". Wired to GET /api/v1/expenses. The Claimant
 // / Status / Range filters are applied CLIENT-SIDE over the loaded rows: the list
 // endpoint returns the full set already sorted newest-first (dated_on DESC), so
-// there's no need to re-fetch as the filters change.
-import { ref, computed, onMounted } from 'vue'
+// there's no need to re-fetch as the filters change. The filtered rows are then
+// paginated client-side (page size 25 / 50 / 100).
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Select from 'primevue/select'
 import MultiSelect from 'primevue/multiselect'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import AppLayout from '@/layouts/AppLayout.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { listExpenses } from '@/services/expenses.service'
+import { listExpenses, exportExpenses } from '@/services/expenses.service'
 import { listMembers } from '@/services/members.service'
-import { formatMoney, formatDate } from '@/lib/format'
+import { formatMoney, formatDate, toISODate } from '@/lib/format'
 import type { Expense } from '@/types/expense'
 import type { OrganisationMember } from '@/types/member'
 import type { ApiError } from '@/lib/api'
@@ -138,6 +140,46 @@ const filteredExpenses = computed(() => {
   return rows
 })
 
+// --- Pagination ---
+// Per the design, the pager only appears once the filtered list runs past 25
+// rows; the page size is user-selectable (25 / 50 / 100). It slices the
+// already-filtered rows, so it composes with every filter above.
+const PER_PAGE_OPTIONS = [
+  { label: '25', value: 25 },
+  { label: '50', value: 50 },
+  { label: '100', value: 100 },
+]
+const perPage = ref(25)
+const currentPage = ref(1) // 1-indexed
+
+const showPagination = computed(() => filteredExpenses.value.length > 25)
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(filteredExpenses.value.length / perPage.value)),
+)
+
+// The rows to actually render. When the pager is hidden the filtered list is
+// <= 25 and perPage is >= 25, so this returns the whole list anyway. currentPage
+// is clamped so a transiently out-of-range page never flashes an empty table.
+const pagedExpenses = computed(() => {
+  const page = Math.min(currentPage.value, totalPages.value)
+  const start = (page - 1) * perPage.value
+  return filteredExpenses.value.slice(start, start + perPage.value)
+})
+
+// Any filter change (filteredExpenses recomputes to a fresh array) or a new page
+// size sends you back to page 1, so you can't be stranded on a page that no
+// longer exists.
+watch([filteredExpenses, perPage], () => {
+  currentPage.value = 1
+})
+
+function prevPage() {
+  if (currentPage.value > 1) currentPage.value--
+}
+function nextPage() {
+  if (currentPage.value < totalPages.value) currentPage.value++
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -165,6 +207,91 @@ function openExpense(id: string) {
 function newExpense() {
   router.push('/expenses/new')
 }
+
+// --- Export ---
+// Download the caller's expenses as a CSV. The endpoint is authenticated (bearer
+// token), so we can't use a plain <a href> — we fetch the Blob (token attached by
+// apiDownload) and click a temporary object-URL anchor to save it. Owners/admins
+// get the whole org; members only their own — the backend decides, not us.
+const exporting = ref(false)
+const exportError = ref('')
+
+async function exportCsv() {
+  exporting.value = true
+  exportError.value = ''
+  try {
+    const blob = await exportExpenses()
+    triggerDownload(blob, `expenses-${toISODate(new Date())}.csv`)
+  } catch (err) {
+    exportError.value = (err as ApiError)?.message ?? 'Could not export expenses.'
+  } finally {
+    exporting.value = false
+  }
+}
+
+// Save a Blob to disk by clicking a throwaway object-URL anchor, then revoking it.
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+// --- Import (dialog) ---
+// The import button opens a dialog that ships the CSV template + a field guide.
+// Parsing an uploaded file into expenses is a planned follow-up; for now the
+// dialog's job is to hand over a correctly-shaped template. The template is a
+// static file in /public, served at the web root (BASE_URL handles a sub-path).
+const showImport = ref(false)
+const templateHref = `${import.meta.env.BASE_URL}expense_import_template.csv`
+
+// Mirrors the export's columns and the shipped template — the single source of
+// truth for "how to fill in our expenses template".
+const templateFields = [
+  {
+    name: 'claimant_email',
+    required: false,
+    format:
+      'Email of the person the expense is for (an active member of your organisation). Blank → you.',
+  },
+  {
+    name: 'category',
+    required: true,
+    format:
+      'Category name (e.g. Travel) or nominal code (e.g. 6042). Must match one of your categories.',
+  },
+  { name: 'date', required: true, format: 'Date on the receipt, DD/MM/YYYY (e.g. 17/06/2026).' },
+  { name: 'currency', required: false, format: '3-letter ISO code (GBP, USD). Defaults to GBP.' },
+  {
+    name: 'gross_value',
+    required: true,
+    format: 'Total incl. VAT as a decimal (e.g. 42.50). No symbol or thousands separators.',
+  },
+  { name: 'description', required: true, format: 'Short description of the expense.' },
+  { name: 'supplier_name', required: false, format: 'Who you paid (e.g. Trainline).' },
+  { name: 'receipt_reference', required: false, format: 'Your own reference for the receipt.' },
+  { name: 'invoice_number', required: false, format: 'The supplier’s invoice / receipt number.' },
+  {
+    name: 'sales_tax_rate',
+    required: false,
+    format: 'VAT rate as a percentage number (e.g. 20, 0). Blank → no VAT.',
+  },
+  {
+    name: 'sales_tax_value',
+    required: false,
+    format:
+      'VAT amount in the same currency (e.g. 7.08). Calculated for standard rates if left blank.',
+  },
+  {
+    name: 'ec_status',
+    required: false,
+    format: 'UK_NON_EC (default), EC_GOODS, EC_SERVICES, or REVERSE_CHARGE.',
+  },
+]
 </script>
 
 <template>
@@ -172,10 +299,20 @@ function newExpense() {
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-[22px] font-bold">Out-of-Pocket Expenses</h1>
       <div class="flex gap-2.5">
-        <Button label="Import expenses" severity="secondary" outlined />
+        <Button label="Import expenses" severity="secondary" outlined @click="showImport = true" />
+        <Button
+          label="Export expenses"
+          severity="secondary"
+          outlined
+          :loading="exporting"
+          @click="exportCsv"
+        />
         <Button label="Add new" icon="pi pi-angle-down" icon-pos="right" @click="newExpense" />
       </div>
     </div>
+
+    <!-- Export failures surface here (a list-load error has its own state below). -->
+    <p v-if="exportError" class="mb-3 text-sm text-[#c0392b]">{{ exportError }}</p>
 
     <div class="overflow-hidden rounded-[5px] border border-fa-border bg-white">
       <div class="flex flex-wrap gap-3 border-b border-fa-border px-4 py-3.5">
@@ -228,47 +365,134 @@ function newExpense() {
       </div>
 
       <!-- Data -->
-      <table v-else class="w-full border-collapse text-sm">
-        <thead>
-          <tr>
-            <th
-              v-for="h in headers"
-              :key="h.label"
-              class="border-b border-fa-border px-4 py-3 text-[13px] font-semibold text-fa-muted"
-              :class="h.num ? 'text-right' : 'text-left'"
-            >
-              {{ h.label }}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="exp in filteredExpenses"
-            :key="exp.id"
-            class="cursor-pointer hover:bg-[#f7fafc]"
-            @click="openExpense(exp.id)"
-          >
-            <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3.5 align-middle">
-              {{ formatDate(exp.dated_on) }}
-            </td>
-            <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
-              <RouterLink
-                :to="{ name: 'expense-detail', params: { id: exp.id } }"
-                class="font-semibold text-fa-blue hover:underline"
-                @click.stop
-                >{{ exp.description }}</RouterLink
+      <div v-else>
+        <table class="w-full border-collapse text-sm">
+          <thead>
+            <tr>
+              <th
+                v-for="h in headers"
+                :key="h.label"
+                class="border-b border-fa-border px-4 py-3 text-[13px] font-semibold text-fa-muted"
+                :class="h.num ? 'text-right' : 'text-left'"
               >
-              <span v-if="exp.supplier_name" class="ml-2 text-fa-muted">{{ exp.supplier_name }}</span>
-            </td>
-            <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
-              <StatusTag :status="exp.status" />
-            </td>
-            <td class="border-b border-[#eef1f4] px-4 py-3.5 text-right align-middle tabular-nums">
-              {{ formatMoney(exp.gross_value, exp.currency) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+                {{ h.label }}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="exp in pagedExpenses"
+              :key="exp.id"
+              class="cursor-pointer hover:bg-[#f7fafc]"
+              @click="openExpense(exp.id)"
+            >
+              <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+                {{ formatDate(exp.dated_on) }}
+              </td>
+              <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+                <RouterLink
+                  :to="{ name: 'expense-detail', params: { id: exp.id } }"
+                  class="font-semibold text-fa-blue hover:underline"
+                  @click.stop
+                  >{{ exp.description }}</RouterLink
+                >
+                <span v-if="exp.supplier_name" class="ml-2 text-fa-muted">{{ exp.supplier_name }}</span>
+              </td>
+              <td class="border-b border-[#eef1f4] px-4 py-3.5 align-middle">
+                <StatusTag :status="exp.status" />
+              </td>
+              <td class="border-b border-[#eef1f4] px-4 py-3.5 text-right align-middle tabular-nums">
+                {{ formatMoney(exp.gross_value, exp.currency) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <!-- Pagination — only for lists longer than 25 rows; sits bottom-left. -->
+        <div
+          v-if="showPagination"
+          class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-fa-border px-4 py-3 text-sm"
+        >
+          <div class="flex items-center gap-2">
+            <Select
+              v-model="perPage"
+              :options="PER_PAGE_OPTIONS"
+              option-label="label"
+              option-value="value"
+            />
+            <span class="text-fa-muted">per page</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <Button
+              label="Previous"
+              icon="pi pi-angle-left"
+              severity="secondary"
+              outlined
+              size="small"
+              :disabled="currentPage === 1"
+              @click="prevPage"
+            />
+            <span class="text-fa-muted">Page {{ currentPage }} of {{ totalPages }}</span>
+            <Button
+              label="Next"
+              icon="pi pi-angle-right"
+              icon-pos="right"
+              severity="secondary"
+              outlined
+              size="small"
+              :disabled="currentPage === totalPages"
+              @click="nextPage"
+            />
+          </div>
+        </div>
+      </div>
     </div>
+
+    <!-- Import expenses: download the template + how to fill it in. Parsing an
+         uploaded file into expenses is a planned follow-up; this dialog ships the
+         template now. -->
+    <Dialog v-model:visible="showImport" modal header="Import expenses" :style="{ width: '46rem' }">
+      <p class="mb-4 text-sm text-fa-muted">
+        Bulk-add expenses from a spreadsheet. Download the template, fill in one row per expense
+        (keep the column headers unchanged), and save as CSV. Uploading a completed file will be
+        enabled soon.
+      </p>
+
+      <a
+        :href="templateHref"
+        download="expense_import_template.csv"
+        class="mb-5 inline-flex items-center gap-2 rounded-[5px] border border-fa-border bg-white px-3.5 py-2 text-sm font-semibold text-fa-blue hover:bg-[#f7fafc]"
+      >
+        <i class="pi pi-download" />Download template
+      </a>
+
+      <h3 class="mb-2 text-sm font-bold">How to fill in our expenses template</h3>
+      <div class="overflow-hidden rounded-[5px] border border-fa-border">
+        <table class="w-full border-collapse text-[13px]">
+          <thead>
+            <tr class="bg-[#f7fafc] text-left text-fa-muted">
+              <th class="border-b border-fa-border px-3 py-2 font-semibold">Column</th>
+              <th class="border-b border-fa-border px-3 py-2 font-semibold">Required</th>
+              <th class="border-b border-fa-border px-3 py-2 font-semibold">Format / values</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="f in templateFields" :key="f.name" class="align-top">
+              <td class="whitespace-nowrap border-b border-[#eef1f4] px-3 py-2 font-mono">
+                {{ f.name }}
+              </td>
+              <td class="whitespace-nowrap border-b border-[#eef1f4] px-3 py-2">
+                {{ f.required ? 'Required' : 'Optional' }}
+              </td>
+              <td class="border-b border-[#eef1f4] px-3 py-2">{{ f.format }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <template #footer>
+        <Button label="Close" severity="secondary" outlined @click="showImport = false" />
+      </template>
+    </Dialog>
   </AppLayout>
 </template>

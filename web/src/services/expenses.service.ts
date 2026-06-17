@@ -1,4 +1,4 @@
-import { apiFetch, apiUpload } from '@/lib/api'
+import { apiFetch, apiUpload, apiDownload } from '@/lib/api'
 import {
   ListExpensesResponseSchema,
   GetExpenseResponseSchema,
@@ -19,6 +19,14 @@ export async function listExpenses(): Promise<Expense[]> {
   const data = await apiFetch<unknown>('/expenses', { method: 'GET' })
   const parsed = ListExpensesResponseSchema.parse(data)
   return parsed.expenses ?? []
+}
+
+// GET /api/v1/expenses/export — download the caller's visible expenses as a CSV
+// Blob (owners/admins get the whole org; members only their own — the backend
+// enforces it). Returns the raw Blob; the VIEW owns turning it into a browser
+// download (filename + anchor click). Bearer/401 handled by apiDownload.
+export async function exportExpenses(): Promise<Blob> {
+  return apiDownload('/expenses/export')
 }
 
 // GET /api/v1/expenses/:id — returns the RICH detail (v_expenses_full). Same

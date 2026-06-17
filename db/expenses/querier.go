@@ -288,6 +288,21 @@ type Querier interface {
 	// Useful for employee self-service: they only see their own claims.
 	// -----------------------------------------------------------------------------
 	ListExpensesByUser(ctx context.Context, arg ListExpensesByUserParams) ([]Expense, error)
+	// -----------------------------------------------------------------------------
+	// ListExpensesFull
+	// The whole organisation's expenses joined with category (name + nominal code),
+	// VAT and EC status via the v_expenses_full view — the rich shape the CSV export
+	// needs (the lean ListExpenses lacks category name / ec_status / vat rate).
+	// Mirrors ListExpenses (same org scope + ordering); the view already applies the
+	// soft-delete filter.
+	// -----------------------------------------------------------------------------
+	ListExpensesFull(ctx context.Context, organisationID uuid.UUID) ([]VExpensesFull, error)
+	// -----------------------------------------------------------------------------
+	// ListExpensesFullByUser
+	// Same as ListExpensesFull but scoped to a single claimant — the export a plain
+	// member gets (they only ever see their own expenses).
+	// -----------------------------------------------------------------------------
+	ListExpensesFullByUser(ctx context.Context, arg ListExpensesFullByUserParams) ([]VExpensesFull, error)
 	// oldest first so managers action the earliest claims first
 	// -----------------------------------------------------------------------------
 	// ListExpensesNeedingReview

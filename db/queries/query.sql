@@ -201,6 +201,32 @@ ORDER BY dated_on DESC, created_at DESC;
 
 
 -- -----------------------------------------------------------------------------
+-- ListExpensesFull
+-- The whole organisation's expenses joined with category (name + nominal code),
+-- VAT and EC status via the v_expenses_full view — the rich shape the CSV export
+-- needs (the lean ListExpenses lacks category name / ec_status / vat rate).
+-- Mirrors ListExpenses (same org scope + ordering); the view already applies the
+-- soft-delete filter.
+-- -----------------------------------------------------------------------------
+-- name: ListExpensesFull :many
+SELECT * FROM v_expenses_full
+WHERE organisation_id = $1
+ORDER BY dated_on DESC, created_at DESC;
+
+
+-- -----------------------------------------------------------------------------
+-- ListExpensesFullByUser
+-- Same as ListExpensesFull but scoped to a single claimant — the export a plain
+-- member gets (they only ever see their own expenses).
+-- -----------------------------------------------------------------------------
+-- name: ListExpensesFullByUser :many
+SELECT * FROM v_expenses_full
+WHERE organisation_id = $1
+  AND user_id         = $2
+ORDER BY dated_on DESC, created_at DESC;
+
+
+-- -----------------------------------------------------------------------------
 -- ListExpensesByDateRange
 -- Filter by date range — used on the expenses list page date picker.
 -- Both from_date and to_date are inclusive (BETWEEN is inclusive in PostgreSQL).

@@ -1,0 +1,2 @@
+claimant_email,category,date,currency,gross_value,description,supplier_name,receipt_reference,invoice_number,sales_tax_rate,sales_tax_value,ec_status
+aydin@acme.co.uk,Travel,17/06/2026,GBP,42.50,Train to client meeting,Trainline,R-1023,INV-5567,20,7.08,UK_NON_EC

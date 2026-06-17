@@ -29,6 +29,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"math/rand"
 	"net/http"
@@ -733,6 +734,7 @@ func TestExpenses_RequireAuth(t *testing.T) {
 	}{
 		{"list no token", http.MethodGet, "/api/v1/expenses", ""},
 		{"get no token", http.MethodGet, "/api/v1/expenses/" + devOrgID, ""},
+		{"export no token", http.MethodGet, "/api/v1/expenses/export", ""},
 		{"create no token", http.MethodPost, "/api/v1/expenses", ""},
 		{"create bad scheme", http.MethodPost, "/api/v1/expenses", "Basic abc"},
 	}
@@ -1741,4 +1743,306 @@ func TestPasswordReset(t *testing.T) {
 			t.Errorf("garbage token: expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// =============================================================================
+// EXPENSE CSV EXPORT — GET /api/v1/expenses/export
+// =============================================================================
+
+// Column positions of the export CSV (must match expenseExportHeader in
+// expense_service.go). Named so the assertions read clearly.
+const (
+	colClaimantEmail = 0
+	colCategory      = 1
+	colDate          = 2
+	colCurrency      = 3
+	colGrossValue    = 4
+	colDescription   = 5
+	colSupplierName  = 6
+	colReceiptRef    = 7
+	colInvoiceNumber = 8
+	colSalesTaxRate  = 9
+	colSalesTaxValue = 10
+	colECStatus      = 11
+)
+
+// createExpenseWith POSTs an expense with caller-chosen fields and returns its id,
+// registering a best-effort cleanup that deletes the row by id. Unlike
+// createExpenseAs it pins the category / date / description / gross (and an optional
+// VAT rate) so the export's cells can be asserted exactly. datedOn is YYYY-MM-DD.
+func createExpenseWith(t *testing.T, ts *testServer, userID, orgID, categoryID, datedOn, description, gross, vatRateID string) string {
+	t.Helper()
+	reqBody := CreateExpenseRequest{
+		CategoryID:       categoryID,
+		DatedOn:          datedOn,
+		Description:      description,
+		CurrencyCode:     "GBP",
+		GrossValuePounds: gross,
+	}
+	if vatRateID != "" {
+		reqBody.VATRateID = &vatRateID
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/expenses", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearer(t, ts, userID, orgID))
+	ts.server.router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("createExpenseWith: expected 201, got %d — body: %s", recorder.Code, recorder.Body.String())
+	}
+	var resp map[string]ExpenseResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("createExpenseWith: decode: %v", err)
+	}
+	id := resp["expense"].ID
+	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM expenses WHERE id = $1`, id) })
+	return id
+}
+
+// exportCSV GETs the export as the given user and returns the parsed records,
+// including the header at index 0. It asserts 200 + a text/csv content type.
+func exportCSV(t *testing.T, ts *testServer, userID, orgID string) [][]string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/export", nil)
+	req.Header.Set("Authorization", bearer(t, ts, userID, orgID))
+	ts.server.router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("exportCSV: expected 200, got %d — body: %s", recorder.Code, recorder.Body.String())
+	}
+	if ct := recorder.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("exportCSV: Content-Type = %q, want text/csv", ct)
+	}
+	records, err := csv.NewReader(recorder.Body).ReadAll()
+	if err != nil {
+		t.Fatalf("exportCSV: parse CSV: %v", err)
+	}
+	if len(records) == 0 {
+		t.Fatal("exportCSV: no records (missing header row)")
+	}
+	return records
+}
+
+// assertHeader checks the first record is exactly expenseExportHeader.
+func assertHeader(t *testing.T, records [][]string) {
+	t.Helper()
+	got := records[0]
+	if len(got) != len(expenseExportHeader) {
+		t.Fatalf("header has %d columns, want %d: %v", len(got), len(expenseExportHeader), got)
+	}
+	for i, h := range expenseExportHeader {
+		if got[i] != h {
+			t.Errorf("header[%d] = %q, want %q", i, got[i], h)
+		}
+	}
+}
+
+// findExportRow returns the first data record whose description column equals
+// want, or nil. (The export has no id column, so tests match on a unique
+// description they set on creation.)
+func findExportRow(records [][]string, want string) []string {
+	for _, rec := range records[1:] { // skip header
+		if len(rec) > colDescription && rec[colDescription] == want {
+			return rec
+		}
+	}
+	return nil
+}
+
+// userEmail reads a user's login email straight from the DB (the export resolves
+// claimant_email from the same source).
+func userEmail(t *testing.T, ts *testServer, userID string) string {
+	t.Helper()
+	var email string
+	if err := ts.pool.QueryRow(context.Background(), `SELECT email FROM users WHERE id = $1`, userID).Scan(&email); err != nil {
+		t.Fatalf("userEmail: %v", err)
+	}
+	return email
+}
+
+// namedCategory returns an ordinary (non-asset/mileage/stock) active category's
+// id and name for the org, so the export's category cell can be asserted.
+func namedCategory(t *testing.T, ts *testServer, orgID string) (id, name string) {
+	t.Helper()
+	err := ts.pool.QueryRow(context.Background(), `
+		SELECT id::text, name FROM expense_categories
+		WHERE organisation_id = $1 AND is_active = TRUE
+		  AND is_capital_asset = FALSE AND is_mileage = FALSE AND is_stock_purchase = FALSE
+		ORDER BY nominal_code LIMIT 1`, orgID).Scan(&id, &name)
+	if err != nil {
+		t.Fatalf("namedCategory: %v", err)
+	}
+	return id, name
+}
+
+// gbStandardVatRateID returns the id of a seeded GB 20% fixed-ratio VAT rate, or
+// "" if the vat_rates seed isn't present — the VAT assertions then fall back to
+// the no-VAT shape so the test stays meaningful either way.
+func gbStandardVatRateID(t *testing.T, ts *testServer) string {
+	t.Helper()
+	var id string
+	err := ts.pool.QueryRow(context.Background(), `
+		SELECT id::text FROM vat_rates
+		WHERE country_code = 'GB' AND rate_bps = 2000 AND is_fixed_ratio = TRUE
+		LIMIT 1`).Scan(&id)
+	if err != nil {
+		return ""
+	}
+	return id
+}
+
+// newCategory inserts an ephemeral active expense category for an org and returns
+// its id, with cleanup. Used to give a second tenant a category to file against.
+// (newOrgWithOwner — the second-tenant helper — lives in attachment_service_test.go.)
+func newCategory(t *testing.T, ts *testServer, orgID string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := uuid.NewString()
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO expense_categories (id, organisation_id, nominal_code, name)
+		 VALUES ($1, $2, '7999', 'Export Test Category')`, id, orgID); err != nil {
+		t.Fatalf("newCategory: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ts.pool.Exec(ctx, `DELETE FROM expense_categories WHERE id = $1`, id) })
+	return id
+}
+
+// TestExportExpenses_OwnerAllMemberOwn verifies the export honours the same
+// visibility rule as the list: an owner exports the whole org (and each row shows
+// the right claimant email), a plain member exports only their own.
+func TestExportExpenses_OwnerAllMemberOwn(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	cat := randomCategoryUUID(t, ts.pool)
+	ownerDesc := "EXPORT-OWNER-" + uuid.NewString()
+	memberDesc := "EXPORT-MEMBER-" + uuid.NewString()
+
+	createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", ownerDesc, "42.50", "")
+	memberID := newMemberUser(t, ts, devOrgID)
+	createExpenseWith(t, ts, memberID, devOrgID, cat, "2026-06-17", memberDesc, "9.99", "")
+
+	// Owner exports → sees BOTH; the member's row carries the member's email.
+	ownerRecs := exportCSV(t, ts, devUserID, devOrgID)
+	assertHeader(t, ownerRecs)
+	ownerRow := findExportRow(ownerRecs, ownerDesc)
+	memberRow := findExportRow(ownerRecs, memberDesc)
+	if ownerRow == nil || memberRow == nil {
+		t.Fatalf("owner export should contain both expenses (owner=%v member=%v)", ownerRow != nil, memberRow != nil)
+	}
+	if got, want := memberRow[colClaimantEmail], userEmail(t, ts, memberID); got != want {
+		t.Errorf("member row claimant_email = %q, want %q", got, want)
+	}
+	if got, want := ownerRow[colClaimantEmail], userEmail(t, ts, devUserID); got != want {
+		t.Errorf("owner row claimant_email = %q, want %q", got, want)
+	}
+
+	// Member exports → only their own.
+	memberRecs := exportCSV(t, ts, memberID, devOrgID)
+	if findExportRow(memberRecs, memberDesc) == nil {
+		t.Errorf("member export should contain the member's own expense")
+	}
+	if findExportRow(memberRecs, ownerDesc) != nil {
+		t.Errorf("member export must NOT contain the owner's expense")
+	}
+}
+
+// TestExportExpenses_Formatting checks every cell's external shape: claimant
+// email, category name, DD/MM/YYYY date, currency, pounds money, default EC
+// status, and (when the VAT seed is present) the VAT rate/value columns.
+func TestExportExpenses_Formatting(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	catID, catName := namedCategory(t, ts, devOrgID)
+	desc := "EXPORT-FMT-" + uuid.NewString()
+	vatID := gbStandardVatRateID(t, ts) // "" → create without VAT
+
+	createExpenseWith(t, ts, devUserID, devOrgID, catID, "2026-06-17", desc, "120.00", vatID)
+
+	recs := exportCSV(t, ts, devUserID, devOrgID)
+	assertHeader(t, recs)
+	row := findExportRow(recs, desc)
+	if row == nil {
+		t.Fatalf("formatting export should contain the created expense %q", desc)
+	}
+
+	checks := []struct{ name, got, want string }{
+		{"claimant_email", row[colClaimantEmail], userEmail(t, ts, devUserID)},
+		{"category", row[colCategory], catName},
+		{"date", row[colDate], "17/06/2026"}, // DD/MM/YYYY, not the API's YYYY-MM-DD
+		{"currency", row[colCurrency], "GBP"},
+		{"gross_value", row[colGrossValue], "120.00"},
+		{"ec_status", row[colECStatus], "UK_NON_EC"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s cell = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+
+	if vatID != "" {
+		// £120 incl. 20% VAT → rate "20" (bare percent), value "20.00" (pounds).
+		if got := row[colSalesTaxRate]; got != "20" {
+			t.Errorf("sales_tax_rate = %q, want \"20\"", got)
+		}
+		if got := row[colSalesTaxValue]; got != "20.00" {
+			t.Errorf("sales_tax_value = %q, want \"20.00\"", got)
+		}
+	} else {
+		if got := row[colSalesTaxRate]; got != "" {
+			t.Errorf("sales_tax_rate = %q, want empty (no VAT)", got)
+		}
+		if got := row[colSalesTaxValue]; got != "0.00" {
+			t.Errorf("sales_tax_value = %q, want \"0.00\" (no VAT)", got)
+		}
+	}
+}
+
+// TestExportExpenses_MultiTenantIsolation verifies one org's export never leaks
+// another org's expenses (the export query is organisation-scoped).
+func TestExportExpenses_MultiTenantIsolation(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	otherOrg, otherOwner := newOrgWithOwner(t, ts)
+	otherCat := newCategory(t, ts, otherOrg)
+	otherDesc := "EXPORT-OTHERORG-" + uuid.NewString()
+	createExpenseWith(t, ts, otherOwner, otherOrg, otherCat, "2026-06-17", otherDesc, "5.00", "")
+
+	devRecs := exportCSV(t, ts, devUserID, devOrgID)
+	if findExportRow(devRecs, otherDesc) != nil {
+		t.Errorf("dev org export leaked another org's expense %q", otherDesc)
+	}
+
+	otherRecs := exportCSV(t, ts, otherOwner, otherOrg)
+	if findExportRow(otherRecs, otherDesc) == nil {
+		t.Errorf("other org export should contain its own expense %q", otherDesc)
+	}
+}
+
+// TestExportExpenses_CSVInjectionGuard verifies a free-text cell that begins with
+// a formula trigger (=) is prefixed with a single quote so a spreadsheet won't
+// execute it.
+func TestExportExpenses_CSVInjectionGuard(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	cat := randomCategoryUUID(t, ts.pool)
+	desc := "=SUM(A1:A9)+" + uuid.NewString() // leading '=' would be a formula
+	createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", desc, "1.00", "")
+
+	recs := exportCSV(t, ts, devUserID, devOrgID)
+	guarded := "'" + desc // the export prefixes a quote
+	var found bool
+	for _, rec := range recs[1:] {
+		if len(rec) > colDescription && rec[colDescription] == guarded {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("export should neutralise the formula description as %q", guarded)
+	}
 }

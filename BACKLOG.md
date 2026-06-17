@@ -98,6 +98,34 @@ _Last updated: 2026-06-17_
   round-trip, LEFT JOIN `projects` in the `v_expenses_full` view and expose
   `project_name` on `ExpenseDetailResponse` (like `category_name`). _Files:
   `db/schema/schema.sql`, `server.go`, `expense_service.go`._
+- **CSV import processing (`POST /api/v1/expenses/import`).** The Import dialog on
+  the expenses list currently only downloads the template + field guide
+  (`web/src/views/ExpenseListView.vue`); the actual upload/parse is deferred. Add a
+  multipart endpoint that parses the uploaded CSV (the 12-column lean template — see
+  the export's `expenseExportHeader`), validates each row, resolves `category` (name
+  **or** nominal code) and `claimant_email`, parses the `DD/MM/YYYY` date and the
+  `sales_tax_rate` percent → a VAT rate, then creates **DRAFT** expenses via the
+  existing `CreateExpense`. Return a per-row result (created count + row-numbered
+  errors) for partial success; add file-size / row-count caps and a dedupe strategy.
+  Then enable the dialog's upload control. _Files: `server.go`, `expense_service.go`,
+  `attachment_handler.go` (multipart pattern), `web/src/views/ExpenseListView.vue`,
+  `web/src/services/expenses.service.ts`._
+- **Widen the import/export template beyond the lean set.** The CSV template ships
+  the 12 columns we support today; FreeAgent's reference template also has `type`,
+  `project_client` / `project_name`, `rebill_by` / `rebill_factor_amount`,
+  `stock_item_name` / `stock_quantity`, `asset_life`, and the native-currency
+  `native_gross_value` / `native_sales_tax_value`. Add these columns (and the
+  export/import handling) as the underlying features land (project rebilling, stock,
+  capital assets, multi-currency). _Files: `expense_service.go` (`expenseExportHeader`,
+  `ExpenseExportRow`), `web/public/expense_import_template.csv`,
+  `web/src/views/ExpenseListView.vue` (`templateFields`)._
+- **Export niceties.** The export shares the import template's exact columns for a
+  clean round-trip, so it omits read-only context like `status` and `created_at` —
+  add them as extra trailing columns if users want them (import would ignore them).
+  Also revisit the CSV-injection guard (`sanitizeCSVField` prefixes a `'` to
+  free-text cells starting with `= + - @`): it alters the value, so the future import
+  should strip a single leading quote to round-trip cleanly. _File:
+  `expense_service.go`._
 
 ## Contacts
 

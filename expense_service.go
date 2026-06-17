@@ -737,6 +737,162 @@ func (s *ExpenseService) ListExpenses(
 }
 
 // =============================================================================
+// EXPORTEXPENSES (CSV download)
+// =============================================================================
+
+// expenseExportHeader is the CSV column order for the expense export. It is also
+// the header of the import template shipped at web/public/expense_import_template.csv
+// — keep the two in lockstep so a file exported here can be re-imported unchanged
+// once the import endpoint lands.
+var expenseExportHeader = []string{
+	"claimant_email", "category", "date", "currency", "gross_value",
+	"description", "supplier_name", "receipt_reference", "invoice_number",
+	"sales_tax_rate", "sales_tax_value", "ec_status",
+}
+
+// ExpenseExportRow is one CSV data row, already converted to the EXTERNAL
+// representation: money as 2dp pound strings, the VAT rate as a bare percent
+// number, the date as DD/MM/YYYY. Field order matches expenseExportHeader; the
+// handler turns it into a record via record().
+type ExpenseExportRow struct {
+	ClaimantEmail    string
+	Category         string
+	Date             string
+	Currency         string
+	GrossValue       string
+	Description      string
+	SupplierName     string
+	ReceiptReference string
+	InvoiceNumber    string
+	SalesTaxRate     string
+	SalesTaxValue    string
+	ECStatus         string
+}
+
+// record renders the row as an ordered slice for encoding/csv. The order MUST
+// match expenseExportHeader.
+func (r ExpenseExportRow) record() []string {
+	return []string{
+		r.ClaimantEmail, r.Category, r.Date, r.Currency, r.GrossValue,
+		r.Description, r.SupplierName, r.ReceiptReference, r.InvoiceNumber,
+		r.SalesTaxRate, r.SalesTaxValue, r.ECStatus,
+	}
+}
+
+// ExportExpenses returns the caller's visible expenses as export rows, ready for
+// the handler to stream as CSV. Visibility mirrors ListExpenses exactly: owners/
+// admins export the whole organisation; everyone else only the expenses they are
+// the claimant on. Money minors become pound strings, VAT basis points a bare
+// percent, and the date DD/MM/YYYY — the external shapes documented in the import
+// template's field guide.
+func (s *ExpenseService) ExportExpenses(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]ExpenseExportRow, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same role rule as ListExpenses: admins see all, members only their own. We
+	// read the rich v_expenses_full view so we have the category name, ec_status
+	// and VAT rate that the lean expenses row doesn't carry.
+	var rows []expenses.VExpensesFull
+	if isOrgAdmin(role) {
+		rows, err = s.queries.ListExpensesFull(ctx, authOrgID)
+	} else {
+		rows, err = s.queries.ListExpensesFullByUser(ctx, expenses.ListExpensesFullByUserParams{
+			OrganisationID: authOrgID,
+			UserID:         authUserID,
+		})
+	}
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+
+	// The view carries only the claimant's user_id; the human-readable email
+	// lives on the auth side. Resolve it once for the whole org (reusing the same
+	// member-listing query MemberService uses). A claimant who is no longer a
+	// member exports with a blank email rather than failing the whole download.
+	emailByUser, err := s.claimantEmails(ctx, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]ExpenseExportRow, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, ExpenseExportRow{
+			ClaimantEmail: emailByUser[e.UserID],
+			Category:      sanitizeCSVField(e.CategoryName),
+			Date:          e.DatedOn.Time.Format("02/01/2006"), // DD/MM/YYYY
+			Currency:      e.Currency,
+			GrossValue:    minorToPounds(e.GrossValueMinor),
+			Description:   sanitizeCSVField(e.Description),
+			// Free-text, user-controlled → guard against CSV/formula injection.
+			SupplierName:     sanitizeCSVField(textOrEmpty(e.SupplierName)),
+			ReceiptReference: sanitizeCSVField(textOrEmpty(e.ReceiptReference)),
+			InvoiceNumber:    sanitizeCSVField(textOrEmpty(e.InvoiceNumber)),
+			// Numeric columns are NEVER sanitised — a money value legitimately
+			// begins with '-' (an amount owed to the employee).
+			SalesTaxRate:  bpsToPlainPercent(e.VatRateBps),
+			SalesTaxValue: minorToPounds(e.VatValueMinor),
+			ECStatus:      e.EcStatus,
+		})
+	}
+	return out, nil
+}
+
+// claimantEmails builds a user_id → email map for the organisation's members,
+// used to fill the export's claimant_email column. It reads the same member list
+// MemberService does; org-scoped by the query's WHERE clause.
+func (s *ExpenseService) claimantEmails(ctx context.Context, orgID uuid.UUID) (map[uuid.UUID]string, error) {
+	members, err := s.authQueries.ListMembersByOrganisation(ctx, orgID)
+	if err != nil {
+		return nil, ErrInternal(err)
+	}
+	m := make(map[uuid.UUID]string, len(members))
+	for _, mem := range members {
+		m[mem.UserID] = mem.Email
+	}
+	return m, nil
+}
+
+// textOrEmpty returns the value of a nullable text column, or "" when NULL.
+func textOrEmpty(t pgtype.Text) string {
+	if !t.Valid {
+		return ""
+	}
+	return t.String
+}
+
+// bpsToPlainPercent renders a nullable VAT rate in basis points as a BARE percent
+// number for the CSV ("2000" → "20", "1750" → "17.5"); "" when no rate. Unlike
+// bpsToPercent it omits the trailing "%" so the value round-trips as sales_tax_rate.
+func bpsToPlainPercent(b pgtype.Int4) string {
+	if !b.Valid {
+		return ""
+	}
+	return decimal.NewFromInt(int64(b.Int32)).Div(decimal.NewFromInt(100)).String()
+}
+
+// sanitizeCSVField guards against CSV / formula injection: a spreadsheet may
+// execute a cell whose first character is = + - @ (or a leading tab/CR) as a
+// formula. Prefixing a single quote neutralises that while staying readable.
+// Applied only to free-text columns — never the numeric money/rate columns,
+// whose values legitimately begin with '-'.
+func sanitizeCSVField(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
+// =============================================================================
 // LISTINBOX (Smart Upload review queue)
 // =============================================================================
 
