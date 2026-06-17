@@ -19,10 +19,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
+
+	"google.golang.org/api/idtoken"
 )
 
 // HTMLRenderer converts a full HTML document to PDF bytes.
@@ -37,13 +40,30 @@ type gotenbergRenderer struct {
 	client  *http.Client
 }
 
-// newGotenbergRenderer builds the renderer. The 30s timeout bounds a slow render
-// so a stuck Gotenberg can't hang an inbound-email request indefinitely.
+// newGotenbergRenderer builds the renderer.
+//
+// Auth: when Gotenberg runs behind an authenticated Cloud Run service, every
+// request must carry a Google-signed OIDC ID token whose audience is the service
+// URL. idtoken.NewClient returns an *http.Client that mints + attaches that token
+// automatically — via the runtime service account on Cloud Run/GCE, or the
+// GOOGLE_APPLICATION_CREDENTIALS service-account key locally. For a public or
+// localhost Gotenberg the extra header is simply ignored, so this is safe either
+// way. If no usable credentials are found we fall back to a plain client (e.g.
+// local dev with no ADC pointing at an unauthenticated Gotenberg).
+//
+// The 60s timeout bounds a slow render (incl. a Cloud Run cold start) so a stuck
+// Gotenberg can't hang an inbound-email request indefinitely.
 func newGotenbergRenderer(baseURL string) *gotenbergRenderer {
-	return &gotenbergRenderer{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 30 * time.Second},
+	base := strings.TrimRight(baseURL, "/")
+
+	client, err := idtoken.NewClient(context.Background(), base)
+	if err != nil {
+		log.Printf("gotenberg: no ID-token credentials (%v) — calling %s without auth", err, base)
+		client = &http.Client{}
 	}
+	client.Timeout = 60 * time.Second
+
+	return &gotenbergRenderer{baseURL: base, client: client}
 }
 
 // RenderPDF sends the HTML to Gotenberg's /forms/chromium/convert/html route as a
