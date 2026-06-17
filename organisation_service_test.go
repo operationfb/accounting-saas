@@ -96,7 +96,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		body := UpdateOrganisationRequest{
 			Name:                    "AXION LONDON LIMITED",
 			LegalName:               ptr("Axion London Ltd"),
-			CompanyType:             ptr("limited_company"),
+			CompanyType:             ptr("limited"),
 			CompaniesHouseNumber:    ptr("17153114"),
 			Utr:                     ptr("1461014737"),
 			PayeReference:           ptr("120/RF11544"),
@@ -129,7 +129,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		if got.CountryCode != "GB" {
 			t.Errorf("country_code: got %q, want %q (should be upper-cased)", got.CountryCode, "GB")
 		}
-		assertOrgStrPtr(t, "company_type", got.CompanyType, "limited_company")
+		assertOrgStrPtr(t, "company_type", got.CompanyType, "limited")
 		assertOrgStrPtr(t, "companies_house_number", got.CompaniesHouseNumber, "17153114")
 		assertOrgStrPtr(t, "utr", got.Utr, "1461014737")
 		assertOrgStrPtr(t, "paye_reference", got.PayeReference, "120/RF11544")
@@ -148,7 +148,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		if reread.Name != "AXION LONDON LIMITED" {
 			t.Errorf("re-GET name: got %q, want %q", reread.Name, "AXION LONDON LIMITED")
 		}
-		assertOrgStrPtr(t, "re-GET company_type", reread.CompanyType, "limited_company")
+		assertOrgStrPtr(t, "re-GET company_type", reread.CompanyType, "limited")
 
 		// Row actually committed — only a real DB can prove this.
 		var dbType, dbCRN, dbCountry, dbPaye string
@@ -157,7 +157,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 			orgB).Scan(&dbType, &dbCRN, &dbCountry, &dbPaye); err != nil {
 			t.Fatalf("org not found in DB: %v", err)
 		}
-		if dbType != "limited_company" || dbCRN != "17153114" || dbCountry != "GB" || dbPaye != "120/RF11544" {
+		if dbType != "limited" || dbCRN != "17153114" || dbCountry != "GB" || dbPaye != "120/RF11544" {
 			t.Errorf("DB row mismatch: company_type=%q crn=%q country=%q paye=%q", dbType, dbCRN, dbCountry, dbPaye)
 		}
 	})
@@ -193,7 +193,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 	t.Run("invalid company_type → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-			UpdateOrganisationRequest{Name: "X", CompanyType: ptr("corporation")})
+			UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -221,7 +221,10 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 // input is a validation error (422), independent of the HTTP boundary.
 func TestOrganisationService_Validation_Direct(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
+	// cleanup — a deferred Close would shut the pool before the fixtures clean up,
+	// orphaning rows in the shared dev DB.
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgB, ownerB := newOrgWithOwner(t, ts)
 
@@ -229,7 +232,7 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 		name string
 		req  UpdateOrganisationRequest
 	}{
-		{"invalid company_type", UpdateOrganisationRequest{Name: "X", CompanyType: ptr("corporation")}},
+		{"invalid company_type", UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")}},
 		{"invalid country_code", UpdateOrganisationRequest{Name: "X", CountryCode: "ZZZ"}},
 		{"blank name", UpdateOrganisationRequest{Name: "   "}},
 	}
@@ -248,7 +251,10 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 // them.
 func TestOrganisationService_FieldPreservation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
+	// cleanup — a deferred Close would shut the pool before the fixtures clean up,
+	// orphaning rows in the shared dev DB.
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgB, ownerB := newOrgWithOwner(t, ts)
 
@@ -264,7 +270,7 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 
 	// PUT company details — none of slug/native_currency/timezone/vrn are sent.
 	rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-		UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("llp"), CountryCode: "GB"})
+		UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("landlord"), CountryCode: "GB"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
@@ -292,7 +298,7 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 	if gotName != "Preserved Co" {
 		t.Errorf("name not updated: got %q", gotName)
 	}
-	if gotType != "llp" {
+	if gotType != "landlord" {
 		t.Errorf("company_type not updated: got %q", gotType)
 	}
 }
@@ -349,7 +355,10 @@ func TestHandleGetOrganisation(t *testing.T) {
 // rejected cross-tenant PUT leaves the target org's row untouched.
 func TestOrganisation_TenantIsolation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
+	// cleanup — a deferred Close would shut the pool before the fixtures clean up,
+	// orphaning rows in the shared dev DB.
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgB, ownerB := newOrgWithOwner(t, ts)
 	if _, err := ts.pool.Exec(context.Background(),

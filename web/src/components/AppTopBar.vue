@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Top navigation bar (the navy strip), mirroring FA's app chrome.
-// The company button on the right opens an account dropdown (Change Password,
-// Logout).
+// The company button on the right opens an account dropdown (Company Details,
+// Change Password, Logout).
 import { ref } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import Menu from 'primevue/menu'
@@ -40,6 +40,7 @@ const navItems: NavItem[] = [
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
 const accountMenu = ref()
 const accountItems = ref<MenuItem[]>([
+  { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
 ])

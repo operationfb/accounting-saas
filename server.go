@@ -131,6 +131,7 @@ func (s *Server) registerRoutes() {
 			// GET    /api/v1/expenses/:id      → fetch one expense by UUID
 			// PUT    /api/v1/expenses/:id      → update an editable (DRAFT/REJECTED) expense
 			// DELETE /api/v1/expenses/:id      → soft-delete an editable (DRAFT/REJECTED) expense
+			// POST   /api/v1/expenses/:id/status → run an approval-workflow transition
 			expenses.GET("", s.handleListExpenses)
 			expenses.POST("", s.handleCreateExpense)
 			// Static segments registered before the /:id param routes. Gin matches a
@@ -140,6 +141,7 @@ func (s *Server) registerRoutes() {
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
 			expenses.DELETE("/:id", s.handleDeleteExpense)
+			expenses.POST("/:id/status", s.handleChangeExpenseStatus)
 
 			// Attachments (receipt files) are a sub-resource of an expense. They
 			// reuse the :id param for the expense — introducing a differently
@@ -308,6 +310,20 @@ type UpdateExpenseRequest struct {
 	ProjectID    *string `json:"project_id"`
 	RebillType   *string `json:"rebill_type"`
 	RebillFactor *string `json:"rebill_factor"`
+}
+
+// ChangeExpenseStatusRequest is the JSON body for POST /api/v1/expenses/:id/status.
+// A single endpoint with an `action` discriminator drives the whole approval
+// state machine (see expense_status.go) — one handler, the machine in one place.
+//
+// Validation is layered, like the contacts charge_vat field:
+//   - binding here: `oneof` rejects an unknown action and `required_if` requires
+//     a note when (and only when) rejecting (HTTP 400);
+//   - the service re-checks both, independent of the HTTP layer (HTTP 422);
+//   - the DB CHECK on expenses.status is the final backstop.
+type ChangeExpenseStatusRequest struct {
+	Action        string `json:"action"         binding:"required,oneof=submit approve reject reopen"`
+	RejectionNote string `json:"rejection_note" binding:"required_if=Action reject"`
 }
 
 // ExpenseResponse is the JSON returned for a created or fetched expense.
@@ -571,7 +587,7 @@ type MemberResponse struct {
 type UpdateOrganisationRequest struct {
 	Name        string  `json:"name" binding:"required"`
 	LegalName   *string `json:"legal_name"`
-	CompanyType *string `json:"company_type" binding:"omitempty,oneof=sole_trader partnership llp limited_company"`
+	CompanyType *string `json:"company_type" binding:"omitempty,oneof=limited sole_trader partnership landlord corporation"`
 
 	CompaniesHouseNumber    *string `json:"companies_house_number"`
 	Utr                     *string `json:"utr"` // "Corporation Tax Reference" on the form
@@ -744,6 +760,37 @@ func (s *Server) handleUpdateExpense(c *gin.Context) {
 	orgID := getAuthOrgID(c)
 
 	expense, err := s.expenseService.UpdateExpense(c.Request.Context(), userID, orgID, id, req)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"expense": expense})
+}
+
+// handleChangeExpenseStatus handles POST /api/v1/expenses/:id/status
+//
+// Drives one approval-workflow transition (submit/approve/reject/reopen). The
+// service enforces the state machine (legal from→to, 409 on a bad move) and
+// authorisation (claimant-or-admin for submit/reopen, admin-only for
+// approve/reject). On success it returns the updated expense, like update.
+func (s *Server) handleChangeExpenseStatus(c *gin.Context) {
+	id := c.Param("id")
+
+	var req ChangeExpenseStatusRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := getAuthUserID(c)
+	orgID := getAuthOrgID(c)
+
+	expense, err := s.expenseService.ChangeExpenseStatus(c.Request.Context(), userID, orgID, id, req.Action, req.RejectionNote)
 	if err != nil {
 		appErr := AsAppError(err)
 		if appErr.Code == ErrCodeInternal {

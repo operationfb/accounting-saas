@@ -128,9 +128,14 @@ _Last updated: 2026-06-17_
   free-text `registered_address`, which is no longer written but kept for
   back-compat. Backfill any existing data into the structured columns, then drop
   the column in a later additive migration. _File: `db/schema/auth_schema.sql`._
-- **`business_category` as a controlled list.** Currently a free VARCHAR (the
-  frontend dropdown constrains it). If the category list firms up, promote it to a
-  DB enum / reference table with a CHECK or FK. _Files: `db/schema/auth_schema.sql`,
+- **`business_category` dropdown + controlled list.** The Company Details screen
+  renders `business_category` as a free-text input
+  (`web/src/views/CompanyDetailsView.vue`), but the FreeAgent screen it mirrors
+  shows a fixed dropdown (e.g. "Marketing & Advertising"). Add a curated category
+  list (a `web/src/lib/businessCategories.ts` const + a `Select`, mirroring
+  `lib/countries.ts`); the column stays a free VARCHAR until the list firms up,
+  then promote it to a DB enum / reference table with a CHECK or FK. _Files:
+  `web/src/views/CompanyDetailsView.vue`, `db/schema/auth_schema.sql`,
   `organisation_service.go`._
 - **Enforce `company_type` "set once".** The form notes that changing company type
   requires a fresh account. The column is freely editable today; add a rule
@@ -234,9 +239,17 @@ _Last updated: 2026-06-17_
 
 ## Pre-existing TODOs noted in code (not introduced by recent work)
 
-- **Expense audit log on create.** The create transaction has a placeholder for
-  an audit-log INSERT (`CreateAuditEntry` query + call) that isn't implemented.
-  _File: `expense_service.go` (`withTransaction`)._
+- **Wire up the expense audit log (all mutations).** The `expense_audit_log`
+  table (`db/schema/schema.sql`) is entirely unwired — nothing fills it: no DB
+  trigger, and no Go writes it across *any* expense mutation. `CreateExpense`
+  has a placeholder for a `CreateAuditEntry` INSERT, and the approval-workflow
+  transitions (`ChangeExpenseStatus`: submit/approve/reject/reopen) likewise
+  record no history beyond the columns on the row itself (only
+  `approved_by_user_id` captures an actor; there is no submitted_by/rejected_by).
+  Wire it once for all mutations — either a single DB trigger on `expenses`, or
+  audit inserts inside each service transaction (create/update/delete/status).
+  _Files: `expense_service.go`, `expense_status.go`, `db/queries/query.sql`,
+  `db/schema/schema.sql`._
 - **Structured logging.** Handlers carry `_ = appErr.Error()` placeholders for a
   real logger (slog/zap) instead of `log`/`fmt`. _Files: `server.go`,
   `auth_handler.go`._

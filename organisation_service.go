@@ -51,10 +51,11 @@ import (
 // constraint in auth_schema.sql and the form's "Company type" dropdown. Codes are
 // snake_case; the frontend maps them to labels ("Limited Company", etc.).
 var validCompanyType = map[string]bool{
-	"sole_trader":     true,
-	"partnership":     true,
-	"llp":             true, // limited liability partnership
-	"limited_company": true,
+	"limited":     true, // limited company
+	"sole_trader": true,
+	"partnership": true,
+	"landlord":    true, // unincorporated landlord
+	"corporation": true,
 }
 
 // OrganisationService holds only the auth query set: reading and updating the
@@ -237,7 +238,7 @@ func normaliseCompanyType(raw *string) (*string, error) {
 		return nil, nil
 	}
 	if !validCompanyType[v] {
-		return nil, ErrValidation("company_type must be one of sole_trader, partnership, llp, limited_company", nil)
+		return nil, ErrValidation("company_type must be one of limited, sole_trader, partnership, landlord, corporation", nil)
 	}
 	return &v, nil
 }

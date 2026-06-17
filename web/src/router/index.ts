@@ -10,6 +10,7 @@ import ContactListView from '@/views/ContactListView.vue'
 import ContactEntryView from '@/views/ContactEntryView.vue'
 import ProjectListView from '@/views/ProjectListView.vue'
 import ProjectEntryView from '@/views/ProjectEntryView.vue'
+import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -32,6 +33,9 @@ const router = createRouter({
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },
     { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true } },
+    // The organisation's own "Company Details" — a singleton settings screen
+    // (the org comes from the token, so there's no id in the path).
+    { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true } },
   ],
 })
 

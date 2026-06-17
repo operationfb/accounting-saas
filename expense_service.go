@@ -535,7 +535,7 @@ func (s *ExpenseService) UpdateExpense(
 		}
 
 		// Editable only while DRAFT or REJECTED.
-		if existing.Status != "DRAFT" && existing.Status != "REJECTED" {
+		if existing.Status != StatusDraft && existing.Status != StatusRejected {
 			return ErrConflict("expense can only be edited while it is in DRAFT or REJECTED status")
 		}
 
@@ -629,7 +629,7 @@ func (s *ExpenseService) DeleteExpense(
 
 		// Deletable only while DRAFT or REJECTED — never once it has entered the
 		// approval workflow.
-		if existing.Status != "DRAFT" && existing.Status != "REJECTED" {
+		if existing.Status != StatusDraft && existing.Status != StatusRejected {
 			return ErrConflict("expense can only be deleted while it is in DRAFT or REJECTED status")
 		}
 

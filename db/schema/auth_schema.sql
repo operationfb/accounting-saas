@@ -80,7 +80,7 @@ CREATE TABLE organisations (
     -- frontend maps them to labels ("Limited Company", etc.).
     company_type            VARCHAR(40)
                             CHECK (company_type IS NULL OR company_type IN
-                                  ('sole_trader','partnership','llp','limited_company')),
+                                  ('limited','sole_trader','partnership','landlord','corporation')),
 
     -- Structured registered/trading address — the Company Details screen edits
     -- these. Mirrors the contacts table's address columns for consistency.

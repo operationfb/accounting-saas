@@ -366,23 +366,66 @@ RETURNING *;
 
 
 -- -----------------------------------------------------------------------------
--- UpdateExpenseStatus
--- Dedicated query for status transitions only.
--- Separating this from UpdateExpense prevents accidental overwrite of all
--- fields during a status change (e.g. manager approving shouldn't change amounts).
--- The application layer validates the transition is legal before calling this.
+-- STATUS TRANSITIONS (approval workflow state machine)
+--
+-- One dedicated query per transition, each touching ONLY the columns its
+-- transition changes. This is deliberate: the old single UpdateExpenseStatus
+-- overwrote every timestamp column on every call (passing NULL for the ones
+-- not relevant), so approving an expense would have wiped submitted_at. Four
+-- explicit queries make that mistake impossible — keeping submitted_at on
+-- approve/reject falls out for free — and each query self-documents its
+-- transition. The legal from→to moves and who-may-do-them live in the service
+-- (expense_status.go); these queries assume the caller has already checked.
+--
+-- All are point updates by primary key + organisation_id (the PK already
+-- covers the lookup, so no new index is needed), and all skip soft-deleted
+-- rows. RETURNING * gives the service the updated row to map to a response.
 -- -----------------------------------------------------------------------------
--- name: UpdateExpenseStatus :one
+
+-- name: SubmitExpense :one
+-- DRAFT → SUBMITTED. Stamps submitted_at; money/VAT untouched.
 UPDATE expenses SET
-    status               = $3,
-    -- Set the relevant timestamp based on the new status
-    -- We set all three here; the application passes NULL for the ones not relevant
-    submitted_at         = $4,   -- set when status becomes SUBMITTED
-    approved_at          = $5,   -- set when status becomes APPROVED
-    approved_by_user_id  = $6,   -- set when status becomes APPROVED
-    paid_at              = $7,   -- set when status becomes PAID
-    rejection_note       = $8,   -- set when status becomes REJECTED
-    updated_at           = now()
+    status       = 'SUBMITTED',
+    submitted_at = now(),
+    updated_at   = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING *;
+
+-- name: ApproveExpense :one
+-- SUBMITTED → APPROVED. Records who approved and when; preserves submitted_at.
+UPDATE expenses SET
+    status              = 'APPROVED',
+    approved_at         = now(),
+    approved_by_user_id = $3,
+    updated_at          = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING *;
+
+-- name: RejectExpense :one
+-- SUBMITTED → REJECTED. Stores the reason; preserves submitted_at.
+UPDATE expenses SET
+    status         = 'REJECTED',
+    rejection_note = $3,
+    updated_at     = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING *;
+
+-- name: ReopenExpense :one
+-- REJECTED → DRAFT. Clears the submission/approval/rejection metadata so the
+-- row's columns match its DRAFT status again (a clean slate to edit + resubmit).
+UPDATE expenses SET
+    status              = 'DRAFT',
+    submitted_at        = NULL,
+    approved_at         = NULL,
+    approved_by_user_id = NULL,
+    rejection_note      = NULL,
+    updated_at          = now()
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL

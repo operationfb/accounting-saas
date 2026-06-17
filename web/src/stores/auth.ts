@@ -83,6 +83,31 @@ export const useAuthStore = defineStore('auth', {
       primary.setItem(STORAGE_KEY, JSON.stringify(persisted))
     },
 
+    // Keep the cached organisation summary (the name shown in the top bar, and
+    // the country_code that drives country-scoped features) in sync after the
+    // Company Details screen saves a change. Mutating the reactive state updates
+    // the top bar immediately; we also re-persist into whichever storage holds
+    // the session so a reload keeps the new values. No-op if there's no session.
+    patchOrganisationSummary(patch: { name?: string; country_code?: string }): void {
+      if (!this.organisation) return
+      if (patch.name !== undefined) this.organisation.name = patch.name
+      if (patch.country_code !== undefined) this.organisation.country_code = patch.country_code
+
+      const storage = localStorage.getItem(STORAGE_KEY)
+        ? localStorage
+        : sessionStorage.getItem(STORAGE_KEY)
+          ? sessionStorage
+          : null
+      if (!storage || !this.token || !this.user) return
+      const persisted: PersistedSession = {
+        token: this.token,
+        user: this.user,
+        organisation: this.organisation,
+        expiresAt: this.expiresAt,
+      }
+      storage.setItem(STORAGE_KEY, JSON.stringify(persisted))
+    },
+
     // Client-side logout: discard the session everywhere. NOTE: with stateless
     // PASETO and no denylist, the token stays technically valid server-side
     // until it expires — true revocation is "Phase 2 auth".

@@ -21,6 +21,8 @@ type Querier interface {
 	// Org-scoped, soft-delete aware.
 	// -----------------------------------------------------------------------------
 	ApplySuggestedCategory(ctx context.Context, arg ApplySuggestedCategoryParams) error
+	// SUBMITTED → APPROVED. Records who approved and when; preserves submitted_at.
+	ApproveExpense(ctx context.Context, arg ApproveExpenseParams) (Expense, error)
 	// -----------------------------------------------------------------------------
 	// CountExpenseAttachments
 	// How many files an expense already has. The service calls this when a new file
@@ -334,6 +336,11 @@ type Querier interface {
 	// scoped like every tenant write.
 	// -----------------------------------------------------------------------------
 	MarkAttachmentOCRProcessing(ctx context.Context, arg MarkAttachmentOCRProcessingParams) error
+	// SUBMITTED → REJECTED. Stores the reason; preserves submitted_at.
+	RejectExpense(ctx context.Context, arg RejectExpenseParams) (Expense, error)
+	// REJECTED → DRAFT. Clears the submission/approval/rejection metadata so the
+	// row's columns match its DRAFT status again (a clean slate to edit + resubmit).
+	ReopenExpense(ctx context.Context, arg ReopenExpenseParams) (Expense, error)
 	// -----------------------------------------------------------------------------
 	// SetAttachmentPrimary
 	// Marks a single attachment as the primary one for its expense. Pair it with
@@ -349,6 +356,24 @@ type Querier interface {
 	// :exec means the generated Go function returns only an error (no row back).
 	// -----------------------------------------------------------------------------
 	SoftDeleteExpense(ctx context.Context, arg SoftDeleteExpenseParams) error
+	// -----------------------------------------------------------------------------
+	// STATUS TRANSITIONS (approval workflow state machine)
+	//
+	// One dedicated query per transition, each touching ONLY the columns its
+	// transition changes. This is deliberate: the old single UpdateExpenseStatus
+	// overwrote every timestamp column on every call (passing NULL for the ones
+	// not relevant), so approving an expense would have wiped submitted_at. Four
+	// explicit queries make that mistake impossible — keeping submitted_at on
+	// approve/reject falls out for free — and each query self-documents its
+	// transition. The legal from→to moves and who-may-do-them live in the service
+	// (expense_status.go); these queries assume the caller has already checked.
+	//
+	// All are point updates by primary key + organisation_id (the PK already
+	// covers the lookup, so no new index is needed), and all skip soft-deleted
+	// rows. RETURNING * gives the service the updated row to map to a response.
+	// -----------------------------------------------------------------------------
+	// DRAFT → SUBMITTED. Stamps submitted_at; money/VAT untouched.
+	SubmitExpense(ctx context.Context, arg SubmitExpenseParams) (Expense, error)
 	// =============================================================================
 	// SECTION 5: REPORTING / AGGREGATION QUERIES
 	// =============================================================================
@@ -399,14 +424,6 @@ type Querier interface {
 	// Update mileage fields — only valid while parent expense is DRAFT/REJECTED.
 	// -----------------------------------------------------------------------------
 	UpdateExpenseMileage(ctx context.Context, arg UpdateExpenseMileageParams) (ExpenseMileage, error)
-	// -----------------------------------------------------------------------------
-	// UpdateExpenseStatus
-	// Dedicated query for status transitions only.
-	// Separating this from UpdateExpense prevents accidental overwrite of all
-	// fields during a status change (e.g. manager approving shouldn't change amounts).
-	// The application layer validates the transition is legal before calling this.
-	// -----------------------------------------------------------------------------
-	UpdateExpenseStatus(ctx context.Context, arg UpdateExpenseStatusParams) (Expense, error)
 	// -----------------------------------------------------------------------------
 	// UpdateRecurrenceNextDate
 	// After a recurrence fires and a new expense is created, advance the

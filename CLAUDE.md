@@ -49,6 +49,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── server.go            # Gin engine + Server struct + route registration + expense & contact handlers
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
+├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
 ├── contact_service.go   # Contact business logic + request/response DTOs (CRUD, validation, creator/admin auth) for the contacts module
 ├── organisation_service.go  # OrganisationService: read/update the org's own "Company Details" (GET/PUT /api/v1/organisation; member read, owner/admin edit)
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
@@ -64,6 +65,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── supplier_category_test.go  # supplier→category dictionary: learn-trigger tests (DB) + auto-categorise tests (Postgres + GCS)
 ├── contact_service_test.go  # Contacts CRUD tests (real Postgres): happy path, defaults, 0-vs-NULL terms, validation, auth, multi-tenant isolation
 ├── organisation_service_test.go  # Company Details tests (real Postgres): update round-trip, member read, owner/admin-only edit, validation, field preservation, isolation
+├── expense_status_test.go  # Status state-machine tests (real Postgres): each transition + its column effects, 409 illegal moves, authz (admin-only vs claimant), 400/422 validation, 404 isolation
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts)
 │
 ├── db/
@@ -115,6 +117,33 @@ An expense carries **two** user FKs: `user_id` is the **claimant** (whose expens
 - **On create**, an **owner/admin** may set `user_id` to another user (the optional `user_id` field on `CreateExpenseRequest`). `CreateExpense` authorises it: the caller must be owner/admin **and** the target must be an **active member of the same org** (checked via the org-scoped `GetMembership`, so a claimant from another tenant returns no rows → rejected); otherwise 403/422. `created_by_user_id` always stays the caller, preserving the audit of who actually entered it. The claimant is **not editable on update** — `UpdateExpense` never reads `user_id`. Covered by the "CREATE ON BEHALF" suite in `server_test.go`.
 - **The picker.** The frontend's **Claimant** dropdown (expense form, directly above Category) is populated by **`GET /api/v1/members`** (`member_service.go`, `MemberService`) — **owner/admin only** (403 otherwise; returns members of all statuses, the UI filters to `active`). A non-owner/admin sees the dropdown **disabled and pinned to themselves**. The caller's role reaches the SPA via `organisation.role` in the login response (stored as `auth.isOrgAdmin`).
 
+### Expense approval workflow (status state machine)
+
+The `expenses.status` column moves through a small approval lifecycle, driven by **one endpoint** — `POST /api/v1/expenses/:id/status` with an `{"action": …}` discriminator — and a state machine that lives as **data** in `expense_status.go`:
+
+```
+            submit                approve
+   DRAFT ───────────▶ SUBMITTED ───────────▶ APPROVED   (terminal; PAID is out of scope)
+     ▲                    │
+     │ reopen             │ reject
+     └──────── REJECTED ◀─┘
+```
+
+| action  | from → to            | who                                | side-effects                                              |
+|---------|----------------------|------------------------------------|-----------------------------------------------------------|
+| submit  | DRAFT → SUBMITTED    | claimant (own) **or** owner/admin  | `submitted_at = now()`                                    |
+| approve | SUBMITTED → APPROVED | **owner/admin only**               | `approved_at`, `approved_by_user_id` (keeps `submitted_at`) |
+| reject  | SUBMITTED → REJECTED | **owner/admin only**               | `rejection_note` (reason required; keeps `submitted_at`)  |
+| reopen  | REJECTED → DRAFT     | claimant (own) **or** owner/admin  | clears submitted/approved/rejection metadata (clean slate)|
+
+Worth knowing:
+
+- **SUBMITTED is a lock-in** (no withdraw to DRAFT), and **APPROVED is terminal** here. Fixing a rejection is two steps: **reopen** → edit → **submit** — which dovetails with the existing rule that DRAFT and REJECTED are the only **editable/deletable** states (`UpdateExpense`/`DeleteExpense`).
+- **`status` ≠ `needs_review`.** This machine touches only the approval `status`; `needs_review` (the Smart-Upload data-capture axis) is orthogonal and untouched.
+- **One dedicated SQL query per transition** (`SubmitExpense`/`ApproveExpense`/`RejectExpense`/`ReopenExpense`), each touching **only** the columns it owns. This is the key correctness point: the old single `UpdateExpenseStatus` overwrote every timestamp column on every call, so approving would have wiped `submitted_at`. Constants (`StatusDraft`…) replaced the magic strings, including in the editability checks.
+- **Checks run inside one transaction** (load → authorise → state-check → write), mirroring `UpdateExpense`, to close the TOCTOU gap. Authorisation is admin-only for approve/reject, claimant-or-admin for submit/reopen. Validation is three-layered like contacts `charge_vat`: `oneof`/`required_if` binding (400) → service guards (422) → DB CHECK on `status`. Org-scoped throughout (cross-tenant → 404). Tested in `expense_status_test.go`.
+- **Out of scope (see `BACKLOG.md`):** PAID transitions and audit logging (the `expense_audit_log` table is still unwired across *all* expense ops).
+
 ### Contacts module
 
 A **contact** is a customer/supplier an organisation invoices or buys from (modelled on the FreeAgent "New Contact" screen). It is a **standalone domain**, structured exactly like `auth`: its own schema file (`db/schema/contacts_schema.sql`), its own queries (`db/queries/contacts.sql`), its own sqlc block generating package `db/contacts`, a service (`contact_service.go`) and handlers/DTOs/routes in `server.go` under `/api/v1/contacts` (list, create, get, update, soft-delete).
@@ -129,7 +158,7 @@ Worth knowing:
 
 ### Organisation / Company details
 
-The **Company Details** screen (modelled on FreeAgent's) lives entirely on the existing `organisations` table — it is **not** a separate domain. Rather than a 1:1 `organisation_details` table, the missing fields were **added as nullable columns** to `organisations` (`db/schema/auth_schema.sql`), beside the company/tax fields already there (`legal_name`, `companies_house_number`, `utr`, `vrn`, `country_code`). New columns: `company_type` (CHECK enum: `sole_trader|partnership|llp|limited_company`), a structured address (`address_line_1..3`, `town`, `region`, `postcode`), `paye_reference`, `accounts_office_reference`, `business_phone`, `contact_email`, `contact_phone`, `website`, `business_category`, `business_description`. The legacy free-text `registered_address` is **deprecated** (kept for back-compat, no longer written; see `BACKLOG.md`).
+The **Company Details** screen (modelled on FreeAgent's) lives entirely on the existing `organisations` table — it is **not** a separate domain. Rather than a 1:1 `organisation_details` table, the missing fields were **added as nullable columns** to `organisations` (`db/schema/auth_schema.sql`), beside the company/tax fields already there (`legal_name`, `companies_house_number`, `utr`, `vrn`, `country_code`). New columns: `company_type` (CHECK enum: `limited|sole_trader|partnership|landlord|corporation`), a structured address (`address_line_1..3`, `town`, `region`, `postcode`), `paye_reference`, `accounts_office_reference`, `business_phone`, `contact_email`, `contact_phone`, `website`, `business_category`, `business_description`. The legacy free-text `registered_address` is **deprecated** (kept for back-compat, no longer written; see `BACKLOG.md`).
 
 `OrganisationService` (`organisation_service.go`) is a thin layer over the existing `auth` queries (like `MemberService`), with handlers/DTOs/routes in `server.go` under **`/api/v1/organisation`** — a singleton resource (the org comes from the token, so there is no id in the path):
 

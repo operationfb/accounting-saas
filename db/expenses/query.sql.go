@@ -42,6 +42,77 @@ func (q *Queries) ApplySuggestedCategory(ctx context.Context, arg ApplySuggested
 	return err
 }
 
+const approveExpense = `-- name: ApproveExpense :one
+UPDATE expenses SET
+    status              = 'APPROVED',
+    approved_at         = now(),
+    approved_by_user_id = $3,
+    updated_at          = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type ApproveExpenseParams struct {
+	ID               uuid.UUID   `json:"id"`
+	OrganisationID   uuid.UUID   `json:"organisation_id"`
+	ApprovedByUserID pgtype.UUID `json:"approved_by_user_id"`
+}
+
+// SUBMITTED → APPROVED. Records who approved and when; preserves submitted_at.
+func (q *Queries) ApproveExpense(ctx context.Context, arg ApproveExpenseParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, approveExpense, arg.ID, arg.OrganisationID, arg.ApprovedByUserID)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countExpenseAttachments = `-- name: CountExpenseAttachments :one
 SELECT count(*) FROM expense_attachments
 WHERE expense_id = $1
@@ -2130,6 +2201,149 @@ func (q *Queries) MarkAttachmentOCRProcessing(ctx context.Context, arg MarkAttac
 	return err
 }
 
+const rejectExpense = `-- name: RejectExpense :one
+UPDATE expenses SET
+    status         = 'REJECTED',
+    rejection_note = $3,
+    updated_at     = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type RejectExpenseParams struct {
+	ID             uuid.UUID   `json:"id"`
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	RejectionNote  pgtype.Text `json:"rejection_note"`
+}
+
+// SUBMITTED → REJECTED. Stores the reason; preserves submitted_at.
+func (q *Queries) RejectExpense(ctx context.Context, arg RejectExpenseParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, rejectExpense, arg.ID, arg.OrganisationID, arg.RejectionNote)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const reopenExpense = `-- name: ReopenExpense :one
+UPDATE expenses SET
+    status              = 'DRAFT',
+    submitted_at        = NULL,
+    approved_at         = NULL,
+    approved_by_user_id = NULL,
+    rejection_note      = NULL,
+    updated_at          = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type ReopenExpenseParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// REJECTED → DRAFT. Clears the submission/approval/rejection metadata so the
+// row's columns match its DRAFT status again (a clean slate to edit + resubmit).
+func (q *Queries) ReopenExpense(ctx context.Context, arg ReopenExpenseParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, reopenExpense, arg.ID, arg.OrganisationID)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const setAttachmentPrimary = `-- name: SetAttachmentPrimary :exec
 UPDATE expense_attachments SET
     is_primary = TRUE,
@@ -2178,6 +2392,92 @@ type SoftDeleteExpenseParams struct {
 func (q *Queries) SoftDeleteExpense(ctx context.Context, arg SoftDeleteExpenseParams) error {
 	_, err := q.db.Exec(ctx, softDeleteExpense, arg.ID, arg.OrganisationID)
 	return err
+}
+
+const submitExpense = `-- name: SubmitExpense :one
+
+UPDATE expenses SET
+    status       = 'SUBMITTED',
+    submitted_at = now(),
+    updated_at   = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
+`
+
+type SubmitExpenseParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// STATUS TRANSITIONS (approval workflow state machine)
+//
+// One dedicated query per transition, each touching ONLY the columns its
+// transition changes. This is deliberate: the old single UpdateExpenseStatus
+// overwrote every timestamp column on every call (passing NULL for the ones
+// not relevant), so approving an expense would have wiped submitted_at. Four
+// explicit queries make that mistake impossible — keeping submitted_at on
+// approve/reject falls out for free — and each query self-documents its
+// transition. The legal from→to moves and who-may-do-them live in the service
+// (expense_status.go); these queries assume the caller has already checked.
+//
+// All are point updates by primary key + organisation_id (the PK already
+// covers the lookup, so no new index is needed), and all skip soft-deleted
+// rows. RETURNING * gives the service the updated row to map to a response.
+// -----------------------------------------------------------------------------
+// DRAFT → SUBMITTED. Stamps submitted_at; money/VAT untouched.
+func (q *Queries) SubmitExpense(ctx context.Context, arg SubmitExpenseParams) (Expense, error) {
+	row := q.db.QueryRow(ctx, submitExpense, arg.ID, arg.OrganisationID)
+	var i Expense
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.UserID,
+		&i.CreatedByUserID,
+		&i.CategoryID,
+		&i.DatedOn,
+		&i.Description,
+		&i.ReceiptReference,
+		&i.Currency,
+		&i.NativeCurrency,
+		&i.ExchangeRate,
+		&i.GrossValueMinor,
+		&i.NativeGrossValueMinor,
+		&i.VatRateID,
+		&i.VatRateBps,
+		&i.VatValueMinor,
+		&i.NativeVatValueMinor,
+		&i.ManualVatAmountMinor,
+		&i.VatStatus,
+		&i.EcStatus,
+		&i.ProjectID,
+		&i.RebillType,
+		&i.RebillFactor,
+		&i.RebilledInvoiceID,
+		&i.StockItemID,
+		&i.StockItemDescription,
+		&i.StockQuantity,
+		&i.CapitalAssetID,
+		&i.PropertyID,
+		&i.Status,
+		&i.SubmittedAt,
+		&i.ApprovedAt,
+		&i.ApprovedByUserID,
+		&i.PaidAt,
+		&i.RejectionNote,
+		&i.OcrConfidence,
+		&i.OcrProcessedAt,
+		&i.SupplierName,
+		&i.SupplierVatNumber,
+		&i.InvoiceNumber,
+		&i.NeedsReview,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const sumExpensesByCategory = `-- name: SumExpensesByCategory :many
@@ -2633,102 +2933,6 @@ func (q *Queries) UpdateExpenseMileage(ctx context.Context, arg UpdateExpenseMil
 		&i.RebillRatePpm,
 		&i.ReimbursementMinor,
 		&i.HaveVatReceipt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateExpenseStatus = `-- name: UpdateExpenseStatus :one
-UPDATE expenses SET
-    status               = $3,
-    -- Set the relevant timestamp based on the new status
-    -- We set all three here; the application passes NULL for the ones not relevant
-    submitted_at         = $4,   -- set when status becomes SUBMITTED
-    approved_at          = $5,   -- set when status becomes APPROVED
-    approved_by_user_id  = $6,   -- set when status becomes APPROVED
-    paid_at              = $7,   -- set when status becomes PAID
-    rejection_note       = $8,   -- set when status becomes REJECTED
-    updated_at           = now()
-WHERE id              = $1
-  AND organisation_id = $2
-  AND deleted_at IS NULL
-RETURNING id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at
-`
-
-type UpdateExpenseStatusParams struct {
-	ID               uuid.UUID          `json:"id"`
-	OrganisationID   uuid.UUID          `json:"organisation_id"`
-	Status           string             `json:"status"`
-	SubmittedAt      pgtype.Timestamptz `json:"submitted_at"`
-	ApprovedAt       pgtype.Timestamptz `json:"approved_at"`
-	ApprovedByUserID pgtype.UUID        `json:"approved_by_user_id"`
-	PaidAt           pgtype.Timestamptz `json:"paid_at"`
-	RejectionNote    pgtype.Text        `json:"rejection_note"`
-}
-
-// -----------------------------------------------------------------------------
-// UpdateExpenseStatus
-// Dedicated query for status transitions only.
-// Separating this from UpdateExpense prevents accidental overwrite of all
-// fields during a status change (e.g. manager approving shouldn't change amounts).
-// The application layer validates the transition is legal before calling this.
-// -----------------------------------------------------------------------------
-func (q *Queries) UpdateExpenseStatus(ctx context.Context, arg UpdateExpenseStatusParams) (Expense, error) {
-	row := q.db.QueryRow(ctx, updateExpenseStatus,
-		arg.ID,
-		arg.OrganisationID,
-		arg.Status,
-		arg.SubmittedAt,
-		arg.ApprovedAt,
-		arg.ApprovedByUserID,
-		arg.PaidAt,
-		arg.RejectionNote,
-	)
-	var i Expense
-	err := row.Scan(
-		&i.ID,
-		&i.OrganisationID,
-		&i.UserID,
-		&i.CreatedByUserID,
-		&i.CategoryID,
-		&i.DatedOn,
-		&i.Description,
-		&i.ReceiptReference,
-		&i.Currency,
-		&i.NativeCurrency,
-		&i.ExchangeRate,
-		&i.GrossValueMinor,
-		&i.NativeGrossValueMinor,
-		&i.VatRateID,
-		&i.VatRateBps,
-		&i.VatValueMinor,
-		&i.NativeVatValueMinor,
-		&i.ManualVatAmountMinor,
-		&i.VatStatus,
-		&i.EcStatus,
-		&i.ProjectID,
-		&i.RebillType,
-		&i.RebillFactor,
-		&i.RebilledInvoiceID,
-		&i.StockItemID,
-		&i.StockItemDescription,
-		&i.StockQuantity,
-		&i.CapitalAssetID,
-		&i.PropertyID,
-		&i.Status,
-		&i.SubmittedAt,
-		&i.ApprovedAt,
-		&i.ApprovedByUserID,
-		&i.PaidAt,
-		&i.RejectionNote,
-		&i.OcrConfidence,
-		&i.OcrProcessedAt,
-		&i.SupplierName,
-		&i.SupplierVatNumber,
-		&i.InvoiceNumber,
-		&i.NeedsReview,
-		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
