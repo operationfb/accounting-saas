@@ -393,9 +393,11 @@ type ExpenseDetailResponse struct {
 	RebillType   *string `json:"rebill_type,omitempty"`
 	RebillFactor *string `json:"rebill_factor,omitempty"`
 
-	SubmittedAt *string `json:"submitted_at,omitempty"`
-	ApprovedAt  *string `json:"approved_at,omitempty"`
-	PaidAt      *string `json:"paid_at,omitempty"`
+	SubmittedAt      *string `json:"submitted_at,omitempty"`
+	ApprovedAt       *string `json:"approved_at,omitempty"`
+	ApprovedByUserID *string `json:"approved_by_user_id,omitempty"` // raw FK — who approved it
+	PaidAt           *string `json:"paid_at,omitempty"`
+	RejectionNote    *string `json:"rejection_note,omitempty"` // reason, set when REJECTED
 
 	// Capture / OCR (Smart Upload). NeedsReview drives the review inbox;
 	// OCRConfidence/OCRProcessedAt let the UI flag a low-confidence capture.

@@ -965,9 +965,11 @@ func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
 		RebillType:   nullTextToPtr(e.RebillType),
 		RebillFactor: numericToStringPtr(e.RebillFactor),
 
-		SubmittedAt: timestampToStringPtr(e.SubmittedAt),
-		ApprovedAt:  timestampToStringPtr(e.ApprovedAt),
-		PaidAt:      timestampToStringPtr(e.PaidAt),
+		SubmittedAt:      timestampToStringPtr(e.SubmittedAt),
+		ApprovedAt:       timestampToStringPtr(e.ApprovedAt),
+		ApprovedByUserID: uuidToStringPtr(e.ApprovedByUserID), // nil when never approved
+		PaidAt:           timestampToStringPtr(e.PaidAt),
+		RejectionNote:    nullTextToPtr(e.RejectionNote), // nil unless REJECTED
 
 		// Capture / OCR. needs_review drives the review inbox; the confidence +
 		// processed-at let the detail screen flag a low-confidence capture.

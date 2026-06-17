@@ -92,6 +92,28 @@ func submittedExpenseByMember(t *testing.T, ts *testServer) (memberID, expenseID
 	return memberID, expenseID
 }
 
+// getExpenseDetail GETs /api/v1/expenses/:id and decodes the {"expense": …}
+// detail envelope (ExpenseDetailResponse, sourced from v_expenses_full).
+func getExpenseDetail(t *testing.T, ts *testServer, id, authHeader string) ExpenseDetailResponse {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/"+id, nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get detail: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Expense ExpenseDetailResponse `json:"expense"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode detail: %v — body: %s", err, rec.Body.String())
+	}
+	return resp.Expense
+}
+
 // =============================================================================
 // TESTS
 // =============================================================================
@@ -364,5 +386,62 @@ func TestChangeExpenseStatusServiceGuards(t *testing.T) {
 	t.Run("reject with empty note → validation error", func(t *testing.T) {
 		_, err := ts.server.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "reject", "")
 		assertAppCode(t, err, ErrCodeValidation)
+	})
+}
+
+// TestExpenseDetailExposesApprovalFields confirms the approval "who/why" the
+// frontend needs — approved_by_user_id and rejection_note — now surface on the
+// detail endpoint (GET /api/v1/expenses/:id, via v_expenses_full), and read as
+// nil when they don't apply.
+func TestExpenseDetailExposesApprovalFields(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	devAuth := bearer(t, ts, devUserID, devOrgID) // the dev user is an org owner (admin)
+
+	t.Run("rejected: rejection_note set, approved_by_user_id nil", func(t *testing.T) {
+		_, id := submittedExpenseByMember(t, ts)
+		const note = "Receipt is illegible — please re-upload."
+		if rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note}); rec.Code != http.StatusOK {
+			t.Fatalf("arrange reject: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		d := getExpenseDetail(t, ts, id, devAuth)
+		if d.Status != StatusRejected {
+			t.Fatalf("status: got %q, want %q", d.Status, StatusRejected)
+		}
+		if d.RejectionNote == nil || *d.RejectionNote != note {
+			t.Errorf("rejection_note: got %v, want %q", d.RejectionNote, note)
+		}
+		if d.ApprovedByUserID != nil {
+			t.Errorf("approved_by_user_id should be nil for a rejected expense, got %v", *d.ApprovedByUserID)
+		}
+	})
+
+	t.Run("approved: approved_by_user_id set to approver, rejection_note nil", func(t *testing.T) {
+		_, id := submittedExpenseByMember(t, ts)
+		if rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
+			t.Fatalf("arrange approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		d := getExpenseDetail(t, ts, id, devAuth)
+		if d.Status != StatusApproved {
+			t.Fatalf("status: got %q, want %q", d.Status, StatusApproved)
+		}
+		if d.ApprovedByUserID == nil || *d.ApprovedByUserID != devUserID {
+			t.Errorf("approved_by_user_id: got %v, want approver %q", d.ApprovedByUserID, devUserID)
+		}
+		if d.RejectionNote != nil {
+			t.Errorf("rejection_note should be nil for an approved expense, got %v", *d.RejectionNote)
+		}
+	})
+
+	t.Run("draft: both fields nil", func(t *testing.T) {
+		id := createExpenseAs(t, ts, devUserID, devOrgID)
+		d := getExpenseDetail(t, ts, id, devAuth)
+		if d.ApprovedByUserID != nil || d.RejectionNote != nil {
+			t.Errorf("a DRAFT expense should expose neither field, got approved_by=%v rejection_note=%v",
+				d.ApprovedByUserID, d.RejectionNote)
+		}
 	})
 }

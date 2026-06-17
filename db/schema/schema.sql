@@ -651,7 +651,13 @@ SELECT
     -- permits adding columns to the end of an existing view's column list).
     e.needs_review,
     e.ocr_confidence,
-    e.ocr_processed_at
+    e.ocr_processed_at,
+    -- Rejection reason for a REJECTED expense. Appended LAST (after the OCR
+    -- fields) for the same reason they were: CREATE OR REPLACE VIEW only permits
+    -- adding columns to the END of an existing view's column list.
+    -- approved_by_user_id is already exposed above; together they give the
+    -- detail screen the full "who/why" of an approval or rejection.
+    e.rejection_note
 FROM expenses e
 JOIN expense_categories ec ON ec.id = e.category_id
 LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims

@@ -1153,7 +1153,7 @@ func (q *Queries) GetExpenseRecurrence(ctx context.Context, expenseID uuid.UUID)
 const getExpenseWithDetails = `-- name: GetExpenseWithDetails :one
 
 
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -1227,6 +1227,7 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 		&i.NeedsReview,
 		&i.OcrConfidence,
 		&i.OcrProcessedAt,
+		&i.RejectionNote,
 	)
 	return i, err
 }

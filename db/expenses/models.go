@@ -211,6 +211,7 @@ type VExpensesFull struct {
 	NeedsReview            bool               `json:"needs_review"`
 	OcrConfidence          pgtype.Numeric     `json:"ocr_confidence"`
 	OcrProcessedAt         pgtype.Timestamptz `json:"ocr_processed_at"`
+	RejectionNote          pgtype.Text        `json:"rejection_note"`
 }
 
 // Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.
