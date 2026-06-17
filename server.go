@@ -41,6 +41,7 @@ type Server struct {
 	projectService      *ProjectService
 	memberService       *MemberService
 	organisationService *OrganisationService
+	userService         *UserService
 	emailInboxService   *EmailInboxService
 	authHandler         *AuthHandler
 	tokenMaker          token.Maker
@@ -52,7 +53,7 @@ type Server struct {
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, userService *UserService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:      expenseService,
 		attachmentService:   attachmentService,
@@ -60,6 +61,7 @@ func NewServer(expenseService *ExpenseService, attachmentService *AttachmentServ
 		projectService:      projectService,
 		memberService:       memberService,
 		organisationService: organisationService,
+		userService:         userService,
 		emailInboxService:   emailInboxService,
 		authHandler:         authHandler,
 		tokenMaker:          tokenMaker,
@@ -236,6 +238,19 @@ func (s *Server) registerRoutes() {
 			// PUT /api/v1/organisation → update company details (owner/admin only)
 			organisation.GET("", s.handleGetOrganisation)
 			organisation.PUT("", s.handleUpdateOrganisation)
+		}
+
+		// Profile routes — the caller's own "My Details" (first/last name + the
+		// read-only login email). Like organisation, this is a singleton resource:
+		// the user is taken from the bearer token, so there's no id in the path and
+		// a caller can only ever read/edit themselves.
+		profile := v1.Group("/profile")
+		profile.Use(authMiddleware(s.tokenMaker))
+		{
+			// GET /api/v1/profile → the caller's own profile
+			// PUT /api/v1/profile → update the caller's first/last name
+			profile.GET("", s.handleGetProfile)
+			profile.PUT("", s.handleUpdateProfile)
 		}
 
 		// Email-to-expense (Mailgun inbound). The webhook is PUBLIC — it carries
@@ -680,6 +695,18 @@ type OrganisationDetailsResponse struct {
 	IsActive       bool   `json:"is_active"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
+}
+
+// UpdateProfileRequest is the JSON body accepted by PUT /api/v1/profile (the
+// "My Details" screen). It carries only the editable profile fields. The login
+// email is deliberately absent (changing it is a separate, security-sensitive
+// flow), as are phone/avatar_url — the service preserves those. Both names are
+// required (they are NOT NULL on the users table and starred on the form); `max`
+// matches the VARCHAR(100) columns. The user is taken from the token, so there
+// is no id here. The GET/PUT responses reuse the login userResponse shape.
+type UpdateProfileRequest struct {
+	FirstName string `json:"first_name" binding:"required,max=100"`
+	LastName  string `json:"last_name" binding:"required,max=100"`
 }
 
 // =============================================================================
@@ -1257,4 +1284,40 @@ func (s *Server) handleUpdateOrganisation(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"organisation": org})
+}
+
+// handleGetProfile handles GET /api/v1/profile — the caller's own "My Details".
+// The user is taken from the token, so a caller can only ever read themselves.
+func (s *Server) handleGetProfile(c *gin.Context) {
+	profile, err := s.userService.GetProfile(c.Request.Context(), getAuthUserID(c))
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": profile})
+}
+
+// handleUpdateProfile handles PUT /api/v1/profile — update the caller's first/
+// last name. The user is taken from the token, so it always targets themselves.
+func (s *Server) handleUpdateProfile(c *gin.Context) {
+	var req UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	profile, err := s.userService.UpdateProfile(c.Request.Context(), getAuthUserID(c), req)
+	if err != nil {
+		appErr := AsAppError(err)
+		if appErr.Code == ErrCodeInternal {
+			_ = appErr.Error() // TODO: structured logger
+		}
+		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": profile})
 }

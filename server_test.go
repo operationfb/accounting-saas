@@ -146,12 +146,13 @@ func newTestServer(t *testing.T) *testServer {
 	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
 	memberService := NewMemberService(authQueries)
 	organisationService := NewOrganisationService(authQueries)
+	userService := NewUserService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
 	// tests can compute a valid HMAC). Capture still flows through the real
 	// attachment service, so attachment/HTML tests require GCS like other captures.
 	emailInboxService := NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 
 	return &testServer{
 		server:            server,

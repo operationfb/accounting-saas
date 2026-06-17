@@ -52,6 +52,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
 ├── contact_service.go   # Contact business logic + request/response DTOs (CRUD, validation, creator/admin auth) for the contacts module
 ├── organisation_service.go  # OrganisationService: read/update the org's own "Company Details" (GET/PUT /api/v1/organisation; member read, owner/admin edit)
+├── user_service.go      # UserService: read/update the caller's own "My Details" (GET/PUT /api/v1/profile; first/last name — always self-scoped from the token, no role check)
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
 ├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
 ├── ocr_service.go       # OcrService: background receipt/invoice extraction — drives the attachment ocr_status machine, fills the expense (DocumentExtractor interface + ExtractionResult)
@@ -69,6 +70,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── supplier_category_test.go  # supplier→category dictionary: learn-trigger tests (DB) + auto-categorise tests (Postgres + GCS)
 ├── contact_service_test.go  # Contacts CRUD tests (real Postgres): happy path, defaults, 0-vs-NULL terms, validation, auth, multi-tenant isolation
 ├── organisation_service_test.go  # Company Details tests (real Postgres): update round-trip, member read, owner/admin-only edit, validation, field preservation, isolation
+├── user_service_test.go  # My Details tests (real Postgres): self-scoped GET, update round-trip + persist, phone/avatar preservation, 400/422 name validation, 401 unauth
 ├── expense_status_test.go  # Status state-machine tests (real Postgres): each transition + its column effects, 409 illegal moves, authz (admin-only vs claimant), 400/422 validation, 404 isolation
 ├── email_inbox_test.go  # Email-to-expense tests (real Postgres + GCS; Mailgun & Gotenberg faked): routing, sender/cross-tenant auth, capture, HTML body, dedupe, signature, address generation
 ├── sqlc.yaml            # sqlc config — one generation block PER domain (expenses, auth, contacts, projects, email_inbox)
@@ -175,6 +177,18 @@ The **Company Details** screen (modelled on FreeAgent's) lives entirely on the e
 - **Field mapping.** The form's "Company name" → `name`, "Company Registration Number" → `companies_house_number`, "Corporation Tax Reference" → `utr`, "Country" → `country_code` (existing columns; `legal_name` is also exposed).
 - **Read-modify-write.** PUT fetches the row first and passes through the columns this form does not own (`slug`, `native_currency`, `timezone`, and — until VAT is added to the form — `vrn`) so a save can't wipe them.
 - **Validation.** `company_type` and `country_code` are checked three ways: `oneof` / `len` binding (400), the service guards `normaliseCompanyType` / `normaliseCountryCode` (422), and the DB CHECK. Tested in `organisation_service_test.go`.
+
+### My Details (user profile)
+
+The **My Details** screen (modelled on FreeAgent's) is the per-user counterpart to Company Details: the signed-in user edits their **own** profile (`first_name` / `last_name`), with a read-only **login email** and a display of their **Mailgun receipt-inbox address**. Like the organisation, it lives entirely on an existing table (`users`) — **no schema change, no new sqlc** (the `GetUser` / `UpdateUser` queries already existed).
+
+`UserService` (`user_service.go`) is a thin layer over the existing `auth` queries (like `OrganisationService` / `MemberService`), with handlers/DTOs/routes in `server.go` under **`/api/v1/profile`** — a singleton resource (the user comes from the token, so there is no id in the path):
+
+- **`GET`** returns the caller's own profile. **`PUT`** updates `first_name` / `last_name`.
+- **No role check — and that's the point.** Unlike Company Details (owner/admin to edit), there is no membership/authorize step: the target is always `authUserID` from the token, so a caller can only ever read/edit **themselves**. Multi-tenant isolation is inherent (there is no id to pass).
+- **Read-modify-write.** `PUT` fetches the row first and passes through the columns this form doesn't own (`phone`, `avatar_url`) so a save can't wipe them — the same preservation pattern as the org PUT (`slug`/`vrn`/…). The login `email` is not editable here at all.
+- **Reuse.** The GET/PUT responses reuse the login `userResponse` + `newUserResponse` projector (`auth_handler.go`) — the same safe shape login returns.
+- **Validation.** `first_name` / `last_name` are checked two ways: `required,max=100` binding (400) and a service trim-and-reject guard (422, e.g. a whitespace-only name). The Mailgun address shown on the page comes from the existing `GET /api/v1/inbox-address`. Tested in `user_service_test.go`. Frontend: `MyDetailsView.vue` (mirrors `CompanyDetailsView.vue`), reached from the account dropdown's **My Details** item (directly under **Company Details**); a save also calls the auth store's `patchUser` so the top-bar name updates immediately.
 
 ### Email-to-expense (Mailgun inbound)
 

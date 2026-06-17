@@ -41,6 +41,7 @@ const navItems: NavItem[] = [
 const accountMenu = ref()
 const accountItems = ref<MenuItem[]>([
   { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
+  { label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') },
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
 ])

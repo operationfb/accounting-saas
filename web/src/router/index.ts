@@ -11,6 +11,7 @@ import ContactEntryView from '@/views/ContactEntryView.vue'
 import ProjectListView from '@/views/ProjectListView.vue'
 import ProjectEntryView from '@/views/ProjectEntryView.vue'
 import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
+import MyDetailsView from '@/views/MyDetailsView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -36,6 +37,9 @@ const router = createRouter({
     // The organisation's own "Company Details" — a singleton settings screen
     // (the org comes from the token, so there's no id in the path).
     { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true } },
+    // The signed-in user's own "My Details" — likewise a singleton (the user
+    // comes from the token). Every user may edit their own profile.
+    { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true } },
   ],
 })
 

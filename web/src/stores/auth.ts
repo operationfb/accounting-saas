@@ -108,6 +108,31 @@ export const useAuthStore = defineStore('auth', {
       storage.setItem(STORAGE_KEY, JSON.stringify(persisted))
     },
 
+    // Keep the cached user's display name (shown in the top-bar account dropdown)
+    // in sync after the My Details screen saves a change. Mirrors
+    // patchOrganisationSummary: mutating the reactive state updates the dropdown
+    // immediately, and we re-persist into whichever storage holds the session so a
+    // reload keeps the new values. No-op if there's no session.
+    patchUser(patch: { first_name?: string; last_name?: string }): void {
+      if (!this.user) return
+      if (patch.first_name !== undefined) this.user.first_name = patch.first_name
+      if (patch.last_name !== undefined) this.user.last_name = patch.last_name
+
+      const storage = localStorage.getItem(STORAGE_KEY)
+        ? localStorage
+        : sessionStorage.getItem(STORAGE_KEY)
+          ? sessionStorage
+          : null
+      if (!storage || !this.token) return
+      const persisted: PersistedSession = {
+        token: this.token,
+        user: this.user,
+        organisation: this.organisation,
+        expiresAt: this.expiresAt,
+      }
+      storage.setItem(STORAGE_KEY, JSON.stringify(persisted))
+    },
+
     // Client-side logout: discard the session everywhere. NOTE: with stateless
     // PASETO and no denylist, the token stays technically valid server-side
     // until it expires — true revocation is "Phase 2 auth".

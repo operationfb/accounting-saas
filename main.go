@@ -117,6 +117,11 @@ func main() {
 	// Reuses the shared authQueries.
 	organisationService := NewOrganisationService(authQueries)
 
+	// User: read/update the caller's own profile (the "My Details" screen —
+	// first/last name; the login email is read-only). Always self-scoped via the
+	// token, so no role check. Reuses the shared authQueries.
+	userService := NewUserService(authQueries)
+
 	// -------------------------------------------------------------------------
 	// Auth wiring.
 	//
@@ -282,7 +287,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
 
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.
