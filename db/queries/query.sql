@@ -227,6 +227,20 @@ ORDER BY dated_on DESC, created_at DESC;
 
 
 -- -----------------------------------------------------------------------------
+-- ListExpensesFullByIDs
+-- The rich export rows for a specific set of expense ids — used when the export
+-- must match exactly the rows the list view filtered for display (the SPA sends
+-- the displayed ids). Org-scoped so cross-tenant ids return nothing; ownership
+-- (member-sees-own) is enforced in the service. Same ordering as the list.
+-- -----------------------------------------------------------------------------
+-- name: ListExpensesFullByIDs :many
+SELECT * FROM v_expenses_full
+WHERE organisation_id = @organisation_id
+  AND id = ANY(@ids::uuid[])
+ORDER BY dated_on DESC, created_at DESC;
+
+
+-- -----------------------------------------------------------------------------
 -- ListExpensesByDateRange
 -- Filter by date range — used on the expenses list page date picker.
 -- Both from_date and to_date are inclusive (BETWEEN is inclusive in PostgreSQL).

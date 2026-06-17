@@ -71,16 +71,26 @@ export async function apiUpload<T>(
 // success we hand back the raw Blob instead of parsing JSON. On a NON-2xx the
 // body IS JSON (the backend's error shape), so we parse + normalise it the same
 // way handleResponse does — the caller catches a plain ApiError either way.
+//
+// An optional JSON `body` is supported (method defaults to POST when present, GET
+// otherwise) so a download can carry a request — e.g. the export sends the ids of
+// the rows currently shown so the CSV matches the filtered list.
 export async function apiDownload(
   path: string,
-  options: { skipAuthRedirect?: boolean } = {},
+  options: { method?: 'GET' | 'POST'; body?: unknown; skipAuthRedirect?: boolean } = {},
 ): Promise<Blob> {
-  const { skipAuthRedirect = false } = options
+  const { body, skipAuthRedirect = false } = options
+  const method = options.method ?? (body !== undefined ? 'POST' : 'GET')
 
   const headers: Record<string, string> = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   attachBearer(headers)
 
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'GET', headers })
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
 
   if (!res.ok) {
     let data: unknown = null

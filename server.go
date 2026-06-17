@@ -28,6 +28,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -139,7 +140,7 @@ func (s *Server) registerRoutes() {
 			// POST   /api/v1/expenses/capture  → "Smart Upload": create a draft from a
 			//                                     receipt + run OCR (multipart)
 			// GET    /api/v1/expenses/inbox    → captures awaiting review (needs_review)
-			// GET    /api/v1/expenses/export   → download all visible expenses as CSV
+			// POST   /api/v1/expenses/export   → download expenses as CSV (optional {ids} body)
 			// GET    /api/v1/expenses/:id      → fetch one expense by UUID
 			// PUT    /api/v1/expenses/:id      → update an editable (DRAFT/REJECTED) expense
 			// DELETE /api/v1/expenses/:id      → soft-delete an editable (DRAFT/REJECTED) expense
@@ -150,7 +151,7 @@ func (s *Server) registerRoutes() {
 			// literal "capture"/"inbox" ahead of the :id wildcard.
 			expenses.POST("/capture", s.handleSmartUpload)
 			expenses.GET("/inbox", s.handleListInbox)
-			expenses.GET("/export", s.handleExportExpenses)
+			expenses.POST("/export", s.handleExportExpenses)
 			expenses.GET("/:id", s.handleGetExpense)
 			expenses.PUT("/:id", s.handleUpdateExpense)
 			expenses.DELETE("/:id", s.handleDeleteExpense)
@@ -906,17 +907,54 @@ func (s *Server) handleListExpenses(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
 }
 
-// handleExportExpenses handles GET /api/v1/expenses/export
+// handleExportExpenses handles POST /api/v1/expenses/export
 //
-// Streams the caller's visible expenses as a CSV download. Owners/admins get the
-// whole organisation; everyone else only their own — the same visibility rule as
-// the list endpoint. The column set matches the import template shipped at
-// web/public/expense_import_template.csv, so an exported file can be re-imported.
+// Streams expenses as a CSV download. The (optional) JSON body carries the ids to
+// export so the SPA can export exactly the rows it filtered for display:
+//
+//	{"ids": ["<uuid>", ...]}  → export exactly those (empty list → header only)
+//	no body / no "ids"        → export everything the caller may see
+//
+// Either way the backend enforces the visibility rule (owners/admins: the whole
+// org; everyone else: only their own) and the column set matches the import
+// template at web/public/expense_import_template.csv, so an export round-trips.
 func (s *Server) handleExportExpenses(c *gin.Context) {
 	userID := getAuthUserID(c)
 	orgID := getAuthOrgID(c)
 
-	rows, err := s.expenseService.ExportExpenses(c.Request.Context(), userID, orgID)
+	// Optional body. A bare POST (no body) means "everything I may see"; a body
+	// with "ids" (even an empty array) means "exactly these". *[]string lets us
+	// tell an absent "ids" (nil → all) from an empty one ([] → none).
+	var req struct {
+		Ids *[]string `json:"ids"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"code":    "validation_error",
+				"message": "invalid request body: " + err.Error(),
+			}})
+			return
+		}
+	}
+
+	var ids []uuid.UUID
+	if req.Ids != nil {
+		ids = make([]uuid.UUID, 0, len(*req.Ids))
+		for _, raw := range *req.Ids {
+			id, err := uuid.Parse(raw)
+			if err != nil {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{
+					"code":    "validation_error",
+					"message": fmt.Sprintf("invalid expense id %q", raw),
+				}})
+				return
+			}
+			ids = append(ids, id)
+		}
+	}
+
+	rows, err := s.expenseService.ExportExpenses(c.Request.Context(), userID, orgID, ids)
 	if err != nil {
 		appErr := AsAppError(err)
 		if appErr.Code == ErrCodeInternal {

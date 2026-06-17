@@ -21,12 +21,14 @@ export async function listExpenses(): Promise<Expense[]> {
   return parsed.expenses ?? []
 }
 
-// GET /api/v1/expenses/export — download the caller's visible expenses as a CSV
-// Blob (owners/admins get the whole org; members only their own — the backend
-// enforces it). Returns the raw Blob; the VIEW owns turning it into a browser
-// download (filename + anchor click). Bearer/401 handled by apiDownload.
-export async function exportExpenses(): Promise<Blob> {
-  return apiDownload('/expenses/export')
+// POST /api/v1/expenses/export — download expenses as a CSV Blob. The SPA passes
+// the ids of the rows currently shown (after the list's Claimant/Status/Range
+// filters) so the CSV matches the displayed set exactly; the backend still
+// enforces visibility (owners/admins: the org; members: only their own) and drops
+// any id the caller may not see. Returns the raw Blob; the VIEW turns it into a
+// browser download. Bearer/401 handled by apiDownload.
+export async function exportExpenses(ids: string[]): Promise<Blob> {
+  return apiDownload('/expenses/export', { method: 'POST', body: { ids } })
 }
 
 // GET /api/v1/expenses/:id — returns the RICH detail (v_expenses_full). Same

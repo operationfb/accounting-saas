@@ -209,10 +209,12 @@ function newExpense() {
 }
 
 // --- Export ---
-// Download the caller's expenses as a CSV. The endpoint is authenticated (bearer
-// token), so we can't use a plain <a href> — we fetch the Blob (token attached by
-// apiDownload) and click a temporary object-URL anchor to save it. Owners/admins
-// get the whole org; members only their own — the backend decides, not us.
+// Download the on-screen expenses as a CSV — the rows left after the Claimant /
+// Status / Range filters (across all pages, not just the current one). We send
+// their ids so the CSV matches the list exactly; to export everything, clear the
+// filters (Range = All). The endpoint is authenticated, so rather than a plain
+// <a href> we fetch the Blob (token attached by apiDownload) and click a throwaway
+// object-URL anchor. The backend still enforces who may see each row.
 const exporting = ref(false)
 const exportError = ref('')
 
@@ -220,7 +222,8 @@ async function exportCsv() {
   exporting.value = true
   exportError.value = ''
   try {
-    const blob = await exportExpenses()
+    const ids = filteredExpenses.value.map((e) => e.id)
+    const blob = await exportExpenses(ids)
     triggerDownload(blob, `expenses-${toISODate(new Date())}.csv`)
   } catch (err) {
     exportError.value = (err as ApiError)?.message ?? 'Could not export expenses.'
@@ -305,6 +308,7 @@ const templateFields = [
           severity="secondary"
           outlined
           :loading="exporting"
+          :disabled="filteredExpenses.length === 0"
           @click="exportCsv"
         />
         <Button label="Add new" icon="pi pi-angle-down" icon-pos="right" @click="newExpense" />

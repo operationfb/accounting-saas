@@ -1992,6 +1992,100 @@ func (q *Queries) ListExpensesFull(ctx context.Context, organisationID uuid.UUID
 	return items, nil
 }
 
+const listExpensesFullByIDs = `-- name: ListExpensesFullByIDs :many
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+WHERE organisation_id = $1
+  AND id = ANY($2::uuid[])
+ORDER BY dated_on DESC, created_at DESC
+`
+
+type ListExpensesFullByIDsParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	Ids            []uuid.UUID `json:"ids"`
+}
+
+// -----------------------------------------------------------------------------
+// ListExpensesFullByIDs
+// The rich export rows for a specific set of expense ids — used when the export
+// must match exactly the rows the list view filtered for display (the SPA sends
+// the displayed ids). Org-scoped so cross-tenant ids return nothing; ownership
+// (member-sees-own) is enforced in the service. Same ordering as the list.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExpensesFullByIDs(ctx context.Context, arg ListExpensesFullByIDsParams) ([]VExpensesFull, error) {
+	rows, err := q.db.Query(ctx, listExpensesFullByIDs, arg.OrganisationID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []VExpensesFull
+	for rows.Next() {
+		var i VExpensesFull
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.UserID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.Description,
+			&i.ReceiptReference,
+			&i.InvoiceNumber,
+			&i.SupplierName,
+			&i.SupplierVatNumber,
+			&i.Currency,
+			&i.NativeCurrency,
+			&i.ExchangeRate,
+			&i.GrossValueMinor,
+			&i.NativeGrossValueMinor,
+			&i.VatRateBps,
+			&i.VatValueMinor,
+			&i.NativeVatValueMinor,
+			&i.ManualVatAmountMinor,
+			&i.VatStatus,
+			&i.EcStatus,
+			&i.ProjectID,
+			&i.RebillType,
+			&i.RebillFactor,
+			&i.RebilledInvoiceID,
+			&i.StockItemID,
+			&i.StockQuantity,
+			&i.CapitalAssetID,
+			&i.Status,
+			&i.SubmittedAt,
+			&i.ApprovedAt,
+			&i.ApprovedByUserID,
+			&i.PaidAt,
+			&i.CategoryNominalCode,
+			&i.CategoryName,
+			&i.CategoryIsMileage,
+			&i.CategoryIsCapitalAsset,
+			&i.Miles,
+			&i.VehicleType,
+			&i.EngineType,
+			&i.EngineSize,
+			&i.ReclaimMileage,
+			&i.InitialRatePpm,
+			&i.ReducedRatePpm,
+			&i.RebillRatePpm,
+			&i.ReimbursementMinor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CategoryID,
+			&i.VatRateID,
+			&i.NeedsReview,
+			&i.OcrConfidence,
+			&i.OcrProcessedAt,
+			&i.RejectionNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listExpensesFullByUser = `-- name: ListExpensesFullByUser :many
 SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE organisation_id = $1

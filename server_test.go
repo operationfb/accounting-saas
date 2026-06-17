@@ -734,7 +734,7 @@ func TestExpenses_RequireAuth(t *testing.T) {
 	}{
 		{"list no token", http.MethodGet, "/api/v1/expenses", ""},
 		{"get no token", http.MethodGet, "/api/v1/expenses/" + devOrgID, ""},
-		{"export no token", http.MethodGet, "/api/v1/expenses/export", ""},
+		{"export no token", http.MethodPost, "/api/v1/expenses/export", ""},
 		{"create no token", http.MethodPost, "/api/v1/expenses", ""},
 		{"create bad scheme", http.MethodPost, "/api/v1/expenses", "Basic abc"},
 	}
@@ -1800,26 +1800,47 @@ func createExpenseWith(t *testing.T, ts *testServer, userID, orgID, categoryID, 
 	return id
 }
 
-// exportCSV GETs the export as the given user and returns the parsed records,
-// including the header at index 0. It asserts 200 + a text/csv content type.
+// exportCSV POSTs the export with NO body (so the backend exports everything the
+// caller may see) and returns the parsed records, header at index 0.
 func exportCSV(t *testing.T, ts *testServer, userID, orgID string) [][]string {
 	t.Helper()
 	recorder := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/export", nil)
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/expenses/export", nil)
 	req.Header.Set("Authorization", bearer(t, ts, userID, orgID))
 	ts.server.router.ServeHTTP(recorder, req)
+	return parseExportCSV(t, recorder)
+}
+
+// exportCSVIDs POSTs {"ids": ids} so the backend exports exactly those rows — the
+// SPA's "export the filtered list" path. An empty slice is sent as [], distinct
+// from exportCSV's no-body call.
+func exportCSVIDs(t *testing.T, ts *testServer, userID, orgID string, ids []string) [][]string {
+	t.Helper()
+	body, _ := json.Marshal(map[string][]string{"ids": ids})
+	recorder := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/expenses/export", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", bearer(t, ts, userID, orgID))
+	ts.server.router.ServeHTTP(recorder, req)
+	return parseExportCSV(t, recorder)
+}
+
+// parseExportCSV asserts 200 + text/csv on an export response and returns the
+// parsed records (header at index 0).
+func parseExportCSV(t *testing.T, recorder *httptest.ResponseRecorder) [][]string {
+	t.Helper()
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("exportCSV: expected 200, got %d — body: %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("export: expected 200, got %d — body: %s", recorder.Code, recorder.Body.String())
 	}
 	if ct := recorder.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
-		t.Errorf("exportCSV: Content-Type = %q, want text/csv", ct)
+		t.Errorf("export: Content-Type = %q, want text/csv", ct)
 	}
 	records, err := csv.NewReader(recorder.Body).ReadAll()
 	if err != nil {
-		t.Fatalf("exportCSV: parse CSV: %v", err)
+		t.Fatalf("export: parse CSV: %v", err)
 	}
 	if len(records) == 0 {
-		t.Fatal("exportCSV: no records (missing header row)")
+		t.Fatal("export: no records (missing header row)")
 	}
 	return records
 }
@@ -2044,5 +2065,81 @@ func TestExportExpenses_CSVInjectionGuard(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("export should neutralise the formula description as %q", guarded)
+	}
+}
+
+// TestExportExpenses_FilteredByIDs verifies that POSTing a list of ids exports
+// exactly those rows (the SPA's "export only the filtered list" path) and nothing
+// else — even for an admin who could otherwise see the whole org.
+func TestExportExpenses_FilteredByIDs(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	cat := randomCategoryUUID(t, ts.pool)
+	descA := "EXPORT-IDS-A-" + uuid.NewString()
+	descB := "EXPORT-IDS-B-" + uuid.NewString()
+	idA := createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", descA, "10.00", "")
+	createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", descB, "20.00", "")
+
+	recs := exportCSVIDs(t, ts, devUserID, devOrgID, []string{idA})
+	assertHeader(t, recs)
+	if findExportRow(recs, descA) == nil {
+		t.Errorf("export should contain the requested expense %q", descA)
+	}
+	if findExportRow(recs, descB) != nil {
+		t.Errorf("export must NOT contain the unrequested expense %q", descB)
+	}
+	if n := len(recs) - 1; n != 1 {
+		t.Errorf("export should have exactly 1 data row, got %d", n)
+	}
+}
+
+// TestExportExpenses_EmptyIDsExportsNothing verifies that an explicit empty id
+// list (filters matched no rows) yields a header-only CSV — distinct from a
+// no-body export, which means "everything".
+func TestExportExpenses_EmptyIDsExportsNothing(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	recs := exportCSVIDs(t, ts, devUserID, devOrgID, []string{})
+	assertHeader(t, recs)
+	if n := len(recs) - 1; n != 0 {
+		t.Errorf("empty ids should export the header only, got %d data rows", n)
+	}
+}
+
+// TestExportExpenses_ByIDsOwnershipAndTenantScoped verifies the id-driven export
+// can't widen what a caller sees: a member who lists their own id plus the owner's
+// id plus another org's id gets back only their own row (the owner's is dropped by
+// the member-sees-own rule, the other org's by org scoping).
+func TestExportExpenses_ByIDsOwnershipAndTenantScoped(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	cat := randomCategoryUUID(t, ts.pool)
+	ownerDesc := "EXPORT-IDS-OWNER-" + uuid.NewString()
+	memberDesc := "EXPORT-IDS-MEMBER-" + uuid.NewString()
+	ownerExp := createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", ownerDesc, "5.00", "")
+	memberID := newMemberUser(t, ts, devOrgID)
+	memberExp := createExpenseWith(t, ts, memberID, devOrgID, cat, "2026-06-17", memberDesc, "6.00", "")
+
+	otherOrg, otherOwner := newOrgWithOwner(t, ts)
+	otherCat := newCategory(t, ts, otherOrg)
+	otherDesc := "EXPORT-IDS-OTHER-" + uuid.NewString()
+	otherExp := createExpenseWith(t, ts, otherOwner, otherOrg, otherCat, "2026-06-17", otherDesc, "7.00", "")
+
+	// The member asks for their own + the owner's + another org's ids.
+	recs := exportCSVIDs(t, ts, memberID, devOrgID, []string{memberExp, ownerExp, otherExp})
+	if findExportRow(recs, memberDesc) == nil {
+		t.Errorf("member should export their own row %q", memberDesc)
+	}
+	if findExportRow(recs, ownerDesc) != nil {
+		t.Errorf("member must NOT export the owner's row %q (member-sees-own)", ownerDesc)
+	}
+	if findExportRow(recs, otherDesc) != nil {
+		t.Errorf("member must NOT export another org's row %q (tenant isolation)", otherDesc)
+	}
+	if n := len(recs) - 1; n != 1 {
+		t.Errorf("member id-export should have exactly 1 data row, got %d", n)
 	}
 }

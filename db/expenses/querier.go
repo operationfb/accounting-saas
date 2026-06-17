@@ -306,6 +306,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListExpensesFull(ctx context.Context, organisationID uuid.UUID) ([]VExpensesFull, error)
 	// -----------------------------------------------------------------------------
+	// ListExpensesFullByIDs
+	// The rich export rows for a specific set of expense ids — used when the export
+	// must match exactly the rows the list view filtered for display (the SPA sends
+	// the displayed ids). Org-scoped so cross-tenant ids return nothing; ownership
+	// (member-sees-own) is enforced in the service. Same ordering as the list.
+	// -----------------------------------------------------------------------------
+	ListExpensesFullByIDs(ctx context.Context, arg ListExpensesFullByIDsParams) ([]VExpensesFull, error)
+	// -----------------------------------------------------------------------------
 	// ListExpensesFullByUser
 	// Same as ListExpensesFull but scoped to a single claimant — the export a plain
 	// member gets (they only ever see their own expenses).

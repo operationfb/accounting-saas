@@ -779,29 +779,44 @@ func (r ExpenseExportRow) record() []string {
 	}
 }
 
-// ExportExpenses returns the caller's visible expenses as export rows, ready for
-// the handler to stream as CSV. Visibility mirrors ListExpenses exactly: owners/
-// admins export the whole organisation; everyone else only the expenses they are
-// the claimant on. Money minors become pound strings, VAT basis points a bare
-// percent, and the date DD/MM/YYYY — the external shapes documented in the import
-// template's field guide.
+// ExportExpenses returns expenses as export rows, ready for the handler to stream
+// as CSV. Money minors become pound strings, VAT basis points a bare percent, and
+// the date DD/MM/YYYY — the external shapes documented in the import template's
+// field guide.
+//
+// Two modes, distinguished by ids:
+//   - ids == nil → export everything the caller may see, the same rule as
+//     ListExpenses: owners/admins get the whole organisation, everyone else only
+//     the expenses they are the claimant on.
+//   - ids != nil → export EXACTLY those expenses — the rows the list view filtered
+//     for display, whose ids the SPA sends. The query is org-scoped (cross-tenant
+//     ids drop out) and a non-admin still only ever sees their own rows, so a
+//     crafted id list can't widen what a member exports. An empty list is a valid
+//     "nothing matched the filters" and yields a header-only CSV.
 func (s *ExpenseService) ExportExpenses(
 	ctx context.Context,
 	authUserID uuid.UUID,
 	authOrgID uuid.UUID,
+	ids []uuid.UUID,
 ) ([]ExpenseExportRow, error) {
 	role, err := s.authorize(ctx, authUserID, authOrgID)
 	if err != nil {
 		return nil, err
 	}
+	admin := isOrgAdmin(role)
 
-	// Same role rule as ListExpenses: admins see all, members only their own. We
-	// read the rich v_expenses_full view so we have the category name, ec_status
-	// and VAT rate that the lean expenses row doesn't carry.
+	// We read the rich v_expenses_full view in every mode so we have the category
+	// name, ec_status and VAT rate that the lean expenses row doesn't carry.
 	var rows []expenses.VExpensesFull
-	if isOrgAdmin(role) {
+	switch {
+	case ids != nil:
+		rows, err = s.queries.ListExpensesFullByIDs(ctx, expenses.ListExpensesFullByIDsParams{
+			OrganisationID: authOrgID,
+			Ids:            ids,
+		})
+	case admin:
 		rows, err = s.queries.ListExpensesFull(ctx, authOrgID)
-	} else {
+	default:
 		rows, err = s.queries.ListExpensesFullByUser(ctx, expenses.ListExpensesFullByUserParams{
 			OrganisationID: authOrgID,
 			UserID:         authUserID,
@@ -822,6 +837,12 @@ func (s *ExpenseService) ExportExpenses(
 
 	out := make([]ExpenseExportRow, 0, len(rows))
 	for _, e := range rows {
+		// member-sees-own: drop any row the caller doesn't own. The all/own queries
+		// above already scope correctly, so this only bites on the id-driven path
+		// (a non-admin who put someone else's id in the list).
+		if !admin && e.UserID != authUserID {
+			continue
+		}
 		out = append(out, ExpenseExportRow{
 			ClaimantEmail: emailByUser[e.UserID],
 			Category:      sanitizeCSVField(e.CategoryName),
