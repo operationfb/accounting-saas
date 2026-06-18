@@ -1,0 +1,39 @@
+# Cloud Build config: build the unified API+SPA image and push it to Artifact
+# Registry. Deployment to Cloud Run is a SEPARATE step (`gcloud run deploy`) — see
+# deployment/README.md — so this build needs no deploy permissions.
+#
+# Run from the repo root:
+#   gcloud builds submit . \
+#     --config deployment/cloudbuild.yaml \
+#     --ignore-file deployment/.gcloudignore \
+#     --substitutions _TAG=$(git rev-parse --short HEAD)
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'deployment/Dockerfile'   # context is '.', Dockerfile lives under deployment/
+      - '-t'
+      - '${_IMAGE}:${_TAG}'
+      - '-t'
+      - '${_IMAGE}:latest'
+      - '.'
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '--all-tags', '${_IMAGE}']
+
+images:
+  - '${_IMAGE}:${_TAG}'
+  - '${_IMAGE}:latest'
+
+substitutions:
+  _IMAGE: 'europe-west2-docker.pkg.dev/stocks-ag/accounting-saas/server'
+  _TAG: 'latest'   # overridden with the short git SHA via --substitutions
+
+# npm ci + vite build + go build can take a few minutes; give it headroom.
+timeout: 1200s
+
+options:
+  # Stream logs to Cloud Logging only (avoids the deprecated default-logs-bucket
+  # requirement on newer projects).
+  logging: CLOUD_LOGGING_ONLY

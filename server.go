@@ -24,6 +24,9 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -109,6 +112,55 @@ func (s *Server) Run(addr string) error {
 	return s.router.Run(addr)
 }
 
+// enableStaticSPA serves the built Vue SPA (the contents of web/dist, copied into
+// the container image at distDir) from the SAME origin as the API. It is wired up
+// from main.go ONLY when WEB_DIST_DIR is set, so local dev and the integration
+// tests — which leave it unset — are completely unaffected and keep using the Vite
+// dev server.
+//
+// The rule is simple because every API route lives under /api/v1 (see
+// registerRoutes): an unmatched /api/ path stays a JSON 404, and everything else
+// falls back to index.html so the history-mode client router can resolve it.
+func (s *Server) enableStaticSPA(distDir string) {
+	indexFile := filepath.Join(distDir, "index.html")
+
+	// NoRoute runs for any request that matched no registered route. The global
+	// middleware (incl. CORS) still runs first, and OPTIONS preflights are already
+	// short-circuited by the CORS middleware, so this only sees real misses.
+	s.router.NoRoute(func(c *gin.Context) {
+		p := c.Request.URL.Path
+
+		// Never let the SPA shadow the API: an unknown /api/ path must stay a JSON
+		// 404 in the standard envelope, not get the HTML index served back.
+		if strings.HasPrefix(p, "/api/") {
+			respondError(c, &AppError{Code: ErrCodeNotFound, Message: "resource not found"})
+			return
+		}
+
+		// The SPA is a GET/HEAD surface; any other method on an unknown path is a 404.
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			respondError(c, &AppError{Code: ErrCodeNotFound, Message: "resource not found"})
+			return
+		}
+
+		// Serve a real built asset when the path maps to an existing file inside
+		// distDir (the hashed JS/CSS bundles, favicon, etc.). filepath.Clean plus the
+		// distDir-prefix check guard against path traversal (e.g. "/../../etc/passwd").
+		clean := filepath.Clean(p)
+		target := filepath.Join(distDir, clean)
+		if clean != "/" && strings.HasPrefix(target, distDir+string(os.PathSeparator)) {
+			if info, err := os.Stat(target); err == nil && !info.IsDir() {
+				c.File(target)
+				return
+			}
+		}
+
+		// Otherwise hand back index.html so the Vue history-mode router resolves the
+		// client-side route (/login, /expenses, …) on the front end.
+		c.File(indexFile)
+	})
+}
+
 // registerRoutes declares every URL pattern and which handler method responds.
 // Keeping all routes in one place makes it easy to see the full API surface.
 func (s *Server) registerRoutes() {
@@ -116,6 +168,19 @@ func (s *Server) registerRoutes() {
 	// All expense routes live under /api/v1/expenses.
 	// Versioning (/v1/) in the URL means you can introduce /v2/ later
 	// without breaking existing clients.
+
+	// Liveness probe for Cloud Run (and uptime checks). Public, no auth, and it
+	// deliberately does NOT touch the database: the startup DB ping (main.go) is the
+	// real readiness gate, and we don't want a transient DB blip to fail liveness and
+	// trigger pointless container restarts.
+	//
+	// The path is /health, NOT /healthz: Google Cloud RESERVES "/healthz" at the
+	// front-end layer, so on Cloud Run a request to it never reaches the container —
+	// it gets a Google 404. /health passes through normally.
+	s.router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	v1 := s.router.Group("/api/v1")
 	{
 		// Authentication routes. These are deliberately NOT behind auth

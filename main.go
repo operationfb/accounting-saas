@@ -297,6 +297,16 @@ func main() {
 
 	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
 
+	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
+	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally
+	// it is unset, so the API runs on its own and the SPA is served by the Vite dev
+	// server as before. Same-origin serving means the browser calls /api/v1 with a
+	// relative URL — no CORS involved.
+	if dir := strings.TrimSpace(os.Getenv("WEB_DIST_DIR")); dir != "" {
+		server.enableStaticSPA(dir)
+		log.Printf("serving SPA from %s", dir)
+	}
+
 	// -------------------------------------------------------------------------
 	// 4. Start the HTTP server.
 	// -------------------------------------------------------------------------

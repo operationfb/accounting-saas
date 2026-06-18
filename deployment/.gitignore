@@ -1,0 +1,4 @@
+# The filled, environment-specific config (copied from env.dev.yaml.example).
+# It's non-secret, but kept out of git so the dev specifics don't drift into the
+# repo. Keeping this here means the project ROOT .gitignore stays untouched.
+env.dev.yaml

@@ -1,0 +1,34 @@
+# .gcloudignore for the Cloud Build upload.
+#
+# `gcloud builds submit` uses THIS file (passed via --ignore-file) — NOT
+# .dockerignore — to decide what to tar up and upload as the build context.
+# Without it, the ~120 MB web/node_modules and the local SA key would be sent to
+# Cloud Build. Because the upload is already lean and secret-free, no root
+# .dockerignore is needed (the only build path here is Cloud Build; there is no
+# local Docker).
+#
+# Patterns use .gitignore syntax and are relative to the REPO ROOT (the upload root).
+
+# Version control + local editor/agent noise
+.git/
+.claude/
+.vscode/
+.DS_Store
+
+# Secrets / local-only config — must never reach the cloud builder
+.env
+.env.*
+*.env
+*-key.json
+gcs-*.json
+service-account*.json
+
+# Heavy / regenerated frontend artifacts — the Node stage rebuilds these
+web/node_modules/
+web/dist/
+
+# Local build output
+bin/
+
+# NOTE: deployment/ is deliberately NOT ignored — deployment/Dockerfile must be in
+# the uploaded context (cloudbuild.yaml builds with `-f deployment/Dockerfile`).
