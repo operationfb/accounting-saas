@@ -98,20 +98,7 @@ func NewProjectService(pool *pgxpool.Pool, queries *projects.Queries, authQuerie
 // returns their role. Mirrors ContactService.authorize — every project
 // operation runs this first.
 func (s *ProjectService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // validateContact confirms that the given contactID exists in the organisation

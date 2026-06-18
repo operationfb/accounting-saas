@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -35,6 +36,13 @@ import (
 
 func main() {
 	_ = godotenv.Load()
+
+	// Structured JSON logs to stdout: on Cloud Run these are ingested into Cloud
+	// Logging as structured entries. The handler layer logs request-level internal
+	// (500) errors through slog (see logInternalError in handler_helpers.go); the
+	// startup messages below still use the std logger.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	// -------------------------------------------------------------------------
 	// 1. Read config from environment variables.
 	//    Never hardcode credentials. In local development you set these in a

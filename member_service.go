@@ -30,11 +30,9 @@ package main
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 )
@@ -57,25 +55,11 @@ func NewMemberService(authQueries auth.Querier) *MemberService {
 // =============================================================================
 
 // authorize confirms the caller is an ACTIVE member of the organisation and
-// returns their role. Mirrors ExpenseService.authorize / ContactService.authorize
-// (deliberately kept per-service for consistency; a shared helper is a future
-// DRY-up). Non-members and deactivated members are refused (403). The returned
-// role lets ListMembers gate the list to owners/admins.
+// returns their role; it delegates to the shared authorizeMember (authz.go).
+// Non-members and deactivated members are refused (403). The returned role lets
+// ListMembers gate the list to owners/admins.
 func (s *MemberService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // =============================================================================

@@ -80,7 +80,7 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 	if err != nil {
 		appErr := AsAppError(err)
 		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger (slog/zap)
+			logInternalError(c, appErr.Err)
 			// Transient: we did NOT durably handle it → 500 so Mailgun retries.
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "temporary failure; please retry"})
 			return
@@ -141,7 +141,7 @@ func (s *Server) handleGetInboxAddress(c *gin.Context) {
 	orgID := getAuthOrgID(c)
 	address, err := s.emailInboxService.GetOrCreateInboxAddress(c.Request.Context(), userID, orgID)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": address != "", "address": address})

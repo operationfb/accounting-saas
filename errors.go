@@ -64,6 +64,12 @@ const (
 	// ErrCodeUnsupportedMediaType — the uploaded file is of a type we don't
 	// accept (we only allow PDF/JPEG/PNG receipts). Maps to HTTP 415.
 	ErrCodeUnsupportedMediaType ErrorCode = "unsupported_media_type"
+
+	// ErrCodeBadRequest — the request was syntactically malformed (invalid JSON,
+	// a missing required field, a wrong type) and could not be bound. Maps to HTTP
+	// 400. Distinct from ErrCodeValidation (422): 400 = we couldn't parse/bind the
+	// request; 422 = we parsed it but it broke a business rule.
+	ErrCodeBadRequest ErrorCode = "bad_request"
 )
 
 // AppError is the structured error type returned by the service layer.
@@ -116,6 +122,8 @@ func (e *AppError) HTTPStatus() int {
 		return http.StatusUnsupportedMediaType // 415
 	case ErrCodeInternal:
 		return http.StatusInternalServerError // 500
+	case ErrCodeBadRequest:
+		return http.StatusBadRequest // 400
 	default:
 		return http.StatusInternalServerError // safe fallback
 	}
@@ -144,6 +152,17 @@ func ErrNotFound(resource, id string) *AppError {
 func ErrValidation(msg string, cause error) *AppError {
 	return &AppError{
 		Code:    ErrCodeValidation,
+		Message: msg,
+		Err:     cause,
+	}
+}
+
+// ErrBadRequest constructs a "bad_request" AppError for a request the server
+// could not parse/bind (e.g. invalid JSON, a missing required field). cause is
+// the underlying binding error — logged at the boundary, never sent to the client.
+func ErrBadRequest(msg string, cause error) *AppError {
+	return &AppError{
+		Code:    ErrCodeBadRequest,
 		Message: msg,
 		Err:     cause,
 	}

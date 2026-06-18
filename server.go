@@ -726,15 +726,11 @@ type UpdateProfileRequest struct {
 //  3. Call expenseService.CreateExpense
 //  4. Return 201 Created with the new expense as JSON
 func (s *Server) handleCreateExpense(c *gin.Context) {
-	// Step 1: Parse and validate the request body.
-	// ShouldBindJSON reads c.Request.Body, deserialises JSON into the struct,
-	// and runs the `binding:` tag validations. If anything fails it returns
-	// a non-nil error describing what went wrong.
+	// Step 1: bind + validate the request body. bindJSON deserialises the JSON,
+	// runs the `binding:` tag validations, and on failure writes the standard 400
+	// error envelope and returns false.
 	var req CreateExpenseRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		// 400 Bad Request — the client sent invalid data.
-		// err.Error() gives a human-readable validation message.
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -748,25 +744,8 @@ func (s *Server) handleCreateExpense(c *gin.Context) {
 	// The service handles authorisation, business logic, unit conversion, and
 	// database writes.
 	expense, err := s.expenseService.CreateExpense(c.Request.Context(), userID, orgID, req)
-	/*if err != nil {
-		// 500 Internal Server Error — something went wrong on our side.
-		// In production you'd inspect the error type and return 422/409/etc.
-		// for known business rule violations. We'll improve this later.
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}*/
 	if err != nil {
-		// AsAppError converts any error into *AppError.
-		// If the service returned an *AppError (e.g. ErrValidation, ErrNotFound),
-		// it is returned as-is. If it returned a plain error (unexpected), it is
-		// wrapped in ErrInternal so the handler always has a typed error to work with.
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			// TODO: replace with structured logger (e.g. slog or zap)
-			_ = appErr.Error() // placeholder for: logger.Error(appErr.Error())
-		}
-		// ClientResponse() returns only {code, message} — never the internal cause.
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -786,17 +765,8 @@ func (s *Server) handleGetExpense(c *gin.Context) {
 
 	expense, err := s.expenseService.GetExpenseDetail(c.Request.Context(), userID, orgID, id)
 
-	/*if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	} */
-
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -812,8 +782,7 @@ func (s *Server) handleUpdateExpense(c *gin.Context) {
 	id := c.Param("id")
 
 	var req UpdateExpenseRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -822,11 +791,7 @@ func (s *Server) handleUpdateExpense(c *gin.Context) {
 
 	expense, err := s.expenseService.UpdateExpense(c.Request.Context(), userID, orgID, id, req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -843,8 +808,7 @@ func (s *Server) handleChangeExpenseStatus(c *gin.Context) {
 	id := c.Param("id")
 
 	var req ChangeExpenseStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -853,11 +817,7 @@ func (s *Server) handleChangeExpenseStatus(c *gin.Context) {
 
 	expense, err := s.expenseService.ChangeExpenseStatus(c.Request.Context(), userID, orgID, id, req.Action, req.RejectionNote)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -875,11 +835,7 @@ func (s *Server) handleDeleteExpense(c *gin.Context) {
 	orgID := getAuthOrgID(c)
 
 	if err := s.expenseService.DeleteExpense(c.Request.Context(), userID, orgID, id); err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -896,11 +852,7 @@ func (s *Server) handleListExpenses(c *gin.Context) {
 
 	list, err := s.expenseService.ListExpenses(c.Request.Context(), userID, orgID)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -929,11 +881,7 @@ func (s *Server) handleExportExpenses(c *gin.Context) {
 		Ids *[]string `json:"ids"`
 	}
 	if c.Request.ContentLength != 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"code":    "validation_error",
-				"message": "invalid request body: " + err.Error(),
-			}})
+		if !bindJSON(c, &req) {
 			return
 		}
 	}
@@ -956,11 +904,7 @@ func (s *Server) handleExportExpenses(c *gin.Context) {
 
 	rows, err := s.expenseService.ExportExpenses(c.Request.Context(), userID, orgID, ids)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -986,11 +930,7 @@ func (s *Server) handleExportExpenses(c *gin.Context) {
 func (s *Server) handleListInbox(c *gin.Context) {
 	list, err := s.expenseService.ListInbox(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
@@ -1006,11 +946,7 @@ func (s *Server) handleListExpenseCategories(c *gin.Context) {
 
 	list, err := s.expenseService.ListExpenseCategories(c.Request.Context(), userID, orgID)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -1028,11 +964,7 @@ func (s *Server) handleListVATRates(c *gin.Context) {
 
 	list, err := s.expenseService.ListVATRates(c.Request.Context(), userID, orgID)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -1053,11 +985,7 @@ func (s *Server) handleListVATRates(c *gin.Context) {
 func (s *Server) handleListContacts(c *gin.Context) {
 	list, err := s.contactService.ListContacts(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"contacts": list})
@@ -1067,18 +995,13 @@ func (s *Server) handleListContacts(c *gin.Context) {
 // caller's organisation. Returns 201 Created.
 func (s *Server) handleCreateContact(c *gin.Context) {
 	var req CreateContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	contact, err := s.contactService.CreateContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 
@@ -1089,11 +1012,7 @@ func (s *Server) handleCreateContact(c *gin.Context) {
 func (s *Server) handleGetContact(c *gin.Context) {
 	contact, err := s.contactService.GetContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"contact": contact})
@@ -1103,18 +1022,13 @@ func (s *Server) handleGetContact(c *gin.Context) {
 // the contact's creator or an owner/admin of the organisation.
 func (s *Server) handleUpdateContact(c *gin.Context) {
 	var req UpdateContactRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	contact, err := s.contactService.UpdateContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"contact": contact})
@@ -1124,11 +1038,7 @@ func (s *Server) handleUpdateContact(c *gin.Context) {
 // to the contact's creator or an owner/admin. Returns 204 No Content.
 func (s *Server) handleDeleteContact(c *gin.Context) {
 	if err := s.contactService.DeleteContact(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id")); err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -1226,11 +1136,7 @@ type ProjectResponse struct {
 func (s *Server) handleListProjects(c *gin.Context) {
 	list, err := s.projectService.ListProjects(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"projects": list})
@@ -1240,18 +1146,13 @@ func (s *Server) handleListProjects(c *gin.Context) {
 // Returns 201 Created with the new project in the response body.
 func (s *Server) handleCreateProject(c *gin.Context) {
 	var req CreateProjectRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	project, err := s.projectService.CreateProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"project": project})
@@ -1261,11 +1162,7 @@ func (s *Server) handleCreateProject(c *gin.Context) {
 func (s *Server) handleGetProject(c *gin.Context) {
 	project, err := s.projectService.GetProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"project": project})
@@ -1274,18 +1171,13 @@ func (s *Server) handleGetProject(c *gin.Context) {
 // handleUpdateProject handles PUT /api/v1/projects/:id — full update.
 func (s *Server) handleUpdateProject(c *gin.Context) {
 	var req UpdateProjectRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	project, err := s.projectService.UpdateProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"project": project})
@@ -1295,11 +1187,7 @@ func (s *Server) handleUpdateProject(c *gin.Context) {
 // Returns 204 No Content on success.
 func (s *Server) handleDeleteProject(c *gin.Context) {
 	if err := s.projectService.DeleteProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id")); err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -1315,11 +1203,7 @@ func (s *Server) handleDeleteProject(c *gin.Context) {
 func (s *Server) handleListMembers(c *gin.Context) {
 	list, err := s.memberService.ListMembers(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"members": list})
@@ -1331,11 +1215,7 @@ func (s *Server) handleListMembers(c *gin.Context) {
 func (s *Server) handleGetOrganisation(c *gin.Context) {
 	org, err := s.organisationService.GetOrganisation(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"organisation": org})
@@ -1346,18 +1226,13 @@ func (s *Server) handleGetOrganisation(c *gin.Context) {
 // restricts editing to owners/admins (a plain member gets 403).
 func (s *Server) handleUpdateOrganisation(c *gin.Context) {
 	var req UpdateOrganisationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	org, err := s.organisationService.UpdateOrganisation(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"organisation": org})
@@ -1368,11 +1243,7 @@ func (s *Server) handleUpdateOrganisation(c *gin.Context) {
 func (s *Server) handleGetProfile(c *gin.Context) {
 	profile, err := s.userService.GetProfile(c.Request.Context(), getAuthUserID(c))
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": profile})
@@ -1382,18 +1253,13 @@ func (s *Server) handleGetProfile(c *gin.Context) {
 // last name. The user is taken from the token, so it always targets themselves.
 func (s *Server) handleUpdateProfile(c *gin.Context) {
 	var req UpdateProfileRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
 	profile, err := s.userService.UpdateProfile(c.Request.Context(), getAuthUserID(c), req)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			_ = appErr.Error() // TODO: structured logger
-		}
-		c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": profile})

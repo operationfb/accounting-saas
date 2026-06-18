@@ -24,7 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -177,8 +177,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// Step 1: parse and validate the body. A bad body is a 400 (same pattern as
 	// the expense handlers).
 	var req loginUserRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -197,7 +196,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 			return
 		}
 		// Anything else is an unexpected server/database error.
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -239,7 +238,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// organisation's country_code.
 	orgs, err := h.queries.ListOrganisationsForUser(ctx, user.ID)
 	if err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -249,7 +248,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// can't do anything anyway (authorize() refuses them) — so we fail the login
 	// rather than mint a token with no country_code.
 	if len(orgs) == 0 {
-		respondInternal(c, fmt.Errorf("login: user %s belongs to no organisation; cannot resolve country_code", user.ID))
+		respondError(c, fmt.Errorf("login: user %s belongs to no organisation; cannot resolve country_code", user.ID))
 		return
 	}
 	defaultOrg := orgs[0] // default to the first active membership
@@ -258,7 +257,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// defensively so a blank/corrupt value fails the login loudly instead of
 	// silently issuing a session with no country.
 	if strings.TrimSpace(defaultOrg.CountryCode) == "" {
-		respondInternal(c, fmt.Errorf("login: organisation %s has an empty country_code", defaultOrg.ID))
+		respondError(c, fmt.Errorf("login: organisation %s has an empty country_code", defaultOrg.ID))
 		return
 	}
 	orgID := defaultOrg.ID
@@ -277,7 +276,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// Step 6: mint the PASETO token and return it with the safe user view.
 	accessToken, err := h.tokenMaker.CreateToken(user.ID, orgID, h.accessTokenDuration)
 	if err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -286,14 +285,6 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 		User:         newUserResponse(user),
 		Organisation: org,
 	})
-}
-
-// respondInternal logs (placeholder) and returns a 500 without leaking the
-// underlying cause, reusing the AppError machinery from errors.go.
-func respondInternal(c *gin.Context, err error) {
-	appErr := ErrInternal(err)
-	_ = appErr.Error() // TODO: replace with structured logger (slog/zap)
-	c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
 }
 
 // =============================================================================
@@ -337,8 +328,7 @@ type resetPasswordRequest struct {
 // whether the email is registered (no account enumeration).
 func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	var req forgotPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -353,7 +343,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 
 	rawToken, err := generateToken()
 	if err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -369,7 +359,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 			respondGeneric()
 			return
 		}
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -385,14 +375,14 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	resetLink := strings.TrimRight(h.appBaseURL, "/") + "/reset-password/" + rawToken
 	subject, body, err := buildPasswordResetEmail(user.FirstName, resetLink, int(h.passwordResetTTL.Minutes()))
 	if err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 	if sendErr := h.emailSender.Send(ctx, user.Email, subject, body); sendErr != nil {
 		// Still return the generic 200 (don't reveal the email exists), but LOG the
 		// failure — otherwise a misconfigured SMTP (bad credentials, unreachable
-		// host, ...) is completely silent. TODO: replace with the structured logger.
-		log.Printf("password reset: failed to send email to %s: %v", user.Email, sendErr)
+		// host, ...) is completely silent.
+		slog.Error("password reset: failed to send email", "email", user.Email, "err", sendErr)
 	}
 
 	respondGeneric()
@@ -408,8 +398,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	rawToken := c.Param("token")
 
 	var req resetPasswordRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if !bindJSON(c, &req) {
 		return
 	}
 
@@ -422,7 +411,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": invalidMsg})
 			return
 		}
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -435,7 +424,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 
@@ -444,7 +433,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		ID:           user.ID,
 		PasswordHash: pgtype.Text{String: string(hash), Valid: true},
 	}); err != nil {
-		respondInternal(c, err)
+		respondError(c, err)
 		return
 	}
 

@@ -78,20 +78,7 @@ func NewExpenseService(pool *pgxpool.Pool, queries *expenses.Queries, authQuerie
 //
 // GetMembership does not filter by status, so we check status == "active" here.
 func (s *ExpenseService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // isOrgAdmin reports whether a role may read ALL expenses in the organisation.

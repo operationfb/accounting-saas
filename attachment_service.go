@@ -179,20 +179,7 @@ func attachmentToResponse(a expenses.ExpenseAttachment) *AttachmentResponse {
 // than shared) to keep the attachments feature self-contained — the logic is
 // identical and security-critical, so keep the two in sync.
 func (s *AttachmentService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // loadAuthorisedExpense authorises the caller and loads the parent expense,

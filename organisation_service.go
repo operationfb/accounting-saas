@@ -81,20 +81,7 @@ func NewOrganisationService(authQueries auth.Querier) *OrganisationService {
 // refused (403); the returned role lets UpdateOrganisation gate editing to
 // owners/admins.
 func (s *OrganisationService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // =============================================================================

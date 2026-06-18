@@ -28,17 +28,6 @@ import (
 // streaming a huge body before we ever look at the declared file size.
 const maxUploadRequestBytes = defaultMaxUploadBytes + (1 << 20) // +1 MiB slack
 
-// writeAppError maps any error to the standard JSON error envelope, exactly as
-// the expense handlers do inline. Centralised here because every attachment
-// handler needs it.
-func writeAppError(c *gin.Context, err error) {
-	appErr := AsAppError(err)
-	if appErr.Code == ErrCodeInternal {
-		_ = appErr.Error() // TODO: replace with a structured logger (slog/zap)
-	}
-	c.JSON(appErr.HTTPStatus(), gin.H{"error": appErr.ClientResponse()})
-}
-
 // handleUploadAttachment handles POST /api/v1/expenses/:id/attachments.
 // Expects multipart/form-data with a "file" field and an optional "description".
 func (s *Server) handleUploadAttachment(c *gin.Context) {
@@ -82,7 +71,7 @@ func (s *Server) handleUploadAttachment(c *gin.Context) {
 		fileHeader.Filename, fileHeader.Size, f, description,
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"attachment": resp})
@@ -128,7 +117,7 @@ func (s *Server) handleSmartUpload(c *gin.Context) {
 		fileHeader.Filename, fileHeader.Size, f,
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"expense": resp})
@@ -140,7 +129,7 @@ func (s *Server) handleListAttachments(c *gin.Context) {
 		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"),
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"attachments": list})
@@ -156,7 +145,7 @@ func (s *Server) handleDownloadAttachment(c *gin.Context) {
 		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"download_url": url})
@@ -169,7 +158,7 @@ func (s *Server) handleSetPrimaryAttachment(c *gin.Context) {
 		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"attachment": resp})
@@ -182,7 +171,7 @@ func (s *Server) handleDeleteAttachment(c *gin.Context) {
 		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		writeAppError(c, err)
+		respondError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

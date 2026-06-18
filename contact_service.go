@@ -79,20 +79,7 @@ func NewContactService(pool *pgxpool.Pool, queries *contacts.Queries, authQuerie
 // runs this first so non-members / deactivated members are refused (403), and the
 // role can gate who may modify a contact (see the update/delete ownership rule).
 func (s *ContactService) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
-	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
-		OrganisationID: orgID,
-		UserID:         userID,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
-		}
-		return "", ErrInternal(err)
-	}
-	if m.Status != "active" {
-		return "", ErrForbidden("your organisation membership is not active")
-	}
-	return m.Role, nil
+	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
 // =============================================================================

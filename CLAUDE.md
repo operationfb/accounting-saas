@@ -63,7 +63,9 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── html_renderer.go     # HTMLRenderer interface + gotenbergRenderer (HTML email body → PDF, for receipts that arrive with no attachment)
 ├── email_inbox_service.go   # EmailInboxService: Ingest (dedupe → route → sender-check → capture → HTML fallback) + GetOrCreateInboxAddress
 ├── email_inbox_handler.go   # HTTP handlers: POST /webhooks/mailgun/inbound (public, HMAC) + GET /inbox-address (authed)
-├── errors.go            # AppError type + ErrorCode constants + handler→HTTP mapping
+├── errors.go            # AppError type + ErrorCode constants (incl. bad_request) + handler→HTTP mapping
+├── handler_helpers.go   # Handler-layer helpers: respondError (the single JSON error-writer; logs 500s via slog), bindJSON (bind + standard 400 envelope), logInternalError
+├── authz.go             # authorizeMember: the shared active-membership check + role lookup that every service's authorize() delegates to
 ├── server_test.go       # Integration tests (real Postgres) for the HTTP handlers
 ├── attachment_service_test.go   # AttachmentService tests (real Postgres + real GCS dev bucket)
 ├── ocr_service_test.go  # OCR/Smart Upload tests (real Postgres + GCS; Document AI faked) + money-conversion unit test
@@ -256,6 +258,8 @@ Cautions:
 - Use the existing **transaction wrapper pattern** for any operation that writes to more than one table or needs atomicity. New service methods that mutate data should use this wrapper rather than calling the pool directly.
 - Use the existing **`AppError`** type with `ErrorCode` constants for all error returns from service/repository layers. Handlers translate `AppError` into HTTP responses (status code + JSON body) — don't leak raw `pgx`/`sql` errors to the HTTP layer.
 - When adding a new error case, add a new `ErrorCode` constant rather than reusing an unrelated one or returning a bare `errors.New`.
+- **In handlers, don't hand-roll the error envelope.** Translate every service error with `respondError(c, err)` (`handler_helpers.go`) — it derives the HTTP status from the `AppError`, writes the standard `{"error":{code,message}}` body, and logs 500s via `slog`. Bind request bodies with `if !bindJSON(c, &req) { return }`, which emits a standard 400 (`bad_request`) on a malformed body. (The Mailgun webhook is the one deliberate exception: it maps errors to retry-friendly statuses itself.)
+- **One shared membership check.** Services authorise via `authorizeMember` (`authz.go`); each service's `authorize()` is a thin delegate — don't re-implement the GetMembership/active/role logic.
 
 ## Auth & Multi-tenancy
 
