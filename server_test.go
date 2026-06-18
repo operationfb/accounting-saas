@@ -48,6 +48,7 @@ import (
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
 	util "github.com/operationfb/accounting-saas/util"
@@ -86,6 +87,13 @@ const testInboxDomain = "receipts.test"
 // testMailgunSigningKey is the fixed HMAC key the test server verifies inbound
 // webhooks against, so signature tests can compute a valid signature.
 const testMailgunSigningKey = "test-mailgun-signing-key"
+
+// testWorkflowServiceAccount is the expected workflow SA the /internal/v1 OIDC
+// middleware checks against. Set (non-empty) so the middleware enforces (a call
+// with no/invalid OIDC token is rejected) rather than failing closed as
+// "unconfigured"; the positive OIDC path needs a real Google token, so it's
+// exercised at deploy time, not here.
+const testWorkflowServiceAccount = "workflow@test.iam.gserviceaccount.com"
 
 // newTestServer connects to the real database and builds a Server instance
 // configured for testing. It mirrors what main() does, but reads from .env
@@ -153,7 +161,11 @@ func newTestServer(t *testing.T) *testServer {
 	// tests can compute a valid HMAC). Capture still flows through the real
 	// attachment service, so attachment/HTML tests require GCS like other captures.
 	emailInboxService := NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	// FreeAgent integration: a sandbox-host client (no real calls are made unless a
+	// test drives the OAuth flow) plus the shared maker/queries. apiPublicURL is a
+	// fixed test value used only to build the redirect_uri.
+	integrationService := NewIntegrationService(integrationsdb.New(pool), authQueries, newFreeAgentClient(true), tokenMaker, "http://api.test", testAppBaseURL)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, testMailgunSigningKey, testWorkflowServiceAccount, []string{testCORSOrigin})
 
 	return &testServer{
 		server:            server,

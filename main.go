@@ -30,6 +30,7 @@ import (
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	projects "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -291,11 +292,56 @@ func main() {
 		log.Println("email inbox: INBOX_DOMAIN not set — email-to-expense disabled")
 	}
 
+	// -------------------------------------------------------------------------
+	// FreeAgent integration (push approved expenses out, via the external Cloud
+	// Workflow). The monolith's half is OAuth credential/token custody + the
+	// one-time interactive connect flow — it does NOT push or map fields. Unlike
+	// GCS/OCR this is ALWAYS wired: the client holds no credentials at startup
+	// (they're entered per-org at runtime), and FREEAGENT_SANDBOX only chooses
+	// which FreeAgent host the client talks to.
+	// -------------------------------------------------------------------------
+	integrationQueries := dbintegrations.New(pool)
+	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
+	faClient := newFreeAgentClient(freeAgentSandbox)
+	// apiPublicURL is OUR backend's externally reachable base URL — it builds the
+	// OAuth redirect_uri FreeAgent sends the browser back to (the BACKEND, distinct
+	// from the frontend appBaseURL). Defaults to the local backend port for dev.
+	apiPublicURL := envOr("API_PUBLIC_URL", "http://localhost:"+port)
+	integrationService := NewIntegrationService(integrationQueries, authQueries, faClient, tokenMaker, apiPublicURL, appBaseURL)
+	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/freeagent/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"))
+
+	// -------------------------------------------------------------------------
+	// Pub/Sub publisher for the "expense.approved" event (the trigger that drives
+	// the FreeAgent push via Eventarc → Cloud Workflow). Optional + nil-guarded
+	// like GCS/OCR: with PUBSUB_EXPENSE_APPROVED_TOPIC unset, ExpenseService's
+	// publisher stays nil and approvals simply don't publish. Credentials come from
+	// ADC (like GCS); GOOGLE_CLOUD_PROJECT may be empty (auto-detected). The topic
+	// must already exist (provisioned out-of-band — see the plan's infra section).
+	// -------------------------------------------------------------------------
+	if topicID := os.Getenv("PUBSUB_EXPENSE_APPROVED_TOPIC"); topicID != "" {
+		pub, pubErr := newPubsubPublisher(context.Background(), os.Getenv("GOOGLE_CLOUD_PROJECT"), topicID)
+		if pubErr != nil {
+			log.Fatalf("could not initialise Pub/Sub publisher: %v", pubErr)
+		}
+		service.publisher = pub
+		log.Printf("expense-approved events: publishing to Pub/Sub topic %q", topicID)
+	} else {
+		log.Println("expense-approved events: PUBSUB_EXPENSE_APPROVED_TOPIC not set — publishing disabled")
+	}
+
+	// The email of the Cloud Workflow's service account. The /internal/v1 endpoints
+	// accept only OIDC tokens for this identity; unset → those endpoints fail closed
+	// (the workflow's authenticated calls are the only legitimate ones).
+	workflowServiceAccount := os.Getenv("WORKFLOW_SERVICE_ACCOUNT")
+	if workflowServiceAccount == "" {
+		log.Println("internal endpoints: WORKFLOW_SERVICE_ACCOUNT not set — /internal/v1 rejects all calls (set it in production)")
+	}
+
 	// Allowed CORS origins for the browser SPA. Comma-separated in
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, mailgunSigningKey, workflowServiceAccount, corsOrigins)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

@@ -2,7 +2,7 @@
 // Top navigation bar (the navy strip), mirroring FA's app chrome.
 // The company button on the right opens an account dropdown (Company Details,
 // Change Password, Logout).
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
@@ -39,9 +39,20 @@ const navItems: NavItem[] = [
 
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
 const accountMenu = ref()
-const accountItems = ref<MenuItem[]>([
+// Computed so the owner/admin-only Integrations item can be included by role.
+const accountItems = computed<MenuItem[]>(() => [
   { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
   { label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') },
+  // Managing integrations (FreeAgent, …) is owner/admin only — hidden otherwise.
+  ...(auth.isOrgAdmin
+    ? [
+        {
+          label: 'Integrations',
+          icon: 'pi pi-link',
+          command: () => router.push('/settings/integrations'),
+        },
+      ]
+    : []),
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
 ])

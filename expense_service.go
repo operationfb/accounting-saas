@@ -54,6 +54,12 @@ type ExpenseService struct {
 	pool        *pgxpool.Pool
 	queries     *expenses.Queries
 	authQueries auth.Querier
+
+	// publisher emits domain events (currently "expense.approved", which drives the
+	// external FreeAgent push). Optional: nil = publishing disabled. It is set in
+	// main.go AFTER construction (the publisher is wired later), so it stays out of
+	// NewExpenseService — tests leave it nil.
+	publisher EventPublisher
 }
 
 // NewExpenseService is the constructor. Called once in main.go.

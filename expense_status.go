@@ -29,7 +29,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -185,5 +187,85 @@ func (s *ExpenseService) ChangeExpenseStatus(
 		return nil, err
 	}
 
+	// On a successful APPROVAL, emit the domain event that drives the external
+	// FreeAgent push (Pub/Sub → Eventarc → Cloud Workflow). This is the monolith's
+	// ENTIRE role in pushing — it knows nothing about FreeAgent beyond "an expense
+	// was approved".
+	//
+	// Best-effort by design: the transaction has already committed, so a publish
+	// failure must NOT undo an approval the caller already saw succeed. We log it
+	// and move on; a missed event is recoverable via the manual re-push endpoint.
+	// (A transactional outbox is the durability upgrade — see BACKLOG.)
+	if action == "approve" && s.publisher != nil {
+		ev := ExpenseApprovedEvent{
+			Event:          eventExpenseApproved,
+			OrganisationID: authOrgID,
+			ExpenseID:      expenseUUID,
+			OccurredAt:     time.Now().UTC(),
+		}
+		if perr := s.publisher.PublishExpenseApproved(ctx, ev); perr != nil {
+			slog.Error("expense approved but event publish failed",
+				"expense_id", expenseUUID, "organisation_id", authOrgID, "err", perr)
+		}
+	}
+
 	return expenseToResponse(updated), nil
+}
+
+// RepublishApprovedExpense re-emits the "expense.approved" event for an already
+// APPROVED expense — the manual "push to FreeAgent again" action, for when the
+// automatic publish on approval was lost or the push failed. It is safe to call
+// repeatedly: the workflow's `already_pushed` guard skips an expense that pushed
+// successfully and retries one that didn't.
+//
+// Unlike the best-effort publish on the approval path, this one SURFACES a publish
+// failure to the caller (they asked for it explicitly and want to know it worked).
+// Owner/admin only; org-scoped; only APPROVED expenses are pushable.
+func (s *ExpenseService) RepublishApprovedExpense(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+	id string,
+) error {
+	expenseUUID, err := uuid.Parse(id)
+	if err != nil {
+		return ErrValidation("id is not a valid UUID", err)
+	}
+
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return err
+	}
+	if !isOrgAdmin(role) {
+		return ErrForbidden("only an owner or admin can push an expense to FreeAgent")
+	}
+
+	// Load the expense org-scoped (a cross-tenant id is simply not found → 404).
+	existing, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{
+		ID:             expenseUUID,
+		OrganisationID: authOrgID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound("expense", id)
+		}
+		return ErrInternal(err)
+	}
+	if existing.Status != StatusApproved {
+		return ErrConflict("only approved expenses can be pushed to FreeAgent")
+	}
+	if s.publisher == nil {
+		return ErrConflict("event publishing is not configured")
+	}
+
+	ev := ExpenseApprovedEvent{
+		Event:          eventExpenseApproved,
+		OrganisationID: authOrgID,
+		ExpenseID:      expenseUUID,
+		OccurredAt:     time.Now().UTC(),
+	}
+	if err := s.publisher.PublishExpenseApproved(ctx, ev); err != nil {
+		return ErrInternal(err)
+	}
+	return nil
 }

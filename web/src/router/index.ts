@@ -12,6 +12,7 @@ import ProjectListView from '@/views/ProjectListView.vue'
 import ProjectEntryView from '@/views/ProjectEntryView.vue'
 import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
+import IntegrationsView from '@/views/IntegrationsView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -40,6 +41,10 @@ const router = createRouter({
     // The signed-in user's own "My Details" — likewise a singleton (the user
     // comes from the token). Every user may edit their own profile.
     { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true } },
+    // Integration settings (FreeAgent OAuth + status). The path is fixed: the
+    // backend OAuth callback redirects the browser to /settings/integrations with
+    // ?freeagent=connected | ?freeagent=error&reason=… (integration_service.go).
+    { path: '/settings/integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true } },
   ],
 })
 

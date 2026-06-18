@@ -1,0 +1,177 @@
+# =============================================================================
+# freeagent-push — Cloud Workflow
+#
+# This is the EXTERNALISED integration logic: the FreeAgent field mapping + the
+# FreeAgent API calls live here, as declarative config, NOT in the Go monolith.
+# Adding another provider later = a sibling workflow, no monolith change.
+#
+# Trigger:  Eventarc, from the `expense-approved` Pub/Sub topic (the monolith
+#           publishes {organisation_id, expense_id} when an expense is approved).
+# Region:   europe-west1 (co-located with the monolith's Cloud Run + Pub/Sub).
+#
+# It calls back into the monolith's OIDC-gated /internal/v1 endpoints (auth: OIDC
+# attaches a Google-signed identity token for this workflow's service account,
+# which the monolith verifies) for:
+#   - the org's access token + FreeAgent base URL,
+#   - the provider-neutral expense data (money already decimal strings), and
+#   - to record the push outcome.
+# Then it resolves the claimant's FreeAgent user, maps the fields, and POSTs the
+# expense to FreeAgent.
+#
+# IMPORTANT — set MONOLITH below to the deployed Cloud Run URL before deploying
+# (it can't be known until the monolith is deployed — see deploy/README.md).
+# =============================================================================
+
+main:
+  params: [event]
+  steps:
+    - init:
+        assign:
+          # ↓↓↓ REPLACE with the monolith's Cloud Run URL (no trailing slash). ↓↓↓
+          - MONOLITH: "https://REPLACE-WITH-CLOUD-RUN-URL"
+          # Eventarc delivers the Pub/Sub message base64-encoded in event.data.message.data.
+          - msg: ${json.decode(base64.decode(event.data.message.data))}
+          - org: ${msg.organisation_id}
+          - expenseId: ${msg.expense_id}
+
+    # ---- 1. Fetch the expense data (idempotency check rides on the response) ----
+    - getExpense:
+        call: http.get
+        args:
+          url: ${MONOLITH + "/internal/v1/expenses/" + expenseId + "?org=" + org}
+          auth:
+            type: OIDC
+        result: exp
+
+    - skipIfAlreadyPushed:
+        switch:
+          - condition: ${exp.body.already_pushed}
+            return: "already pushed — nothing to do"
+
+    # ---- 2. Get a valid access token + the FreeAgent base URL --------------------
+    - getToken:
+        call: http.get
+        args:
+          url: ${MONOLITH + "/internal/v1/integrations/freeagent/token?org=" + org}
+          auth:
+            type: OIDC
+        result: tok
+
+    # ---- 3. Resolve the claimant -> FreeAgent user URL (match by email) ----------
+    #        No cache (see the plan): one GET /users per push is well within
+    #        FreeAgent's 120 req/min limit at SME volume.
+    - getUsers:
+        call: http.get
+        args:
+          # freeagent_base_url already includes /v2, so append /users.
+          url: ${tok.body.freeagent_base_url + "/users"}
+          headers:
+            Authorization: ${"Bearer " + tok.body.access_token}
+        result: users
+
+    - resolveUser:
+        steps:
+          - initUserUrl:
+              assign:
+                - userUrl: ""
+          - scanUsers:
+              for:
+                value: u
+                in: ${users.body.users}
+                steps:
+                  - matchByEmail:
+                      switch:
+                        - condition: ${u.email == exp.body.claimant_email}
+                          assign:
+                            - userUrl: ${u.url}
+          - requireUserFound:
+              switch:
+                - condition: ${userUrl == ""}
+                  steps:
+                    # Permanent failure (the claimant isn't a FreeAgent user): record
+                    # it and STOP — retrying won't help until an admin adds them.
+                    - recordNoUser:
+                        call: http.post
+                        args:
+                          url: ${MONOLITH + "/internal/v1/integrations/freeagent/push-result"}
+                          auth:
+                            type: OIDC
+                          body:
+                            org: ${org}
+                            expense_id: ${expenseId}
+                            push_error: ${"no FreeAgent user matches claimant email " + exp.body.claimant_email}
+                        result: _
+                    - returnNoUser:
+                        return: "no matching FreeAgent user"
+
+    # ---- 4. THE MAPPING — build the FreeAgent expense payload (config, not Go) ---
+    - buildPayload:
+        assign:
+          - ecMap:
+              UK_NON_EC: "UK"
+              EC_GOODS: "EC Goods"
+              EC_SERVICES: "EC Services"
+              REVERSE_CHARGE: "Reverse Charge"
+          - expensePayload:
+              user: ${userUrl}
+              category: ${tok.body.freeagent_base_url + "/categories/" + exp.body.nominal_code}
+              dated_on: ${exp.body.dated_on}
+              description: ${exp.body.description}
+              currency: ${exp.body.currency}
+              # Map our raw ec_status to FreeAgent's vocabulary (default UK).
+              ec_status: ${default(map.get(ecMap, exp.body.ec_status), "UK")}
+              # FreeAgent sign convention: a normal expense (money out to the
+              # claimant) is NEGATIVE. The monolith sends an unsigned decimal
+              # string, so we just prepend "-" — no arithmetic, no float.
+              gross_value: ${"-" + exp.body.gross_value}
+              sales_tax_value: ${exp.body.sales_tax_value}
+    - maybeAddSalesTaxRate:
+        switch:
+          - condition: ${map.get(exp.body, "sales_tax_rate") != null}
+            assign:
+              - expensePayload.sales_tax_rate: ${exp.body.sales_tax_rate}
+
+    # ---- 5. Create the expense in FreeAgent -------------------------------------
+    - createExpense:
+        try:
+          call: http.post
+          args:
+            url: ${tok.body.freeagent_base_url + "/expenses"}
+            headers:
+              Authorization: ${"Bearer " + tok.body.access_token}
+            body:
+              expense: ${expensePayload}
+          result: created
+        except:
+          as: e
+          steps:
+            # Record the failure, then RAISE so Eventarc/Workflows retries (and the
+            # Pub/Sub dead-letter topic eventually catches a poison message).
+            - recordFailure:
+                call: http.post
+                args:
+                  url: ${MONOLITH + "/internal/v1/integrations/freeagent/push-result"}
+                  auth:
+                    type: OIDC
+                  body:
+                    org: ${org}
+                    expense_id: ${expenseId}
+                    push_error: ${"freeagent create failed - " + json.encode_to_string(e)}
+                result: _
+            - reraise:
+                raise: ${e}
+
+    # ---- 6. Record success ------------------------------------------------------
+    - recordSuccess:
+        call: http.post
+        args:
+          url: ${MONOLITH + "/internal/v1/integrations/freeagent/push-result"}
+          auth:
+            type: OIDC
+          body:
+            org: ${org}
+            expense_id: ${expenseId}
+            external_expense_ref: ${created.body.expense.url}
+        result: _
+    - done:
+        return: ${created.body.expense.url}

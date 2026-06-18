@@ -307,6 +307,23 @@ _Last updated: 2026-06-17_
 - **`inbound_email_events` retention.** The event log holds PII (sender/recipient/
   subject); add a retention/purge policy. _Files: schema + a periodic sweep._
 
+## Integrations (FreeAgent push)
+
+- **Encrypt `organisation_integrations` secrets at rest.** `client_secret`,
+  `access_token` and `refresh_token` are stored in plaintext (same caveat as the
+  `organisations.mtd_*` tokens). Encrypt before production — pgcrypto
+  `pgp_sym_encrypt()` or a KMS-backed approach. _Files:
+  `db/schema/integrations_schema.sql`, `integration_service.go`._
+- **Transactional outbox for `expense.approved`.** The planned publish (B1) is
+  best-effort in the request path; a publish failure loses the event (recoverable
+  only via the manual re-push). Add an outbox table written in the approve
+  transaction + a sweeper that publishes, for guaranteed delivery. _Files:
+  `expense_status.go`, schema._
+- **Remaining FreeAgent push work** (Pub/Sub publish, internal OIDC endpoints, the
+  Cloud Workflow + Eventarc, manual re-push, user-ref cache, manual user-mapping
+  UI, push-status read, attachment push, reverse sync) — see the approved plan at
+  `~/.claude/plans/i-d-like-to-push-peppy-papert.md`. Add/remove as each lands.
+
 ## Cleanups (also flagged as background tasks)
 
 - **Strip `[DEBUG]` token logging.** `token/paseto_maker.go` `VerifyToken` logs

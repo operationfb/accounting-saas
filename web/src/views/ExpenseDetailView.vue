@@ -9,6 +9,7 @@ import Textarea from 'primevue/textarea'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import FreeAgentPushBadge from '@/components/FreeAgentPushBadge.vue'
 import { useAuthStore } from '@/stores/auth'
 import { getExpense, changeExpenseStatus, type ExpenseStatusAction } from '@/services/expenses.service'
 import { getProject } from '@/services/projects.service'
@@ -236,9 +237,11 @@ function backToList() {
     </div>
 
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <h1 class="text-[22px] font-bold">Expense</h1>
         <StatusTag v-if="expense" :status="expense.status" />
+        <!-- FreeAgent push status (owner/admin, APPROVED only — renders nothing otherwise). -->
+        <FreeAgentPushBadge v-if="expense" :expense-id="id" :expense-status="expense.status" />
       </div>
       <div class="flex flex-wrap gap-2.5">
         <!-- Status actions (the approval chain). Each shows only when the caller
