@@ -97,11 +97,23 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 │   ├── paseto_maker.go       # PasetoMaker implementation (PASETO v2 local)
 │   └── payload.go            # Token Payload (UserID, OrganisationID, expiry)
 │
+├── money/
+│   └── money.go         # Shared money kernel (pure, no DB): pence↔pounds, PoundsToMinor (half-up), BpsToPercent, ComputeFixedVAT (HMRC VAT fraction), ClampToInt32 — reused by expenses, projects & the future invoices module
+│
 └── util/
     └── random.go        # Random test-data helpers for the integration tests
 ```
 
 Config/tooling at the root: `go.mod` / `go.sum` (deps), `.env` (local config — `DATABASE_URL`, `PASETO_SYMMETRIC_KEY`, `PORT`, `GCS_BUCKET` for receipt-attachment storage, `DOCAI_*` for Document AI OCR, `INBOX_DOMAIN` + `MAILGUN_INBOUND_SIGNING_KEY` for the email-to-expense channel, and `GOTENBERG_URL` for HTML-body rendering), `.gitignore`, and this `CLAUDE.md`.
+
+### Money (shared conversion kernel)
+
+All conversions between the integer **minor units (pence)** the DB stores and the **decimal pound strings** the API exposes live in one place — the `money` package (`money/money.go`), reused by expenses, projects and the upcoming invoices module. It depends only on `shopspring/decimal` (no `pgtype`, no proto), so it stays a clean **pure** kernel with fast unit tests (`money/money_test.go` — the first pure unit tests in the repo).
+
+- **Functions:** `MinorToPounds(int64)→"42.50"`, `PoundsToMinor("42.50")→4250`, `BpsToPercent`, `ComputeFixedVAT` (the HMRC VAT-fraction extraction from a VAT-inclusive total), `ClampToInt32`.
+- **int64-based.** Pence fits int32 for a single expense (≈£21.4m ceiling) but invoice/billing totals can exceed it; int32-column callers cast on the way out (optionally guarded by `ClampToInt32`).
+- **Rounding rule (a decision worth knowing):** `PoundsToMinor` rounds **half-up and accepts any precision** (`"42.999" → 4300`). It is the one canonical pounds→pence conversion and replaced three divergent inline copies (two truncated, one rounded), so the rule is now decided exactly once.
+- **Deliberately left out:** DB-type glue (`pgNullText`, `pgNumericFromDecimal`, …) and the proto-unpacking `moneyToMinor` (Google `MoneyValue`, in `ocr_documentai.go`) stay with their callers — the kernel takes no DB or proto dependency.
 
 ### Attachment storage (receipts)
 

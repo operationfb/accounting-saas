@@ -45,6 +45,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	"github.com/operationfb/accounting-saas/money"
 )
 
 // Document types the "Smart Upload" toggle offers. Each routes to a different
@@ -368,10 +369,10 @@ func moneyToFill(expenseCurrency string, res *ExtractionResult) (gross, vat int3
 		return 0, 0 // foreign currency — leave the placeholder, value is in the JSON
 	}
 	if res.TotalMinor != nil {
-		gross = clampToInt32(*res.TotalMinor)
+		gross = money.ClampToInt32(*res.TotalMinor)
 	}
 	if res.VATMinor != nil {
-		vat = clampToInt32(*res.VATMinor)
+		vat = money.ClampToInt32(*res.VATMinor)
 	}
 	return gross, vat
 }
@@ -409,11 +410,11 @@ func buildExtractedData(documentType string, res *ExtractionResult) extractedDat
 		d.Date = &s
 	}
 	if res.TotalMinor != nil {
-		s := minorToPoundsInt64(*res.TotalMinor)
+		s := money.MinorToPounds(*res.TotalMinor)
 		d.Amount = &s
 	}
 	if res.VATMinor != nil {
-		s := minorToPoundsInt64(*res.VATMinor)
+		s := money.MinorToPounds(*res.VATMinor)
 		d.VAT = &s
 	}
 	return d
@@ -466,24 +467,6 @@ func buildExpenseDescription(supplier *string, items []string) *string {
 		return nil // nothing usable → keep the placeholder
 	}
 	return &out
-}
-
-// minorToPoundsInt64 renders minor units (pence) as a 2dp string ("4200" → "42.00").
-func minorToPoundsInt64(minor int64) string {
-	return decimal.NewFromInt(minor).Div(decimal.NewFromInt(100)).StringFixed(2)
-}
-
-// clampToInt32 saturates an int64 into int32 range (money columns are INTEGER).
-func clampToInt32(v int64) int32 {
-	const maxI32, minI32 int64 = 1<<31 - 1, -(1 << 31)
-	switch {
-	case v > maxI32:
-		return int32(maxI32)
-	case v < minI32:
-		return int32(minI32)
-	default:
-		return int32(v)
-	}
 }
 
 // textOrNull maps a Go string to pgtype.Text, treating "" as SQL NULL.

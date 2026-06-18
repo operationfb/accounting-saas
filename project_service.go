@@ -17,36 +17,38 @@ package main
 //     ↓
 //   PostgreSQL
 //
+// Shared money helpers from the money package:
+//   money.PoundsToMinor — "100.00" → 10000 pence (int64), rounds half-up
+//   money.MinorToPounds — 10000 → "100.00"
+//
 // Shared helpers from expense_service.go (same package):
 //   pgNullText / nullTextToPtr  — nullable text
-//   minorToPounds               — int32 pence → "42.50"
 //
 // Shared helpers from contact_service.go (same package):
 //   pgInt32FromPtr / nullInt32ToPtr — 0-preserving *int32 ↔ pgtype.Int4
 //
 // New helpers defined here:
 //   hhmmToMinutes / minutesToHHMM   — "8:00" ↔ 480 minutes
-//   poundsStringToInt64             — "100.00" → 10000 pence (int64)
-//   int64MinorToStr                 — 10000 → "100.00"
+//   poundsStringToInt64             — "" → 0 guard around money.PoundsToMinor
 // =============================================================================
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/shopspring/decimal"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
 	projects "github.com/operationfb/accounting-saas/db/projects"
+	"github.com/operationfb/accounting-saas/money"
 )
 
 // validProjectStatus, validBudgetType, validBillingRateUnit mirror the CHECK
@@ -584,7 +586,7 @@ func projectToResponse(p projects.Project) *ProjectResponse {
 			}
 		case "money":
 			if p.BudgetMoneyPence.Valid {
-				s := int64MinorToStr(p.BudgetMoneyPence.Int64)
+				s := money.MinorToPounds(p.BudgetMoneyPence.Int64)
 				budgetMoney = &s
 			}
 		}
@@ -605,7 +607,7 @@ func projectToResponse(p projects.Project) *ProjectResponse {
 	// billing_rate is always set (0 if the user didn't enter one).
 	billingRate := "0.00"
 	if p.BillingRatePence.Valid {
-		billingRate = int64MinorToStr(p.BillingRatePence.Int64)
+		billingRate = money.MinorToPounds(p.BillingRatePence.Int64)
 	}
 
 	var startDate, endDate *string
@@ -678,26 +680,15 @@ func minutesToHHMM(minutes int32) string {
 	return fmt.Sprintf("%d:%02d", h, m)
 }
 
-// poundsStringToInt64 parses a decimal pound string to integer pence (int64)
-// using shopspring/decimal for exact precision — never use float for money.
-// "100.00" → 10000, "0" → 0, "" → 0.
+// poundsStringToInt64 parses a decimal pound string to integer pence (int64).
+// "100.00" → 10000, "0" → 0. A blank string is a no-op (0) — billing fields are
+// optional here — which is the one convenience the shared kernel doesn't provide,
+// so this thin wrapper keeps it and delegates the actual parse/round to
+// money.PoundsToMinor (half-up rounding, never float).
 func poundsStringToInt64(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, nil
 	}
-	d, err := decimal.NewFromString(s)
-	if err != nil {
-		return 0, err
-	}
-	// Multiply by 100 (pounds → pence), round to 0 dp, convert to int64.
-	return d.Mul(decimal.NewFromInt(100)).Round(0).BigInt().Int64(), nil
-}
-
-// int64MinorToStr converts integer pence (int64) to a 2dp pound string.
-// 10000 → "100.00", 0 → "0.00". Mirrors minorToPounds from expense_service.go
-// but for int64 rather than int32 (billing rates can exceed int32 for large
-// retainers).
-func int64MinorToStr(pence int64) string {
-	return decimal.NewFromInt(pence).Div(decimal.NewFromInt(100)).StringFixed(2)
+	return money.PoundsToMinor(s)
 }

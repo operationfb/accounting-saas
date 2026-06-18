@@ -33,6 +33,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	"github.com/operationfb/accounting-saas/money"
 )
 
 // ExpenseService holds a reference to both the connection pool and the
@@ -168,7 +169,7 @@ type vatResult struct {
 // stored VAT fields:
 //   - no rate selected     → no VAT (NULL rate id/bps, value 0)
 //   - fixed-ratio rate     → VAT EXTRACTED from the VAT-inclusive total (see
-//     computeFixedVAT); any client amount is IGNORED (not an error)
+//     money.ComputeFixedVAT); any client amount is IGNORED (not an error)
 //   - non-fixed-ratio rate → value = the client-supplied amount (0 if omitted)
 //
 // The selected rate must belong to the caller's organisation's country (the
@@ -216,14 +217,14 @@ func (s *ExpenseService) resolveVAT(
 	if rate.IsFixedRatio {
 		// Rate-locked: extract the VAT from the inclusive total; ignore any
 		// client-supplied amount.
-		valueMinor = computeFixedVAT(grossMinor, rate.RateBps)
+		valueMinor = money.ComputeFixedVAT(grossMinor, rate.RateBps)
 	} else if vatAmount != nil {
 		// Custom rate: accept the client's amount as-is (pounds → pence).
-		amt, err := decimal.NewFromString(*vatAmount)
+		minor, err := money.PoundsToMinor(*vatAmount)
 		if err != nil {
 			return vatResult{}, ErrValidation(fmt.Sprintf("vat_amount %q is not a valid decimal number", *vatAmount), err)
 		}
-		valueMinor = int32(amt.Mul(decimal.NewFromInt(100)).Round(0).IntPart())
+		valueMinor = int32(minor)
 	}
 
 	return vatResult{
@@ -231,27 +232,6 @@ func (s *ExpenseService) resolveVAT(
 		RateBps:    pgtype.Int4{Int32: rate.RateBps, Valid: true},
 		ValueMinor: valueMinor,
 	}, nil
-}
-
-// computeFixedVAT returns the VAT contained in a VAT-INCLUSIVE total for a
-// fixed-ratio rate. The entered gross is the total invoice/receipt amount, which
-// already includes VAT, so we EXTRACT the VAT rather than add it on top:
-//
-//	total = net + vat,  vat = net × rate   ⇒   vat = total × rate / (100 + rate)
-//
-// In basis points: vat = total × rate_bps / (10000 + rate_bps). This is the
-// standard HMRC "VAT fraction" (20% → 2000/12000 = 1/6; 5% → 500/10500 = 1/21).
-// The denominator is always ≥ 10000, so a 0% (zero) rate safely yields 0.
-// Result is rounded half-up (half away from zero) to the nearest penny.
-// Example: £120.00 (12000p) incl. 20% → 12000 × 2000 / 12000 = 2000p = £20.00.
-func computeFixedVAT(grossMinor, rateBps int32) int32 {
-	v := decimal.NewFromInt(int64(grossMinor)).
-		Mul(decimal.NewFromInt(int64(rateBps))).
-		// Denominator is 10000 + rate_bps (NOT 10000): the gross is VAT-inclusive,
-		// so we extract the VAT fraction rather than add the rate on top.
-		Div(decimal.NewFromInt(int64(10000 + rateBps))).
-		Round(0) // whole pence, half away from zero
-	return int32(v.IntPart())
 }
 
 // =============================================================================
@@ -353,16 +333,13 @@ func (s *ExpenseService) CreateExpense(
 	//
 	//   42.50 → decimal("42.50") → multiply by 100 → decimal("4250") → int32(4250)
 	// -------------------------------------------------------------------------
-	grossDecimal, err := decimal.NewFromString(req.GrossValuePounds)
+	// Convert pounds (string) → pence via the shared money kernel (rounds
+	// half-up). Stored as int32 because the column is PostgreSQL INTEGER.
+	grossMinorInt64, err := money.PoundsToMinor(req.GrossValuePounds)
 	if err != nil {
 		return nil, ErrValidation(fmt.Sprintf("gross_value %q is not a valid decimal number", req.GrossValuePounds), err)
 	}
-
-	// Convert to pence. Mul returns a new decimal; Int32() truncates to int32.
-	// We use int32 because PostgreSQL INTEGER is 4 bytes = int32 in Go.
-	hundred := decimal.NewFromInt(100)
-	grossPence := grossDecimal.Mul(hundred).IntPart() // IntPart() returns int64; cast below
-	grossMinor := int32(grossPence)
+	grossMinor := int32(grossMinorInt64)
 
 	// Default currency to GBP if not provided
 	currency := req.CurrencyCode
@@ -496,11 +473,11 @@ func (s *ExpenseService) UpdateExpense(
 	if err != nil {
 		return nil, ErrValidation("dated_on must be a valid date in YYYY-MM-DD format", err)
 	}
-	grossDecimal, err := decimal.NewFromString(req.GrossValuePounds)
+	grossMinorInt64, err := money.PoundsToMinor(req.GrossValuePounds)
 	if err != nil {
 		return nil, ErrValidation(fmt.Sprintf("gross_value %q is not a valid decimal number", req.GrossValuePounds), err)
 	}
-	grossMinor := int32(grossDecimal.Mul(decimal.NewFromInt(100)).IntPart())
+	grossMinor := int32(grossMinorInt64)
 
 	currency := req.CurrencyCode
 	if currency == "" {
@@ -848,7 +825,7 @@ func (s *ExpenseService) ExportExpenses(
 			Category:      sanitizeCSVField(e.CategoryName),
 			Date:          e.DatedOn.Time.Format("02/01/2006"), // DD/MM/YYYY
 			Currency:      e.Currency,
-			GrossValue:    minorToPounds(e.GrossValueMinor),
+			GrossValue:    money.MinorToPounds(int64(e.GrossValueMinor)),
 			Description:   sanitizeCSVField(e.Description),
 			// Free-text, user-controlled → guard against CSV/formula injection.
 			SupplierName:     sanitizeCSVField(textOrEmpty(e.SupplierName)),
@@ -857,7 +834,7 @@ func (s *ExpenseService) ExportExpenses(
 			// Numeric columns are NEVER sanitised — a money value legitimately
 			// begins with '-' (an amount owed to the employee).
 			SalesTaxRate:  bpsToPlainPercent(e.VatRateBps),
-			SalesTaxValue: minorToPounds(e.VatValueMinor),
+			SalesTaxValue: money.MinorToPounds(int64(e.VatValueMinor)),
 			ECStatus:      e.EcStatus,
 		})
 	}
@@ -1039,17 +1016,9 @@ func (s *ExpenseService) ListVATRates(
 func expenseToResponse(e expenses.Expense) *ExpenseResponse {
 	// Convert integer pence back to a decimal pound string.
 	// 4250 pence → decimal(4250) ÷ 100 → decimal(42.50) → "42.50"
-	grossPounds := decimal.NewFromInt(int64(e.GrossValueMinor)).
-		Div(decimal.NewFromInt(100)).
-		StringFixed(2) // StringFixed(2) always gives 2 decimal places: "42.50" not "42.5"
-
-	nativeGrossPounds := decimal.NewFromInt(int64(e.NativeGrossValueMinor)).
-		Div(decimal.NewFromInt(100)).
-		StringFixed(2)
-
-	vatPounds := decimal.NewFromInt(int64(e.VatValueMinor)).
-		Div(decimal.NewFromInt(100)).
-		StringFixed(2)
+	grossPounds := money.MinorToPounds(int64(e.GrossValueMinor))
+	nativeGrossPounds := money.MinorToPounds(int64(e.NativeGrossValueMinor))
+	vatPounds := money.MinorToPounds(int64(e.VatValueMinor))
 
 	return &ExpenseResponse{
 		ID:               e.ID.String(),
@@ -1098,7 +1067,7 @@ func vatRateToResponse(r expenses.ListVatRatesByCountryRow) *VATRateResponse {
 		ID:           r.ID.String(),
 		Name:         r.Name,
 		RateBps:      r.RateBps,
-		Rate:         bpsToPercent(r.RateBps),
+		Rate:         money.BpsToPercent(r.RateBps),
 		IsFixedRatio: r.IsFixedRatio,
 	}
 }
@@ -1119,16 +1088,16 @@ func expenseDetailToResponse(e expenses.VExpensesFull) *ExpenseDetailResponse {
 		CategoryID:          e.CategoryID.String(),
 
 		Currency:   e.Currency,
-		GrossValue: minorToPounds(e.GrossValueMinor),
+		GrossValue: money.MinorToPounds(int64(e.GrossValueMinor)),
 
 		VATRateID: uuidToStringPtr(e.VatRateID),
 		VATRate:   bpsToPercentPtr(e.VatRateBps),
 		VATStatus: e.VatStatus,
-		VATValue:  minorToPounds(e.VatValueMinor),
+		VATValue:  money.MinorToPounds(int64(e.VatValueMinor)),
 
 		NativeCurrency:   e.NativeCurrency,
-		NativeGrossValue: minorToPounds(e.NativeGrossValueMinor),
-		NativeVATValue:   minorToPounds(e.NativeVatValueMinor),
+		NativeGrossValue: money.MinorToPounds(int64(e.NativeGrossValueMinor)),
+		NativeVATValue:   money.MinorToPounds(int64(e.NativeVatValueMinor)),
 		ExchangeRate:     numericToStringPtr(e.ExchangeRate),
 
 		ECStatus: e.EcStatus,
@@ -1203,24 +1172,14 @@ func buildExpenseDetail(ctx context.Context, q *expenses.Queries, orgID, expense
 	return resp, nil
 }
 
-// minorToPounds converts integer pence to a 2dp pound string ("4250" → "42.50").
-func minorToPounds(minor int32) string {
-	return decimal.NewFromInt(int64(minor)).Div(decimal.NewFromInt(100)).StringFixed(2)
-}
-
-// bpsToPercent renders a VAT rate in basis points as a percentage string:
-// 2000 → "20%", 1750 → "17.5%", 0 → "0%".
-func bpsToPercent(bps int32) string {
-	return decimal.NewFromInt(int64(bps)).Div(decimal.NewFromInt(100)).String() + "%"
-}
-
 // bpsToPercentPtr turns a nullable VAT rate in basis points into a percentage
-// string (2000 → "20%", 1750 → "17.5%"); nil when no rate is set.
+// string (2000 → "20%", 1750 → "17.5%"); nil when no rate is set. The non-null
+// formatting is delegated to the shared money kernel.
 func bpsToPercentPtr(b pgtype.Int4) *string {
 	if !b.Valid {
 		return nil
 	}
-	s := bpsToPercent(b.Int32)
+	s := money.BpsToPercent(b.Int32)
 	return &s
 }
 
