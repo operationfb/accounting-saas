@@ -55,7 +55,7 @@ stored per-org; not server env vars).
 PROJECT=your-project-id
 REGION=europe-west1
 MONOLITH_SERVICE=accounting-saas                 # the Cloud Run service name
-MONOLITH_SA=...                                  # the Cloud Run runtime SA (publishes events)
+MONOLITH_SA="acounting-api@stocks-ag.iam.gserviceaccount.com"             # the Cloud Run runtime SA (publishes events)
 WF_SA="freeagent-push-wf@${PROJECT}.iam.gserviceaccount.com"
 
 # 1. Pub/Sub: the event topic + a dead-letter topic for poison messages.

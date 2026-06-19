@@ -21,7 +21,10 @@ package main
 // =============================================================================
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"sort"
@@ -41,19 +44,17 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 	// Cap the body before parsing so an oversized/abusive POST can't exhaust us.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxInboundEmailBytes)
 
-	// Mailgun forwards multipart/form-data (parsed fields + inline attachment
-	// files). Parsing buffers up to MaxMultipartMemory in RAM, the rest to temp.
-	form, err := c.MultipartForm()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "could not parse multipart form (or it was too large)"})
-		return
-	}
+	// Mailgun uses TWO content types: multipart/form-data when the email HAS
+	// attachments, and application/x-www-form-urlencoded when it does NOT. c.PostForm
+	// reads field values from either, so we must not reject attachment-less emails
+	// (e.g. HTML-body receipts) — they flow on to the HTML-body render fallback.
+	val := func(key string) string { return c.PostForm(key) }
 
-	val := func(key string) string {
-		if vs := form.Value[key]; len(vs) > 0 {
-			return vs[0]
-		}
-		return ""
+	// Attachment files only exist on a multipart body; tolerate a non-multipart
+	// (urlencoded) body, which simply has no files.
+	var files map[string][]*multipart.FileHeader
+	if mf, mferr := c.MultipartForm(); mferr == nil && mf != nil {
+		files = mf.File
 	}
 
 	// --- Authenticate FIRST: verify Mailgun's HMAC signature. ----------------
@@ -64,6 +65,12 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 	}
 
 	// --- Build the provider-neutral InboundEmail. ----------------------------
+	// Mailgun delivers inline body images (logos/signatures referenced via cid:)
+	// as attachment-N parts too, and lists them in content-id-map. Skip those so we
+	// capture only genuine attachments (e.g. the receipt PDF), not the logo.
+	inline := inlineAttachmentNames(val("content-id-map"))
+	logInboundAttachments(val("Message-Id"), files, inline)
+
 	in := &InboundEmail{
 		MessageID:   val("Message-Id"),
 		Recipient:   val("recipient"),
@@ -72,7 +79,7 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 		Subject:     val("subject"),
 		BodyHTML:    val("body-html"),
 		BodyPlain:   val("body-plain"),
-		Attachments: inboundAttachmentsFromForm(form.File),
+		Attachments: inboundAttachmentsFromForm(files, inline),
 	}
 
 	// --- Hand off to the (provider-agnostic) service. ------------------------
@@ -100,11 +107,12 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 // inboundAttachmentsFromForm turns Mailgun's "attachment-1".."attachment-N" file
 // parts into provider-neutral InboundAttachments. Each Open() reopens the part,
 // giving the capture pipeline a fresh io.ReadSeeker over the (buffered) bytes.
-func inboundAttachmentsFromForm(files map[string][]*multipart.FileHeader) []InboundAttachment {
+func inboundAttachmentsFromForm(files map[string][]*multipart.FileHeader, inline map[string]bool) []InboundAttachment {
 	// Sort the field names for deterministic ordering (handy for tests/notes).
 	names := make([]string, 0, len(files))
 	for name := range files {
-		if strings.HasPrefix(name, "attachment-") {
+		// Capture real attachments only — skip inline body images (content-id-map).
+		if strings.HasPrefix(name, "attachment-") && !inline[name] {
 			names = append(names, name)
 		}
 	}
@@ -126,6 +134,75 @@ func inboundAttachmentsFromForm(files map[string][]*multipart.FileHeader) []Inbo
 		}
 	}
 	return out
+}
+
+// inlineAttachmentNames parses Mailgun's content-id-map — a JSON object mapping a
+// Content-ID header to the attachment field name it correlates to, e.g.
+// {"<logo@host>": "attachment-2"} — and returns the set of attachment field names
+// that are inline body images (logos/signatures referenced via cid:). Those must
+// NOT be captured as receipts. We collect any "attachment-N" token from both keys
+// and values so we're robust to the map's direction. An empty/absent/unparseable
+// map yields an empty set (capture everything, the prior behaviour).
+func inlineAttachmentNames(contentIDMap string) map[string]bool {
+	inline := map[string]bool{}
+	if strings.TrimSpace(contentIDMap) == "" {
+		return inline
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(contentIDMap), &m); err != nil {
+		log.Printf("mailgun inbound: could not parse content-id-map (%v) — capturing all attachments", err)
+		return inline
+	}
+	for k, v := range m {
+		if isAttachmentField(k) {
+			inline[k] = true
+		}
+		if isAttachmentField(v) {
+			inline[v] = true
+		}
+	}
+	return inline
+}
+
+// isAttachmentField reports whether s is a Mailgun attachment field name —
+// "attachment-" followed by one or more digits (e.g. "attachment-2").
+func isAttachmentField(s string) bool {
+	const prefix = "attachment-"
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	digits := s[len(prefix):]
+	if digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// logInboundAttachments records which attachment parts arrived and which were
+// skipped as inline body images, so an unexpected capture is debuggable from logs.
+func logInboundAttachments(messageID string, files map[string][]*multipart.FileHeader, inline map[string]bool) {
+	var captured, skipped []string
+	for name, fhs := range files {
+		if !strings.HasPrefix(name, "attachment-") {
+			continue
+		}
+		for _, fh := range fhs {
+			label := fmt.Sprintf("%s:%s(%s)", name, fh.Filename, fh.Header.Get("Content-Type"))
+			if inline[name] {
+				skipped = append(skipped, label)
+			} else {
+				captured = append(captured, label)
+			}
+		}
+	}
+	sort.Strings(captured)
+	sort.Strings(skipped)
+	log.Printf("mailgun inbound %s: capturing=%v inline-skipped=%v", messageID, captured, skipped)
 }
 
 // handleGetInboxAddress handles GET /api/v1/inbox-address. It returns the

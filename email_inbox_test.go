@@ -23,6 +23,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/google/uuid"
@@ -557,6 +558,29 @@ func mailgunWebhookRequest(t *testing.T, fields map[string]string, attachment []
 	return req
 }
 
+// mailgunWebhookRequestFiles is like mailgunWebhookRequest but supports several
+// attachment parts keyed by their Mailgun field name (e.g. "attachment-1"), so a
+// test can include an inline image alongside a real attachment.
+func mailgunWebhookRequestFiles(t *testing.T, fields map[string]string, files map[string][]byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for k, v := range fields {
+		_ = w.WriteField(k, v)
+	}
+	for name, data := range files {
+		fw, err := w.CreateFormFile(name, name+".bin")
+		if err != nil {
+			t.Fatalf("create form file %s: %v", name, err)
+		}
+		_, _ = fw.Write(data)
+	}
+	_ = w.Close()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/mailgun/inbound", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return req
+}
+
 func TestEmailInboxWebhookSignature(t *testing.T) {
 	t.Run("invalid signature is rejected with 401 (no work done)", func(t *testing.T) {
 		ts := newTestServer(t)
@@ -614,6 +638,190 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 			t.Errorf("draft count: got %d, want 1", n)
 		}
 	})
+
+	t.Run("inline body image (content-id-map) is skipped; the PDF is captured", func(t *testing.T) {
+		requireGCS(t)
+		ts := newTestServer(t)
+		defer ts.pool.Close()
+
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+
+		const tsField, token = "1700000000", "inline-token"
+		req := mailgunWebhookRequestFiles(t, map[string]string{
+			"timestamp":      tsField,
+			"token":          token,
+			"signature":      mailgunSignature(tsField, token),
+			"recipient":      local + "@" + testInboxDomain,
+			"from":           ownerEmailFor(ownerID),
+			"subject":        "Invoice with a logo in the body",
+			"Message-Id":     newMessageID(t, ts),
+			"content-id-map": `{"<logo@example.com>":"attachment-2"}`, // attachment-2 is the inline logo
+		}, map[string][]byte{
+			"attachment-1": samplePDF(),  // the real receipt
+			"attachment-2": sampleJPEG(), // inline body logo → must be skipped
+		})
+
+		rec := httptest.NewRecorder()
+		ts.server.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 — body: %s", rec.Code, rec.Body.String())
+		}
+		// Exactly one draft, holding the PDF — NOT the inline logo.
+		if n := draftCountForOrg(t, ts, orgID); n != 1 {
+			t.Fatalf("draft count: got %d, want 1 (the inline logo must not create a draft)", n)
+		}
+		var contentType, fileName string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT content_type, file_name FROM expense_attachments WHERE organisation_id = $1`, orgID).
+			Scan(&contentType, &fileName); err != nil {
+			t.Fatalf("read attachment: %v", err)
+		}
+		if contentType != "application/pdf" {
+			t.Errorf("captured the wrong file: content_type=%q file=%q, want application/pdf (the PDF, not the logo)", contentType, fileName)
+		}
+	})
+
+	t.Run("with no content-id-map, all real attachments are captured", func(t *testing.T) {
+		requireGCS(t)
+		ts := newTestServer(t)
+		defer ts.pool.Close()
+
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+
+		const tsField, token = "1700000000", "multi-token"
+		req := mailgunWebhookRequestFiles(t, map[string]string{
+			"timestamp":  tsField,
+			"token":      token,
+			"signature":  mailgunSignature(tsField, token),
+			"recipient":  local + "@" + testInboxDomain,
+			"from":       ownerEmailFor(ownerID),
+			"Message-Id": newMessageID(t, ts),
+			// no content-id-map → nothing is treated as inline
+		}, map[string][]byte{
+			"attachment-1": samplePDF(),
+			"attachment-2": samplePNG(),
+		})
+
+		rec := httptest.NewRecorder()
+		ts.server.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 — body: %s", rec.Code, rec.Body.String())
+		}
+		if n := draftCountForOrg(t, ts, orgID); n != 2 {
+			t.Errorf("draft count: got %d, want 2 (both real attachments)", n)
+		}
+	})
+
+	t.Run("attachment-less email (urlencoded body) is accepted; the HTML body is captured", func(t *testing.T) {
+		requireGCS(t)
+		ts := newTestServer(t)
+		defer ts.pool.Close()
+
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+
+		const tsField, token = "1700000000", "urlenc-token"
+		req := mailgunWebhookURLEncoded(t, map[string]string{
+			"timestamp":  tsField,
+			"token":      token,
+			"signature":  mailgunSignature(tsField, token),
+			"recipient":  local + "@" + testInboxDomain,
+			"from":       ownerEmailFor(ownerID),
+			"subject":    "Your Uber receipt",
+			"Message-Id": newMessageID(t, ts),
+			"body-html":  "<html><body><h1>Receipt</h1><p>GBP 12.34</p></body></html>",
+		})
+
+		rec := httptest.NewRecorder()
+		ts.server.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 (no-attachment emails must not 400) — body: %s", rec.Code, rec.Body.String())
+		}
+		if n := draftCountForOrg(t, ts, orgID); n != 1 {
+			t.Fatalf("draft count: got %d, want 1 (the HTML body should be captured)", n)
+		}
+		var fileName string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT file_name FROM expense_attachments WHERE organisation_id = $1`, orgID).Scan(&fileName); err != nil {
+			t.Fatalf("read attachment: %v", err)
+		}
+		if fileName != "email-body.pdf" {
+			t.Errorf("captured file: got %q, want email-body.pdf", fileName)
+		}
+	})
+
+	t.Run("attachment-less email with no body is accepted (not 400) and ignored", func(t *testing.T) {
+		ts := newTestServer(t)
+		defer ts.pool.Close()
+
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		local := "alpha-" + orgID[:8]
+		setInboxLocalPart(t, ts, orgID, ownerID, local)
+
+		const tsField, token = "1700000000", "urlenc-empty"
+		req := mailgunWebhookURLEncoded(t, map[string]string{
+			"timestamp":  tsField,
+			"token":      token,
+			"signature":  mailgunSignature(tsField, token),
+			"recipient":  local + "@" + testInboxDomain,
+			"from":       ownerEmailFor(ownerID),
+			"Message-Id": newMessageID(t, ts),
+			// no body, no attachments
+		})
+
+		rec := httptest.NewRecorder()
+		ts.server.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 (must not 400) — body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.Status != "ignored_no_attachments" {
+			t.Errorf("status: got %q, want ignored_no_attachments", resp.Status)
+		}
+	})
+}
+
+// mailgunWebhookURLEncoded builds an application/x-www-form-urlencoded POST to the
+// inbound webhook — the encoding Mailgun uses for emails WITHOUT attachments.
+func mailgunWebhookURLEncoded(t *testing.T, fields map[string]string) *http.Request {
+	t.Helper()
+	form := url.Values{}
+	for k, v := range fields {
+		form.Set(k, v)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/mailgun/inbound", bytes.NewBufferString(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+// TestInlineAttachmentNames is a pure unit test for the content-id-map parser.
+func TestInlineAttachmentNames(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single inline", `{"<logo@x>":"attachment-2"}`, []string{"attachment-2"}},
+		{"two inline", `{"<a>":"attachment-1","<b>":"attachment-3"}`, []string{"attachment-1", "attachment-3"}},
+		{"empty string", ``, nil},
+		{"empty object", `{}`, nil},
+		{"garbage", `not json`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := inlineAttachmentNames(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("size: got %d %v, want %d %v", len(got), got, len(c.want), c.want)
+			}
+			for _, w := range c.want {
+				if !got[w] {
+					t.Errorf("missing %q in %v", w, got)
+				}
+			}
+		})
+	}
 }
 
 // =============================================================================
