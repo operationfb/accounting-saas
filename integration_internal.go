@@ -80,7 +80,7 @@ type InternalExpenseResponse struct {
 func (s *IntegrationService) TokenForOrg(ctx context.Context, orgID uuid.UUID) (*WorkflowTokenResponse, error) {
 	row, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
 		OrganisationID: orgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -96,16 +96,26 @@ func (s *IntegrationService) TokenForOrg(ctx context.Context, orgID uuid.UUID) (
 
 	// Refresh if the access token is near (or past) expiry.
 	if row.TokenExpiresAt.Valid && time.Until(row.TokenExpiresAt.Time) < tokenRefreshSkew {
-		if !row.RefreshToken.Valid || !row.ClientID.Valid || !row.ClientSecret.Valid {
-			return nil, ErrConflict("FreeAgent connection is missing refresh credentials — please reconnect")
+		if !row.RefreshToken.Valid {
+			return nil, ErrConflict("FreeAgent connection is missing its refresh token — please reconnect")
 		}
-		tok, rerr := s.faClient.RefreshToken(ctx, row.ClientID.String, row.ClientSecret.String, row.RefreshToken.String)
+		// The refresh uses the GLOBAL app credentials (client_id/client_secret).
+		// If they're gone the integration is unconfigured — surface "reconnect"
+		// rather than a 500.
+		creds, cerr := s.iq.GetProviderCredentials(ctx, s.provider)
+		if cerr != nil {
+			if errors.Is(cerr, pgx.ErrNoRows) {
+				return nil, ErrConflict("FreeAgent is not configured — please reconnect")
+			}
+			return nil, ErrInternal(cerr)
+		}
+		tok, rerr := s.faClient.RefreshToken(ctx, creds.ClientID, creds.ClientSecret, row.RefreshToken.String)
 		if rerr != nil {
 			// A failed refresh means the connection is broken (revoked/expired).
 			// Clear it so the UI surfaces "needs reconnect"; the push fails this time.
 			_ = s.iq.ClearIntegrationTokens(ctx, integrations.ClearIntegrationTokensParams{
 				OrganisationID: orgID,
-				Provider:       providerFreeAgent,
+				Provider:       s.provider,
 			})
 			return nil, ErrConflict("FreeAgent token refresh failed — please reconnect")
 		}
@@ -118,7 +128,7 @@ func (s *IntegrationService) TokenForOrg(ctx context.Context, orgID uuid.UUID) (
 		}
 		if err := s.iq.SetIntegrationTokens(ctx, integrations.SetIntegrationTokensParams{
 			OrganisationID: orgID,
-			Provider:       providerFreeAgent,
+			Provider:       s.provider,
 			AccessToken:    pgtype.Text{String: tok.AccessToken, Valid: true},
 			RefreshToken:   pgtype.Text{String: newRefresh, Valid: newRefresh != ""},
 			TokenExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second), Valid: tok.ExpiresIn > 0},
@@ -188,7 +198,7 @@ func (s *IntegrationService) ExpenseForPush(ctx context.Context, orgID, expenseI
 func (s *IntegrationService) alreadyPushed(ctx context.Context, orgID, expenseID uuid.UUID) (bool, error) {
 	integ, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
 		OrganisationID: orgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -219,7 +229,7 @@ func (s *IntegrationService) alreadyPushed(ctx context.Context, orgID, expenseID
 func (s *IntegrationService) RecordPushResult(ctx context.Context, orgID, expenseID uuid.UUID, externalRef, pushErr string) error {
 	integ, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
 		OrganisationID: orgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -19,13 +19,11 @@ type IntegrationExpensePush struct {
 	PushedAt           pgtype.Timestamptz `json:"pushed_at"`
 }
 
-// Per-(org,provider) third-party accounting connection: admin-entered OAuth app credentials + live access/refresh tokens. Provider is free text so new integrations need no schema change.
+// Per-(org,provider) connection state: the live access/refresh tokens obtained when an org authorises our app. The global app credentials live in provider_credentials, not here. Provider is free text so new integrations need no schema change.
 type OrganisationIntegration struct {
 	ID             uuid.UUID          `json:"id"`
 	OrganisationID uuid.UUID          `json:"organisation_id"`
 	Provider       string             `json:"provider"`
-	ClientID       pgtype.Text        `json:"client_id"`
-	ClientSecret   pgtype.Text        `json:"client_secret"`
 	AccessToken    pgtype.Text        `json:"access_token"`
 	RefreshToken   pgtype.Text        `json:"refresh_token"`
 	TokenExpiresAt pgtype.Timestamptz `json:"token_expires_at"`
@@ -33,4 +31,13 @@ type OrganisationIntegration struct {
 	ConnectedAt pgtype.Timestamptz `json:"connected_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+// GLOBAL per-provider OAuth app credentials (client_id/client_secret), shared by all organisations — they identify our application, not a tenant. No organisation_id by design. The app only reads this; rows are managed directly in the DB.
+type ProviderCredential struct {
+	Provider     string             `json:"provider"`
+	ClientID     string             `json:"client_id"`
+	ClientSecret string             `json:"client_secret"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }

@@ -5,7 +5,6 @@ import {
   GetFreeAgentPushStatusResponseSchema,
   type FreeAgentStatus,
   type FreeAgentPushStatus,
-  type SaveFreeAgentCredentialsRequest,
 } from '@/types/integration'
 
 // GET /api/v1/integrations/freeagent — the org's FreeAgent connection status. The
@@ -16,25 +15,15 @@ export async function getFreeAgentStatus(): Promise<FreeAgentStatus> {
   return GetFreeAgentStatusResponseSchema.parse(data).integration
 }
 
-// PUT /api/v1/integrations/freeagent — save (or replace) the OAuth app credentials.
-// Returns the updated status ("credentials saved, not yet connected"). Owner/admin
-// only; a 400 (missing field) / 403 surfaces as an ApiError for the form to display.
-export async function saveFreeAgentCredentials(
-  payload: SaveFreeAgentCredentialsRequest,
-): Promise<FreeAgentStatus> {
-  const data = await apiFetch<unknown>('/integrations/freeagent', { method: 'PUT', body: payload })
-  return GetFreeAgentStatusResponseSchema.parse(data).integration
-}
-
-// DELETE /api/v1/integrations/freeagent — disconnect: drop the tokens but KEEP the
-// credentials (so reconnecting is one click). 204, no body — apiFetch tolerates the
-// empty response. Owner/admin only.
+// DELETE /api/v1/integrations/freeagent — disconnect this org: drop its tokens. The
+// GLOBAL app credentials (provider_credentials) are untouched, so reconnecting is one
+// click. 204, no body — apiFetch tolerates the empty response. Owner/admin only.
 export async function disconnectFreeAgent(): Promise<void> {
   await apiFetch<unknown>('/integrations/freeagent', { method: 'DELETE' })
 }
 
 // GET /api/v1/freeagent/connect — the FreeAgent authorize URL the SPA navigates to.
-// Owner/admin only; a 422 means "save your credentials first".
+// Owner/admin only; a 422 means FreeAgent isn't configured yet (no global app creds).
 export async function getFreeAgentConnectUrl(): Promise<string> {
   const data = await apiFetch<unknown>('/freeagent/connect', { method: 'GET' })
   return ConnectResponseSchema.parse(data).authorize_url

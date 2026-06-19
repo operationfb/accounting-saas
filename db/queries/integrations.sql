@@ -16,21 +16,16 @@
 
 
 -- -----------------------------------------------------------------------------
--- UpsertIntegrationCredentials
--- Save (or replace) the OAuth app credentials an admin enters on the settings
--- screen. Idempotent per (org, provider) via the unique key, so re-saving just
--- updates. Returns the row so the handler can report has_credentials/connected.
--- Tokens are deliberately NOT touched here — they are only set by the OAuth
--- connect flow (SetIntegrationTokens).
+-- GetProviderCredentials
+-- The GLOBAL OAuth app credentials for a provider (client_id/client_secret).
+-- These identify OUR application and are shared by every organisation, so there
+-- is no organisation_id — the lookup is by provider key alone (the primary key).
+-- The app only ever READS these; rows are managed directly in the DB. :one —
+-- callers treat pgx.ErrNoRows as "not configured".
 -- -----------------------------------------------------------------------------
--- name: UpsertIntegrationCredentials :one
-INSERT INTO organisation_integrations (organisation_id, provider, client_id, client_secret)
-VALUES (@organisation_id, @provider, @client_id, @client_secret)
-ON CONFLICT (organisation_id, provider) DO UPDATE
-    SET client_id     = EXCLUDED.client_id,
-        client_secret = EXCLUDED.client_secret,
-        updated_at    = now()
-RETURNING *;
+-- name: GetProviderCredentials :one
+SELECT * FROM provider_credentials
+WHERE provider = @provider;
 
 
 -- -----------------------------------------------------------------------------
@@ -51,16 +46,21 @@ WHERE organisation_id = @organisation_id
 -- Store the tokens obtained from the OAuth token endpoint — on the initial
 -- connect AND on every server-side refresh. Stamps connected_at = now() so the
 -- status flips to "connected" (and a refresh keeps it connected).
+--
+-- This is an UPSERT: the per-org row no longer pre-exists (credentials are now
+-- global, in provider_credentials), so the FIRST successful connect INSERTs the
+-- row; later connects/refreshes UPDATE it via the (organisation_id, provider)
+-- unique key. An org therefore has a row here iff it has connected at least once.
 -- -----------------------------------------------------------------------------
 -- name: SetIntegrationTokens :exec
-UPDATE organisation_integrations
-SET access_token     = @access_token,
-    refresh_token    = @refresh_token,
-    token_expires_at = @token_expires_at,
-    connected_at     = now(),
-    updated_at       = now()
-WHERE organisation_id = @organisation_id
-  AND provider        = @provider;
+INSERT INTO organisation_integrations (organisation_id, provider, access_token, refresh_token, token_expires_at, connected_at)
+VALUES (@organisation_id, @provider, @access_token, @refresh_token, @token_expires_at, now())
+ON CONFLICT (organisation_id, provider) DO UPDATE
+    SET access_token     = EXCLUDED.access_token,
+        refresh_token    = EXCLUDED.refresh_token,
+        token_expires_at = EXCLUDED.token_expires_at,
+        connected_at     = now(),
+        updated_at       = now();
 
 
 -- -----------------------------------------------------------------------------

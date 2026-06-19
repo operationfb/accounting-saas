@@ -49,22 +49,6 @@ type Querier interface {
 	// through here). :one — callers treat pgx.ErrNoRows as "not configured".
 	// -----------------------------------------------------------------------------
 	GetIntegration(ctx context.Context, arg GetIntegrationParams) (OrganisationIntegration, error)
-	// -----------------------------------------------------------------------------
-	// SetIntegrationTokens
-	// Store the tokens obtained from the OAuth token endpoint — on the initial
-	// connect AND on every server-side refresh. Stamps connected_at = now() so the
-	// status flips to "connected" (and a refresh keeps it connected).
-	// -----------------------------------------------------------------------------
-	SetIntegrationTokens(ctx context.Context, arg SetIntegrationTokensParams) error
-	// -----------------------------------------------------------------------------
-	// UpsertExpensePushResult
-	// Record the outcome of a push, one row per (integration, expense). On success
-	// external_expense_ref is the external URL and push_error is NULL; on failure
-	// it's the reverse. The unique (integration_id, expense_id) key makes this an
-	// UPSERT, so an Eventarc retry or a manual re-push updates the same row instead
-	// of duplicating — this is the idempotency anchor for the whole flow.
-	// -----------------------------------------------------------------------------
-	UpsertExpensePushResult(ctx context.Context, arg UpsertExpensePushResultParams) error
 	// =============================================================================
 	// INTEGRATIONS MODULE — SQLC QUERIES
 	// File: db/queries/integrations.sql
@@ -81,14 +65,35 @@ type Querier interface {
 	// tenant through integration_id; GetExpenseForPush re-checks organisation_id.
 	// =============================================================================
 	// -----------------------------------------------------------------------------
-	// UpsertIntegrationCredentials
-	// Save (or replace) the OAuth app credentials an admin enters on the settings
-	// screen. Idempotent per (org, provider) via the unique key, so re-saving just
-	// updates. Returns the row so the handler can report has_credentials/connected.
-	// Tokens are deliberately NOT touched here — they are only set by the OAuth
-	// connect flow (SetIntegrationTokens).
+	// GetProviderCredentials
+	// The GLOBAL OAuth app credentials for a provider (client_id/client_secret).
+	// These identify OUR application and are shared by every organisation, so there
+	// is no organisation_id — the lookup is by provider key alone (the primary key).
+	// The app only ever READS these; rows are managed directly in the DB. :one —
+	// callers treat pgx.ErrNoRows as "not configured".
 	// -----------------------------------------------------------------------------
-	UpsertIntegrationCredentials(ctx context.Context, arg UpsertIntegrationCredentialsParams) (OrganisationIntegration, error)
+	GetProviderCredentials(ctx context.Context, provider string) (ProviderCredential, error)
+	// -----------------------------------------------------------------------------
+	// SetIntegrationTokens
+	// Store the tokens obtained from the OAuth token endpoint — on the initial
+	// connect AND on every server-side refresh. Stamps connected_at = now() so the
+	// status flips to "connected" (and a refresh keeps it connected).
+	//
+	// This is an UPSERT: the per-org row no longer pre-exists (credentials are now
+	// global, in provider_credentials), so the FIRST successful connect INSERTs the
+	// row; later connects/refreshes UPDATE it via the (organisation_id, provider)
+	// unique key. An org therefore has a row here iff it has connected at least once.
+	// -----------------------------------------------------------------------------
+	SetIntegrationTokens(ctx context.Context, arg SetIntegrationTokensParams) error
+	// -----------------------------------------------------------------------------
+	// UpsertExpensePushResult
+	// Record the outcome of a push, one row per (integration, expense). On success
+	// external_expense_ref is the external URL and push_error is NULL; on failure
+	// it's the reverse. The unique (integration_id, expense_id) key makes this an
+	// UPSERT, so an Eventarc retry or a manual re-push updates the same row instead
+	// of duplicating — this is the idempotency anchor for the whole flow.
+	// -----------------------------------------------------------------------------
+	UpsertExpensePushResult(ctx context.Context, arg UpsertExpensePushResultParams) error
 }
 
 var _ Querier = (*Queries)(nil)

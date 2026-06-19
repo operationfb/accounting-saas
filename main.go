@@ -299,8 +299,9 @@ func main() {
 	// Workflow). The monolith's half is OAuth credential/token custody + the
 	// one-time interactive connect flow — it does NOT push or map fields. Unlike
 	// GCS/OCR this is ALWAYS wired: the client holds no credentials at startup
-	// (they're entered per-org at runtime), and FREEAGENT_SANDBOX only chooses
-	// which FreeAgent host the client talks to.
+	// (the GLOBAL app credentials live in the provider_credentials table, managed
+	// directly in the DB), and FREEAGENT_SANDBOX only chooses which FreeAgent host
+	// the client talks to.
 	// -------------------------------------------------------------------------
 	integrationQueries := dbintegrations.New(pool)
 	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
@@ -311,7 +312,7 @@ func main() {
 	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
 	// local dev sets it in .env.
 	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
-	integrationService := NewIntegrationService(integrationQueries, authQueries, faClient, tokenMaker, apiPublicURL, appBaseURL)
+	integrationService := NewIntegrationService(integrationQueries, authQueries, faClient, tokenMaker, providerFreeAgent, apiPublicURL, appBaseURL)
 	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/freeagent/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"))
 
 	// -------------------------------------------------------------------------

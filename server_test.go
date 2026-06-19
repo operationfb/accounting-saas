@@ -67,6 +67,13 @@ type testServer struct {
 	tokenMaker        token.Maker
 	emailSender       *fakeEmailSender
 	emailInboxService *EmailInboxService
+
+	// faProvider is the UNIQUE throwaway FreeAgent provider key this test server's
+	// IntegrationService is built with. It scopes both the global
+	// provider_credentials row the tests seed and the per-org
+	// organisation_integrations rows, so tests never collide with (or clobber) the
+	// real 'freeagent' global credentials row on the shared dev DB.
+	faProvider string
 }
 
 // testSymmetricKey is a fixed 32-byte key used only by tests to build a PASETO
@@ -164,7 +171,11 @@ func newTestServer(t *testing.T) *testServer {
 	// FreeAgent integration: a sandbox-host client (no real calls are made unless a
 	// test drives the OAuth flow) plus the shared maker/queries. apiPublicURL is a
 	// fixed test value used only to build the redirect_uri.
-	integrationService := NewIntegrationService(integrationsdb.New(pool), authQueries, newFreeAgentClient(true), tokenMaker, "http://api.test", testAppBaseURL)
+	// Each test server manages a UNIQUE throwaway provider key (not the real
+	// "freeagent"), so the global provider_credentials row tests seed never
+	// touches the operator-managed real row on the shared dev DB.
+	faProvider := "fa-test-" + util.RandomString(8)
+	integrationService := NewIntegrationService(integrationsdb.New(pool), authQueries, newFreeAgentClient(true), tokenMaker, faProvider, "http://api.test", testAppBaseURL)
 	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, testMailgunSigningKey, testWorkflowServiceAccount, []string{testCORSOrigin})
 
 	return &testServer{
@@ -173,6 +184,7 @@ func newTestServer(t *testing.T) *testServer {
 		tokenMaker:        tokenMaker,
 		emailSender:       emailSender,
 		emailInboxService: emailInboxService,
+		faProvider:        faProvider,
 	}
 }
 

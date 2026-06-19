@@ -91,21 +91,23 @@ func TestIntegrationInternal_ExpenseForPush(t *testing.T) {
 
 func TestIntegrationInternal_PushResultAndAlreadyPushed(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// Close the pool via t.Cleanup (registered FIRST so it runs LAST), NOT defer:
+	// deferred calls run before t.Cleanup functions, so a `defer ts.pool.Close()`
+	// would shut the pool before the row-cleanup below could run, leaking the
+	// dev-org row each test run (its provider key is unique per run).
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
-	fake := fakeFreeAgentTokenServer(t)
-	svc := freeAgentServiceWithHost(ts, fake.URL)
+	svc := ts.server.integrationService
 
-	// Connect the dev org (devUser is its owner). Clean up the integration row so
-	// the shared dev org isn't left connected (its push rows cascade with it).
+	// "Connect" the dev org directly — no OAuth dance, since this test exercises
+	// the push-result ledger, not the connect flow. Clean up the row afterwards,
+	// scoped to this test's throwaway provider so the dev org's real connection
+	// (if any) is left untouched.
 	t.Cleanup(func() {
-		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_integrations WHERE organisation_id = $1`, devOrgID)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_integrations WHERE organisation_id = $1 AND provider = $2`, devOrgID, ts.faProvider)
 	})
-	if _, err := svc.SaveCredentials(ctx, mustUUID(t, devUserID), mustUUID(t, devOrgID),
-		SaveFreeAgentCredentialsRequest{ClientID: "cid", ClientSecret: "sec"}); err != nil {
-		t.Fatalf("save creds: %v", err)
-	}
+	markConnectedDirect(t, ts, devOrgID)
 
 	member := newMemberUser(t, ts, devOrgID)
 	expenseID := createExpenseAs(t, ts, member, devOrgID)
@@ -172,11 +174,8 @@ func TestIntegrationInternal_TokenForOrg(t *testing.T) {
 
 	connect := func(t *testing.T) string {
 		t.Helper()
+		seedProviderCreds(t, ts)
 		org, owner := newOrgWithOwner(t, ts)
-		if _, err := svc.SaveCredentials(ctx, mustUUID(t, owner), mustUUID(t, org),
-			SaveFreeAgentCredentialsRequest{ClientID: "cid", ClientSecret: "sec"}); err != nil {
-			t.Fatalf("save creds: %v", err)
-		}
 		state, _ := ts.tokenMaker.CreateToken(mustUUID(t, owner), mustUUID(t, org), time.Minute)
 		if _, err := svc.HandleCallback(ctx, "code", state); err != nil {
 			t.Fatalf("connect: %v", err)

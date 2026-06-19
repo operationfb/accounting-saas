@@ -338,10 +338,10 @@ func (s *Server) registerRoutes() {
 		integrationSettings.Use(authMiddleware(s.tokenMaker))
 		{
 			// GET    /api/v1/integrations/freeagent → connection status
-			// PUT    /api/v1/integrations/freeagent → save client_id/client_secret
 			// DELETE /api/v1/integrations/freeagent → disconnect (drop tokens)
+			// (App credentials are global, in provider_credentials, managed in the
+			//  DB — there is no save-credentials route.)
 			integrationSettings.GET("", s.handleGetFreeAgentStatus)
-			integrationSettings.PUT("", s.handleSaveFreeAgentCredentials)
 			integrationSettings.DELETE("", s.handleDisconnectFreeAgent)
 			// POST /api/v1/integrations/freeagent/expenses/:id/push → manual re-push
 			// of an APPROVED expense (re-emits expense.approved; idempotent).

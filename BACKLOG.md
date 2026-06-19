@@ -309,8 +309,9 @@ _Last updated: 2026-06-19_
 
 ## Integrations (FreeAgent push)
 
-- **Encrypt `organisation_integrations` secrets at rest.** `client_secret`,
-  `access_token` and `refresh_token` are stored in plaintext (same caveat as the
+- **Encrypt integration secrets at rest.** The GLOBAL app `client_secret`
+  (`provider_credentials`) and each org's `access_token` / `refresh_token`
+  (`organisation_integrations`) are stored in plaintext (same caveat as the
   `organisations.mtd_*` tokens). Encrypt before production — pgcrypto
   `pgp_sym_encrypt()` or a KMS-backed approach. _Files:
   `db/schema/integrations_schema.sql`, `integration_service.go`._

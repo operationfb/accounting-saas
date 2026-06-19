@@ -1,8 +1,9 @@
 import { z } from 'zod'
 
 // Mirrors the backend's FreeAgentStatusResponse (integration_service.go). The
-// settings screen renders these; the OAuth secrets are NEVER returned. connected_at
-// is RFC3339 and present only when connected.
+// settings screen renders these. has_credentials is a GLOBAL fact (the operator
+// configured the app in provider_credentials); connected is per-org. No secrets.
+// connected_at is RFC3339 and present only when connected.
 export const FreeAgentStatusSchema = z.object({
   has_credentials: z.boolean(),
   connected: z.boolean(),
@@ -10,17 +11,10 @@ export const FreeAgentStatusSchema = z.object({
 })
 export type FreeAgentStatus = z.infer<typeof FreeAgentStatusSchema>
 
-// GET/PUT /api/v1/integrations/freeagent → { "integration": {...} }.
+// GET /api/v1/integrations/freeagent → { "integration": {...} }.
 export const GetFreeAgentStatusResponseSchema = z.object({
   integration: FreeAgentStatusSchema,
 })
-
-// PUT /api/v1/integrations/freeagent body — the org's FreeAgent OAuth app
-// credentials (from their FreeAgent developer dashboard). Both required.
-export interface SaveFreeAgentCredentialsRequest {
-  client_id: string
-  client_secret: string
-}
 
 // GET /api/v1/freeagent/connect → { "authorize_url": "..." }. The SPA navigates the
 // browser there (window.location) to start the OAuth approve step — it's JSON, not a

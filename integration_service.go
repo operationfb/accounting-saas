@@ -54,6 +54,14 @@ type IntegrationService struct {
 	faClient    *freeAgentClient
 	tokenMaker  token.Maker
 
+	// provider is the provider key this service instance manages (e.g.
+	// "freeagent"). It scopes BOTH the global provider_credentials lookup and the
+	// per-org organisation_integrations rows. It's instance config rather than a
+	// hardcoded constant so tests can use a throwaway key on the shared dev DB
+	// without touching the real global credentials row, and so a future Xero
+	// service is simply another instance.
+	provider string
+
 	// apiPublicURL is OUR backend's externally reachable base URL (e.g.
 	// https://api.example.com or http://localhost:8080). It builds the OAuth
 	// redirect_uri — the address FreeAgent redirects the browser back to — so it
@@ -67,12 +75,13 @@ type IntegrationService struct {
 }
 
 // NewIntegrationService is the constructor, called once in main.go.
-func NewIntegrationService(iq integrations.Querier, authQueries auth.Querier, faClient *freeAgentClient, tokenMaker token.Maker, apiPublicURL, appBaseURL string) *IntegrationService {
+func NewIntegrationService(iq integrations.Querier, authQueries auth.Querier, faClient *freeAgentClient, tokenMaker token.Maker, provider, apiPublicURL, appBaseURL string) *IntegrationService {
 	return &IntegrationService{
 		iq:           iq,
 		authQueries:  authQueries,
 		faClient:     faClient,
 		tokenMaker:   tokenMaker,
+		provider:     provider,
 		apiPublicURL: apiPublicURL,
 		appBaseURL:   appBaseURL,
 	}
@@ -82,16 +91,9 @@ func NewIntegrationService(iq integrations.Querier, authQueries auth.Querier, fa
 // DTOs
 // =============================================================================
 
-// SaveFreeAgentCredentialsRequest is the body for PUT /api/v1/integrations/freeagent.
-// Both fields are the OAuth app credentials from the org's FreeAgent developer
-// dashboard. Required — there's nothing to connect without them.
-type SaveFreeAgentCredentialsRequest struct {
-	ClientID     string `json:"client_id" binding:"required"`
-	ClientSecret string `json:"client_secret" binding:"required"`
-}
-
 // FreeAgentStatusResponse is what the settings screen renders. It NEVER includes
-// the secrets — only whether they are set, whether we're connected, and since when.
+// any secret — only whether the GLOBAL app credentials are configured
+// (has_credentials), whether THIS org is connected, and since when.
 type FreeAgentStatusResponse struct {
 	HasCredentials bool    `json:"has_credentials"`
 	Connected      bool    `json:"connected"`
@@ -133,59 +135,59 @@ func (s *IntegrationService) requireAdmin(ctx context.Context, userID, orgID uui
 // CREDENTIALS + STATUS
 // =============================================================================
 
-// SaveCredentials stores (or replaces) the org's FreeAgent OAuth app credentials.
-// It does NOT connect — that's the separate interactive step. Returns the status
-// so the screen updates to "credentials saved, not yet connected".
-func (s *IntegrationService) SaveCredentials(ctx context.Context, authUserID, authOrgID uuid.UUID, req SaveFreeAgentCredentialsRequest) (*FreeAgentStatusResponse, error) {
-	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
-		return nil, err
-	}
-	clientID := strings.TrimSpace(req.ClientID)
-	clientSecret := strings.TrimSpace(req.ClientSecret)
-	if clientID == "" || clientSecret == "" {
-		return nil, ErrValidation("client_id and client_secret are required", nil)
-	}
-
-	row, err := s.iq.UpsertIntegrationCredentials(ctx, integrations.UpsertIntegrationCredentialsParams{
-		OrganisationID: authOrgID,
-		Provider:       providerFreeAgent,
-		ClientID:       pgtype.Text{String: clientID, Valid: true},
-		ClientSecret:   pgtype.Text{String: clientSecret, Valid: true},
-	})
-	if err != nil {
-		return nil, ErrInternal(err)
-	}
-	return integrationStatus(row), nil
-}
-
-// GetStatus reports whether credentials are saved and whether we're connected.
-// A missing row (never configured) is a normal "not set up" state, not an error.
+// GetStatus reports whether the GLOBAL app credentials are configured and whether
+// THIS org is connected. Both "no credentials" and "never connected" are normal
+// states, not errors.
+//
+// has_credentials is now a GLOBAL fact (the provider_credentials row exists, the
+// same for every org); connected is per-org (this org has an
+// organisation_integrations row with connected_at set).
 func (s *IntegrationService) GetStatus(ctx context.Context, authUserID, authOrgID uuid.UUID) (*FreeAgentStatusResponse, error) {
 	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
 	}
+
+	resp := &FreeAgentStatusResponse{}
+
+	// Global app credentials: configured iff the provider_credentials row exists.
+	if _, err := s.iq.GetProviderCredentials(ctx, s.provider); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrInternal(err)
+		}
+		// pgx.ErrNoRows → not configured; has_credentials stays false.
+	} else {
+		resp.HasCredentials = true
+	}
+
+	// Per-org connection: connected iff this org has a row with connected_at set.
 	row, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
 		OrganisationID: authOrgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return &FreeAgentStatusResponse{}, nil // has_credentials=false, connected=false
+			return resp, nil // never connected
 		}
 		return nil, ErrInternal(err)
 	}
-	return integrationStatus(row), nil
+	resp.Connected = row.ConnectedAt.Valid
+	if row.ConnectedAt.Valid {
+		ts := row.ConnectedAt.Time.Format(time.RFC3339)
+		resp.ConnectedAt = &ts
+	}
+	return resp, nil
 }
 
-// Disconnect drops the tokens (keeping the credentials so reconnecting is one
-// click). Idempotent: clearing a non-existent/already-clear row is a no-op.
+// Disconnect drops THIS org's tokens (so it can reconnect with one click). The
+// GLOBAL app credentials (provider_credentials) are untouched — they aren't this
+// org's to remove. Idempotent: clearing a non-existent/already-clear row is a no-op.
 func (s *IntegrationService) Disconnect(ctx context.Context, authUserID, authOrgID uuid.UUID) error {
 	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
 		return err
 	}
 	if err := s.iq.ClearIntegrationTokens(ctx, integrations.ClearIntegrationTokensParams{
 		OrganisationID: authOrgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	}); err != nil {
 		return ErrInternal(err)
 	}
@@ -212,10 +214,10 @@ func (s *IntegrationService) GetExpensePushStatus(ctx context.Context, authUserI
 		return nil, ErrValidation("id is not a valid UUID", err)
 	}
 
-	// No integration row (never configured) → nothing pushed, not connected.
+	// No integration row (never connected) → nothing pushed, not connected.
 	integ, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
 		OrganisationID: authOrgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -264,22 +266,20 @@ func (s *IntegrationService) GetExpensePushStatus(ctx context.Context, authUserI
 // It deliberately returns JSON (not a 302): this endpoint is bearer-authed and a
 // top-level browser redirect can't carry the SPA's Authorization header, so the
 // SPA fetches the URL (token attached) and navigates itself.
+//
+// The client_id comes from the GLOBAL provider_credentials row — there are no
+// per-org credentials. A missing row means the integration isn't set up at all
+// (an operator must add it directly in the DB), so we 422 with a clear message.
 func (s *IntegrationService) BuildConnectURL(ctx context.Context, authUserID, authOrgID uuid.UUID) (string, error) {
 	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
 		return "", err
 	}
-	row, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
-		OrganisationID: authOrgID,
-		Provider:       providerFreeAgent,
-	})
+	creds, err := s.iq.GetProviderCredentials(ctx, s.provider)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrValidation("save your FreeAgent client_id and client_secret before connecting", nil)
+			return "", ErrValidation("FreeAgent is not configured — no app credentials are set", nil)
 		}
 		return "", ErrInternal(err)
-	}
-	if !row.ClientID.Valid || row.ClientID.String == "" {
-		return "", ErrValidation("save your FreeAgent client_id and client_secret before connecting", nil)
 	}
 
 	// state = a short-lived signed token carrying the org (and the initiating
@@ -289,7 +289,7 @@ func (s *IntegrationService) BuildConnectURL(ctx context.Context, authUserID, au
 	if err != nil {
 		return "", ErrInternal(err)
 	}
-	return s.faClient.authorizeURL(row.ClientID.String, s.redirectURI(), state), nil
+	return s.faClient.authorizeURL(creds.ClientID, s.redirectURI(), state), nil
 }
 
 // HandleCallback completes the connect: verify the signed state → recover the org,
@@ -309,29 +309,27 @@ func (s *IntegrationService) HandleCallback(ctx context.Context, code, state str
 		return s.callbackErrorURL("missing_code"), nil
 	}
 
-	row, err := s.iq.GetIntegration(ctx, integrations.GetIntegrationParams{
-		OrganisationID: orgID,
-		Provider:       providerFreeAgent,
-	})
+	// The code exchange uses the GLOBAL app credentials. A missing row means the
+	// integration was never configured (an operator must add it in the DB).
+	creds, err := s.iq.GetProviderCredentials(ctx, s.provider)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return s.callbackErrorURL("not_configured"), nil
 		}
 		return s.callbackErrorURL("internal"), ErrInternal(err)
 	}
-	if !row.ClientID.Valid || !row.ClientSecret.Valid {
-		return s.callbackErrorURL("not_configured"), nil
-	}
 
-	tok, err := s.faClient.ExchangeCode(ctx, row.ClientID.String, row.ClientSecret.String, code, s.redirectURI())
+	tok, err := s.faClient.ExchangeCode(ctx, creds.ClientID, creds.ClientSecret, code, s.redirectURI())
 	if err != nil {
 		// Transient or config failure (e.g. wrong secret, expired code) — log it.
 		return s.callbackErrorURL("exchange_failed"), ErrInternal(err)
 	}
 
+	// SetIntegrationTokens UPSERTs, so this is what CREATES the org's
+	// organisation_integrations row on its first successful connect.
 	if err := s.iq.SetIntegrationTokens(ctx, integrations.SetIntegrationTokensParams{
 		OrganisationID: orgID,
-		Provider:       providerFreeAgent,
+		Provider:       s.provider,
 		AccessToken:    pgtype.Text{String: tok.AccessToken, Valid: true},
 		RefreshToken:   pgtype.Text{String: tok.RefreshToken, Valid: tok.RefreshToken != ""},
 		// Access tokens last ~1h; store the absolute expiry so the refresh check
@@ -361,17 +359,4 @@ func (s *IntegrationService) callbackSuccessURL() string {
 
 func (s *IntegrationService) callbackErrorURL(reason string) string {
 	return strings.TrimRight(s.appBaseURL, "/") + "/settings/integrations?freeagent=error&reason=" + url.QueryEscape(reason)
-}
-
-// integrationStatus projects a DB row into the safe status DTO (no secrets).
-func integrationStatus(row integrations.OrganisationIntegration) *FreeAgentStatusResponse {
-	resp := &FreeAgentStatusResponse{
-		HasCredentials: row.ClientID.Valid && row.ClientID.String != "" && row.ClientSecret.Valid,
-		Connected:      row.ConnectedAt.Valid,
-	}
-	if row.ConnectedAt.Valid {
-		ts := row.ConnectedAt.Time.Format(time.RFC3339)
-		resp.ConnectedAt = &ts
-	}
-	return resp
 }

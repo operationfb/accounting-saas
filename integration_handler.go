@@ -12,8 +12,9 @@ package main
 //
 // Routes (registered in server.go):
 //   GET    /api/v1/integrations/freeagent   → status            (owner/admin)
-//   PUT    /api/v1/integrations/freeagent   → save credentials  (owner/admin)
 //   DELETE /api/v1/integrations/freeagent   → disconnect        (owner/admin)
+// (App credentials are GLOBAL, in provider_credentials, and managed directly in
+//  the DB — there is deliberately no save-credentials endpoint.)
 //   GET    /api/v1/freeagent/connect        → authorize URL JSON (owner/admin)
 //   GET    /api/v1/freeagent/callback       → 302 back to the SPA (PUBLIC)
 // =============================================================================
@@ -28,21 +29,6 @@ import (
 // credentials are saved and whether we're connected (no secrets returned).
 func (s *Server) handleGetFreeAgentStatus(c *gin.Context) {
 	status, err := s.integrationService.GetStatus(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"integration": status})
-}
-
-// handleSaveFreeAgentCredentials handles PUT /api/v1/integrations/freeagent —
-// store the org admin's OAuth app credentials. Returns the updated status.
-func (s *Server) handleSaveFreeAgentCredentials(c *gin.Context) {
-	var req SaveFreeAgentCredentialsRequest
-	if !bindJSON(c, &req) {
-		return
-	}
-	status, err := s.integrationService.SaveCredentials(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
 	if err != nil {
 		respondError(c, err)
 		return
