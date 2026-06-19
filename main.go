@@ -182,8 +182,10 @@ func main() {
 	}
 
 	// Base URL of the frontend, used to build the password-reset link
-	// ({APP_BASE_URL}/reset-password/<token>). Defaults to the Vite dev server.
-	appBaseURL := envOr("APP_BASE_URL", "http://localhost:5173")
+	// ({APP_BASE_URL}/reset-password/<token>) and the OAuth callback landing.
+	// Defaults to the production site so a deployment that omits APP_BASE_URL
+	// degrades to the live host rather than localhost; local dev sets it in .env.
+	appBaseURL := envOr("APP_BASE_URL", "https://kontala.com")
 
 	// How long a password-reset link stays valid. Override with PASSWORD_RESET_TTL
 	// (a Go duration string, e.g. "15m", "1h").
@@ -305,8 +307,10 @@ func main() {
 	faClient := newFreeAgentClient(freeAgentSandbox)
 	// apiPublicURL is OUR backend's externally reachable base URL — it builds the
 	// OAuth redirect_uri FreeAgent sends the browser back to (the BACKEND, distinct
-	// from the frontend appBaseURL). Defaults to the local backend port for dev.
-	apiPublicURL := envOr("API_PUBLIC_URL", "http://localhost:"+port)
+	// from the frontend appBaseURL). Defaults to the production host so a deployment
+	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
+	// local dev sets it in .env.
+	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
 	integrationService := NewIntegrationService(integrationQueries, authQueries, faClient, tokenMaker, apiPublicURL, appBaseURL)
 	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/freeagent/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"))
 

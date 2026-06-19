@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-17_
+_Last updated: 2026-06-19_
 
 ## Auth & authorization
 
@@ -319,6 +319,20 @@ _Last updated: 2026-06-17_
   only via the manual re-push). Add an outbox table written in the approve
   transaction + a sweeper that publishes, for guaranteed delivery. _Files:
   `expense_status.go`, schema._
+- **Provision a FreeAgent-aligned category chart per org.** Only the dev org
+  (`00000000-…-0001`) has the proper FreeAgent-coded chart (`db/seeds/expense_categories.sql`);
+  new orgs get no expense categories automatically, so their pushes have nothing
+  valid to map. Seed a FreeAgent-nominal-code chart on org creation (the legacy
+  ad-hoc `7400–8200` placeholder categories that several test orgs still carry are
+  not FreeAgent codes and would 400 on push). _Files: org-provisioning path,
+  `db/seeds/expense_categories.sql`._
+- **Per-provider category mapping (don't equate `nominal_code` with the provider's code).**
+  The push maps `expense_categories.nominal_code` straight to a FreeAgent category
+  URL, so we set our codes to FreeAgent's real ones (e.g. Sundries = `280`). A second
+  provider (Xero/QuickBooks) uses a different chart, so add a per-(provider, category)
+  mapping (column or table) and have the internal expense-for-push endpoint emit the
+  provider's code rather than our raw `nominal_code`. _Files: `integration_internal.go`,
+  `db/queries/integrations.sql`, schema._
 - **Remaining FreeAgent push work** (Pub/Sub publish, internal OIDC endpoints, the
   Cloud Workflow + Eventarc, manual re-push, user-ref cache, manual user-mapping
   UI, push-status read, attachment push, reverse sync) — see the approved plan at

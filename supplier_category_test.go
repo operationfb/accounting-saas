@@ -101,9 +101,9 @@ func TestSupplierCategoryLearnTrigger(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.pool.Close()
 
-	travel := categoryUUID(t, ts, devOrgID, "6035")   // Travel
-	sundries := categoryUUID(t, ts, devOrgID, "6021") // Sundries (also the Smart Upload placeholder)
-	office := categoryUUID(t, ts, devOrgID, "6013")   // Office Costs
+	travel := categoryUUID(t, ts, devOrgID, "365")   // Travel
+	sundries := categoryUUID(t, ts, devOrgID, "280") // Sundries (also the Smart Upload placeholder)
+	office := categoryUUID(t, ts, devOrgID, "250")   // Office Costs
 
 	t.Run("a confirmed expense teaches supplier→category", func(t *testing.T) {
 		cleanupMapKeys(t, ts, devOrgID, "tesco stores")
@@ -227,9 +227,9 @@ func TestSupplierCategoryAutoCategorise(t *testing.T) {
 	defer ts.pool.Close()
 
 	devOrg := mustUUID(t, devOrgID)
-	travel := categoryUUID(t, ts, devOrgID, "6035")
-	office := categoryUUID(t, ts, devOrgID, "6013")
-	placeholder := categoryUUID(t, ts, devOrgID, placeholderCategoryNominal) // 6021 Sundries
+	travel := categoryUUID(t, ts, devOrgID, "365")
+	office := categoryUUID(t, ts, devOrgID, "250")
+	placeholder := categoryUUID(t, ts, devOrgID, placeholderCategoryNominal) // 280 Sundries
 
 	// seedMapping puts a remembered mapping in place directly, so the consume test
 	// doesn't depend on the trigger having run.

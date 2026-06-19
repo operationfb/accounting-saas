@@ -1,6 +1,16 @@
-# Cloud Build config: build the unified API+SPA image and push it to Artifact
-# Registry. Deployment to Cloud Run is a SEPARATE step (`gcloud run deploy`) — see
-# deployment/README.md — so this build needs no deploy permissions.
+# Cloud Build config: build the unified API+SPA image, push it to Artifact Registry,
+# AND deploy it to Cloud Run — so every build ships automatically.
+#
+# Because this now deploys, the Cloud Build service account needs deploy permissions
+# (grant once):
+#   CB_SA="$(gcloud projects describe stocks-ag --format='value(projectNumber)')@cloudbuild.gserviceaccount.com"
+#   # deploy / update the Cloud Run service (run.admin also covers --allow-unauthenticated)
+#   gcloud projects add-iam-policy-binding stocks-ag \
+#     --member="serviceAccount:$CB_SA" --role=roles/run.admin
+#   # allow the build to deploy a service that RUNS AS the runtime SA (actAs)
+#   gcloud iam service-accounts add-iam-policy-binding \
+#     accounting-saas-run@stocks-ag.iam.gserviceaccount.com \
+#     --member="serviceAccount:$CB_SA" --role=roles/iam.serviceAccountUser
 #
 # Run from the repo root:
 #   gcloud builds submit . \
@@ -22,13 +32,39 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', '--all-tags', '${_IMAGE}']
 
+  # Deploy the freshly-built image to Cloud Run. Steps run sequentially, so this
+  # waits for the push above. It deploys the exact image just built (${_TAG}, the git
+  # SHA when --substitutions is passed) and reuses deployment/env.dev.yaml + the same
+  # secrets and flags as the manual `gcloud run deploy`.
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE}'
+      - '--image=${_IMAGE}:${_TAG}'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--service-account=${_RUNTIME_SA}'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--cpu=1'
+      - '--memory=512Mi'
+      - '--min-instances=0'
+      - '--max-instances=2'
+      - '--env-vars-file=deployment/env.dev.yaml'
+      - '--set-secrets=DATABASE_URL=database-url:latest,PASETO_SYMMETRIC_KEY=paseto-symmetric-key:latest,MAILGUN_INBOUND_SIGNING_KEY=mailgun-inbound-signing-key:latest,SMTP_PASSWORD=smtp-password:latest'
+      - '--quiet'
+
 images:
   - '${_IMAGE}:${_TAG}'
   - '${_IMAGE}:latest'
 
 substitutions:
-  _IMAGE: 'europe-west2-docker.pkg.dev/stocks-ag/accounting-saas/server'
+  _IMAGE: 'europe-west1-docker.pkg.dev/stocks-ag/accounting-saas/server'
   _TAG: 'latest'   # overridden with the short git SHA via --substitutions
+  _REGION: 'europe-west1'
+  _SERVICE: 'accounting-saas-dev'
+  _RUNTIME_SA: 'accounting-saas-run@stocks-ag.iam.gserviceaccount.com'
 
 # npm ci + vite build + go build can take a few minutes; give it headroom.
 timeout: 1200s

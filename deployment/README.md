@@ -60,7 +60,7 @@ For convenience, set these once per shell:
 
 ```bash
 export PROJECT_ID=stocks-ag
-export REGION=europe-west2
+export REGION=europe-west1
 export REPO=accounting-saas
 export SERVICE=accounting-saas-dev
 export IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/server"
@@ -206,7 +206,7 @@ resolves to a real SPA route. Set it after the first deploy:
 
 ```bash
 URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
-gcloud run services update "$SERVICE" --region="$REGION" --update-env-vars="APP_BASE_URL=$URL"
+gcloud run services update "$SERVICE" --region="$REGION" --update-env-vars="APP_BASE_URL=https://kontala.com"
 echo "Deployed at: $URL"
 ```
 

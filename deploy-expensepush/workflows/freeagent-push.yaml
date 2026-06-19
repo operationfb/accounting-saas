@@ -28,7 +28,7 @@ main:
     - init:
         assign:
           # ↓↓↓ REPLACE with the monolith's Cloud Run URL (no trailing slash). ↓↓↓
-          - MONOLITH: "https://REPLACE-WITH-CLOUD-RUN-URL"
+          - MONOLITH: "https://kontala.com"
           # Eventarc delivers the Pub/Sub message base64-encoded in event.data.message.data.
           - msg: ${json.decode(base64.decode(event.data.message.data))}
           - org: ${msg.organisation_id}

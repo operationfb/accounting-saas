@@ -56,7 +56,7 @@ PROJECT=your-project-id
 REGION=europe-west1
 MONOLITH_SERVICE=accounting-saas                 # the Cloud Run service name
 MONOLITH_SA="acounting-api@stocks-ag.iam.gserviceaccount.com"             # the Cloud Run runtime SA (publishes events)
-WF_SA="freeagent-push-wf@${PROJECT}.iam.gserviceaccount.com"
+WF_SA="freeagent-push-wf@stocks-ag.iam.gserviceaccount.com"
 
 # 1. Pub/Sub: the event topic + a dead-letter topic for poison messages.
 gcloud pubsub topics create expense-approved     --project=$PROJECT --message-storage-policy-allowed-regions=$REGION
@@ -67,28 +67,28 @@ gcloud pubsub topics add-iam-policy-binding expense-approved --project=$PROJECT 
     --member="serviceAccount:${MONOLITH_SA}" --role="roles/pubsub.publisher"
 
 # 3. The workflow's service account + the roles it needs.
-gcloud iam service-accounts create freeagent-push-wf --project=$PROJECT \
+gcloud iam service-accounts create freeagent-push-wf --project=stocks-ag \
     --display-name="FreeAgent push workflow"
 # Call the monolith's OIDC-gated /internal endpoints (Cloud Run):
-gcloud run services add-iam-policy-binding $MONOLITH_SERVICE --project=$PROJECT --region=$REGION \
-    --member="serviceAccount:${WF_SA}" --role="roles/run.invoker"
+gcloud run services add-iam-policy-binding accounting-saas --project=stocks-ag --region=europe-west1 \
+    --member="serviceAccount:freeagent-push-wf@stocks-ag.iam.gserviceaccount.com" --role="roles/run.invoker"
 # Be started by Eventarc, and run as itself:
-gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:${WF_SA}" --role="roles/workflows.invoker"
-gcloud projects add-iam-policy-binding $PROJECT --member="serviceAccount:${WF_SA}" --role="roles/eventarc.eventReceiver"
+gcloud projects add-iam-policy-binding stocks-ag --member="serviceAccount:freeagent-push-wf@stocks-ag.iam.gserviceaccount.com" --role="roles/workflows.invoker"
+gcloud projects add-iam-policy-binding stocks-ag --member="serviceAccount:freeagent-push-wf@stocks-ag.iam.gserviceaccount.com" --role="roles/eventarc.eventReceiver"
 
 # 4. Deploy the workflow.  FIRST edit deploy/workflows/freeagent-push.yaml and set
 #    MONOLITH to the deployed Cloud Run URL.
-gcloud workflows deploy freeagent-push --project=$PROJECT --location=$REGION \
-    --source=deploy/workflows/freeagent-push.yaml \
-    --service-account="${WF_SA}"
+gcloud workflows deploy freeagent-push --project=stocks-ag --location=europe-west1 \
+    --source=deploy-expensepush/workflows/freeagent-push.yaml \
+    --service-account="freeagent-push-wf@stocks-ag.iam.gserviceaccount.com"
 
 # 5. Eventarc: Pub/Sub topic → workflow.
-gcloud eventarc triggers create freeagent-push-trigger --project=$PROJECT --location=$REGION \
+gcloud eventarc triggers create freeagent-push-trigger --project=stocks-ag --location=europe-west1 \
     --destination-workflow=freeagent-push \
-    --destination-workflow-location=$REGION \
+    --destination-workflow-location=europe-west1 \
     --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
-    --transport-topic="projects/${PROJECT}/topics/expense-approved" \
-    --service-account="${WF_SA}"
+    --transport-topic="projects/stocks-ag/topics/expense-approved" \
+    --service-account="freeagent-push-wf@stocks-ag.iam.gserviceaccount.com"
 
 # 6. Set the monolith env (Cloud Run): PUBSUB_EXPENSE_APPROVED_TOPIC=expense-approved,
 #    GOOGLE_CLOUD_PROJECT=$PROJECT, WORKFLOW_SERVICE_ACCOUNT=${WF_SA}, then redeploy.

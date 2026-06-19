@@ -46,10 +46,11 @@ import (
 )
 
 // placeholderCategoryNominal is the nominal code of the catch-all category a
-// Smart Upload skeleton is filed under until the user picks a real one. '6021'
-// is "Sundries" in the seeded chart of accounts — a normal, VAT-able admin
-// category, which is the least-wrong default for an as-yet-unclassified receipt.
-const placeholderCategoryNominal = "6021"
+// Smart Upload skeleton is filed under until the user picks a real one. '280'
+// is "Sundries" in the seeded chart of accounts (FreeAgent's nominal code) — a
+// normal, VAT-able admin category, the least-wrong default for an as-yet-
+// unclassified receipt.
+const placeholderCategoryNominal = "280"
 
 // placeholderDescription is the stand-in description on a Smart Upload skeleton
 // until OCR (or the user) supplies a real one. OcrService replaces it — and only
