@@ -514,6 +514,53 @@ func (s *AttachmentService) GetDownloadURL(ctx context.Context, callerID, orgID 
 	return url, nil
 }
 
+// PrimaryAttachmentForPush returns the bytes of an expense's PRIMARY attachment for
+// an outbound integration push (e.g. FreeAgent). It is org-scoped and re-reads the
+// bytes from object storage, exactly like the OCR worker. A receipt larger than
+// maxBytes is SKIPPED (found=false) WITHOUT downloading — an oversized file the
+// destination would reject shouldn't fail the whole push, and we shouldn't pull
+// bytes only to discard them. maxBytes <= 0 disables the size guard.
+//
+// found=false (with a nil error) means "nothing to push": no attachment, an
+// oversized one, or a cross-tenant expense id (the org-scoped query finds no row).
+// Only a genuine storage/DB failure is an error — and it's a RAW error, so the
+// caller (integrations.Service) owns the HTTP-status mapping. This satisfies the
+// integrations.AttachmentFetcher interface.
+func (s *AttachmentService) PrimaryAttachmentForPush(ctx context.Context, orgID, expenseID uuid.UUID, maxBytes int64) (data []byte, fileName, contentType string, found bool, err error) {
+	row, err := s.queries.GetPrimaryAttachmentForPush(ctx, expenses.GetPrimaryAttachmentForPushParams{
+		ExpenseID:      expenseID,
+		OrganisationID: orgID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", "", false, nil // no attachment (or cross-tenant) — not an error
+		}
+		return nil, "", "", false, fmt.Errorf("look up primary attachment: %w", err)
+	}
+
+	// Size-guard from the stored metadata BEFORE downloading.
+	if maxBytes > 0 && int64(row.FileSizeBytes) > maxBytes {
+		return nil, "", "", false, nil
+	}
+
+	if s.storage == nil {
+		return nil, "", "", false, errors.New("file storage is not configured (GCS_BUCKET unset)")
+	}
+	rc, err := s.storage.Download(ctx, row.StoragePath)
+	if err != nil {
+		return nil, "", "", false, fmt.Errorf("download attachment %q: %w", row.StoragePath, err)
+	}
+	defer rc.Close()
+
+	// Uploads are capped at defaultMaxUploadBytes, so the object is bounded and
+	// ReadAll is safe (the metadata guard above already enforced the dest limit).
+	data, err = io.ReadAll(rc)
+	if err != nil {
+		return nil, "", "", false, fmt.Errorf("read attachment %q: %w", row.StoragePath, err)
+	}
+	return data, row.FileName, row.ContentType, true, nil
+}
+
 // SetPrimary marks one attachment as the primary (default) file for its expense,
 // clearing the flag on the others in the same transaction so exactly one remains.
 func (s *AttachmentService) SetPrimary(ctx context.Context, callerID, orgID uuid.UUID, expenseID, attachmentID string) (*AttachmentResponse, error) {

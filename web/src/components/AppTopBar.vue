@@ -8,6 +8,14 @@ import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
 import { useAuthStore } from '@/stores/auth'
 
+const isMobileMenuOpen = ref(false)
+function toggleMobileMenu() {
+  isMobileMenuOpen.value = !isMobileMenuOpen.value
+}
+function closeMobileMenu() {
+  isMobileMenuOpen.value = false
+}
+
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
@@ -76,9 +84,20 @@ function changePassword() {
 </script>
 
 <template>
-  <header class="bg-fa-nav text-white">
+  <header class="relative bg-fa-nav text-white">
     <nav class="mx-auto flex h-[46px] max-w-[1200px] items-stretch justify-between px-4">
-      <ul class="flex items-stretch gap-0.5">
+      <!-- Hamburger button: visible only on phones (hidden on sm+) -->
+      <button
+        type="button"
+        class="block sm:hidden inline-flex h-[46px] w-[34px] items-center justify-center text-white"
+        aria-label="Toggle navigation menu"
+        @click="toggleMobileMenu"
+      >
+        <i :class="isMobileMenuOpen ? 'pi pi-times' : 'pi pi-bars'" />
+      </button>
+
+      <!-- Desktop nav items: hidden on phones, visible on sm+ -->
+      <ul class="hidden sm:flex items-stretch gap-0.5">
         <li v-for="item in navItems" :key="item.label" class="flex items-stretch">
           <!-- Items with a `to` render as a real <RouterLink>; the rest are inert. -->
           <component
@@ -134,5 +153,25 @@ function changePassword() {
         </Menu>
       </div>
     </nav>
+
+    <!-- Mobile nav dropdown: full-width panel below the bar, phones only -->
+    <div
+      v-if="isMobileMenuOpen"
+      class="absolute left-0 right-0 top-[46px] z-50 bg-fa-nav sm:hidden"
+    >
+      <ul class="border-t border-white/10 py-1">
+        <li v-for="item in navItems" :key="item.label">
+          <component
+            :is="item.to ? RouterLink : 'span'"
+            :to="item.to"
+            class="flex cursor-pointer items-center gap-2 px-5 py-3 text-sm font-medium hover:bg-fa-nav-active"
+            :class="{ 'bg-fa-nav-active': isActive(item) }"
+            @click="closeMobileMenu"
+          >
+            {{ item.label }}
+          </component>
+        </li>
+      </ul>
+    </div>
   </header>
 </template>

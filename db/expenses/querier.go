@@ -215,6 +215,17 @@ type Querier interface {
 	// This is the query you'd use for the "view expense" detail page.
 	// -----------------------------------------------------------------------------
 	GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithDetailsParams) (VExpensesFull, error)
+	// -----------------------------------------------------------------------------
+	// GetPrimaryAttachmentForPush
+	// The PRIMARY attachment for an expense, for an outbound integration push (e.g.
+	// FreeAgent): the external Cloud Workflow fetches it via the OIDC internal
+	// endpoint. Org-scoped on the denormalised organisation_id, so a cross-tenant
+	// expense id finds no row (reads back as "no attachment"). Returns only what the
+	// push needs — the GCS key plus the metadata we base64-encode + send.
+	// is_primary DESC, created_at ASC + LIMIT 1 = the same "primary, else oldest"
+	// ordering the UI list uses, collapsed to the single file we push.
+	// -----------------------------------------------------------------------------
+	GetPrimaryAttachmentForPush(ctx context.Context, arg GetPrimaryAttachmentForPushParams) (GetPrimaryAttachmentForPushRow, error)
 	// =============================================================================
 	// SECTION 6b: SUPPLIER → CATEGORY DICTIONARY (auto-categorisation)
 	//

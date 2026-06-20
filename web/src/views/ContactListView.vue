@@ -193,7 +193,8 @@ onMounted(load)
       <!-- Data -->
       <template v-else>
         <!-- Grid (table) view -->
-        <table v-if="viewMode === 'Grid'" class="w-full border-collapse text-sm">
+        <div v-if="viewMode === 'Grid'" class="overflow-x-auto">
+        <table class="w-full border-collapse text-sm">
           <thead>
             <tr>
               <th class="border-b border-fa-border px-4 py-3 text-left text-[13px] font-semibold text-fa-muted">
@@ -265,6 +266,7 @@ onMounted(load)
             </tr>
           </tfoot>
         </table>
+        </div>
 
         <!-- List (stacked cards) view -->
         <div v-else class="divide-y divide-[#eef1f4]">

@@ -268,10 +268,10 @@ function cancel() {
       <!-- 1. Contact Details -->
       <FaCard title="Contact Details" note="Required fields *">
         <FormRow label="First Name" label-for="first-name" required>
-          <InputText id="first-name" v-model="form.firstName" class="w-72" :invalid="!!errors.name" />
+          <InputText id="first-name" v-model="form.firstName" class="w-full sm:w-72" :invalid="!!errors.name" />
         </FormRow>
         <FormRow label="Last Name" label-for="last-name" required>
-          <InputText id="last-name" v-model="form.lastName" class="w-72" :invalid="!!errors.name" />
+          <InputText id="last-name" v-model="form.lastName" class="w-full sm:w-72" :invalid="!!errors.name" />
         </FormRow>
         <FormRow label="Organisation" label-for="organisation" required>
           <InputText id="organisation" v-model="form.organisationName" class="w-full max-w-md" :invalid="!!errors.name" />
@@ -289,10 +289,10 @@ function cancel() {
           <p v-if="errors.billingEmail" class="text-xs text-[#c0392b]">{{ errors.billingEmail }}</p>
         </FormRow>
         <FormRow label="Telephone" label-for="telephone">
-          <InputText id="telephone" v-model="form.telephone" class="w-56" />
+          <InputText id="telephone" v-model="form.telephone" class="w-full sm:w-56" />
         </FormRow>
         <FormRow label="Mobile Number" label-for="mobile">
-          <InputText id="mobile" v-model="form.mobile" class="w-56" />
+          <InputText id="mobile" v-model="form.mobile" class="w-full sm:w-56" />
         </FormRow>
       </FaCard>
 
@@ -304,13 +304,13 @@ function cancel() {
           <InputText v-model="form.addressLine3" class="w-full max-w-md" aria-label="Address line 3" />
         </FormRow>
         <FormRow label="Town" label-for="town">
-          <InputText id="town" v-model="form.town" class="w-72" />
+          <InputText id="town" v-model="form.town" class="w-full sm:w-72" />
         </FormRow>
         <FormRow label="Region or State" label-for="region">
-          <InputText id="region" v-model="form.region" class="w-72" />
+          <InputText id="region" v-model="form.region" class="w-full sm:w-72" />
         </FormRow>
         <FormRow label="Post/Zip code" label-for="postcode">
-          <InputText id="postcode" v-model="form.postcode" class="w-40" />
+          <InputText id="postcode" v-model="form.postcode" class="w-full sm:w-40" />
         </FormRow>
         <FormRow label="Country" label-for="country">
           <Select
@@ -321,7 +321,7 @@ function cancel() {
             option-value="value"
             filter
             filter-placeholder="Search countries"
-            class="w-72"
+            class="w-full sm:w-72"
           />
         </FormRow>
       </FaCard>
@@ -329,7 +329,7 @@ function cancel() {
       <!-- 3. Invoicing Options -->
       <FaCard title="Invoicing Options">
         <FormRow label="Default Payment Terms" label-for="terms">
-          <InputGroup class="w-40">
+          <InputGroup class="w-full sm:w-40">
             <InputText
               id="terms"
               v-model="form.paymentTermsDays"
@@ -374,7 +374,7 @@ function cancel() {
           />
         </FormRow>
         <FormRow label="VAT Registration Number" label-for="vat-reg">
-          <InputText id="vat-reg" v-model="form.vatRegistrationNumber" class="w-56" />
+          <InputText id="vat-reg" v-model="form.vatRegistrationNumber" class="w-full sm:w-56" />
         </FormRow>
         <FormRow label="Invoice/Estimate Language" label-for="lang">
           <Select
@@ -383,7 +383,7 @@ function cancel() {
             :options="languageOptions"
             option-label="label"
             option-value="value"
-            class="w-56"
+            class="w-full sm:w-56"
           />
         </FormRow>
       </FaCard>
@@ -391,13 +391,13 @@ function cancel() {
       <!-- 4. Contact Bank Account Details -->
       <FaCard title="Contact Bank Account Details">
         <FormRow label="Sort Code" label-for="sort-code">
-          <InputText id="sort-code" v-model="form.bankSortCode" class="w-40" />
+          <InputText id="sort-code" v-model="form.bankSortCode" class="w-full sm:w-40" />
         </FormRow>
         <FormRow label="Account Number" label-for="account-number">
-          <InputText id="account-number" v-model="form.bankAccountNumber" class="w-56" />
+          <InputText id="account-number" v-model="form.bankAccountNumber" class="w-full sm:w-56" />
         </FormRow>
         <FormRow label="Recipient name" label-for="recipient">
-          <InputText id="recipient" v-model="form.bankRecipientName" class="w-72" />
+          <InputText id="recipient" v-model="form.bankRecipientName" class="w-full sm:w-72" />
         </FormRow>
       </FaCard>
 

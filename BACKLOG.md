@@ -332,11 +332,11 @@ _Last updated: 2026-06-19_
   URL, so we set our codes to FreeAgent's real ones (e.g. Sundries = `280`). A second
   provider (Xero/QuickBooks) uses a different chart, so add a per-(provider, category)
   mapping (column or table) and have the internal expense-for-push endpoint emit the
-  provider's code rather than our raw `nominal_code`. _Files: `integration_internal.go`,
+  provider's code rather than our raw `nominal_code`. _Files: `internal/integrations/workflow.go`,
   `db/queries/integrations.sql`, schema._
 - **Remaining FreeAgent push work** (Pub/Sub publish, internal OIDC endpoints, the
   Cloud Workflow + Eventarc, manual re-push, user-ref cache, manual user-mapping
-  UI, push-status read, attachment push, reverse sync) — see the approved plan at
+  UI, push-status read, reverse sync) — see the approved plan at
   `~/.claude/plans/i-d-like-to-push-peppy-papert.md`. Add/remove as each lands.
 
 ## Cleanups (also flagged as background tasks)

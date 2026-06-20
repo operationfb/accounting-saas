@@ -630,6 +630,25 @@ WHERE id              = $1
 
 
 -- -----------------------------------------------------------------------------
+-- GetPrimaryAttachmentForPush
+-- The PRIMARY attachment for an expense, for an outbound integration push (e.g.
+-- FreeAgent): the external Cloud Workflow fetches it via the OIDC internal
+-- endpoint. Org-scoped on the denormalised organisation_id, so a cross-tenant
+-- expense id finds no row (reads back as "no attachment"). Returns only what the
+-- push needs — the GCS key plus the metadata we base64-encode + send.
+-- is_primary DESC, created_at ASC + LIMIT 1 = the same "primary, else oldest"
+-- ordering the UI list uses, collapsed to the single file we push.
+-- -----------------------------------------------------------------------------
+-- name: GetPrimaryAttachmentForPush :one
+SELECT storage_path, file_name, content_type, file_size_bytes
+FROM expense_attachments
+WHERE expense_id      = $1
+  AND organisation_id = $2
+ORDER BY is_primary DESC, created_at ASC
+LIMIT 1;
+
+
+-- -----------------------------------------------------------------------------
 -- FindDuplicateReceipt
 -- Content-level dedupe for the email channel: is there already a NON-DELETED
 -- expense for this claimant in this org whose attachment has the identical

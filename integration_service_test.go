@@ -185,7 +185,9 @@ func fakeFreeAgentTokenServer(t *testing.T) *httptest.Server {
 // real FreeAgent. It shares the harness's pool + maker + throwaway provider key.
 func freeAgentServiceWithHost(ts *testServer, host string) *integrations.Service {
 	client := freeagent.NewClientWithHost(host)
-	return integrations.NewService(integrationsdb.New(ts.pool), auth.New(ts.pool), client, ts.faProvider, ts.tokenMaker, "http://api.test", testAppBaseURL)
+	// nil fetcher / 0 cap: these helpers drive the OAuth + token + push-result paths,
+	// not the attachment fetch (AttachmentForPush is covered separately).
+	return integrations.NewService(integrationsdb.New(ts.pool), auth.New(ts.pool), client, nil, 0, ts.faProvider, ts.tokenMaker, "http://api.test", testAppBaseURL)
 }
 
 // =============================================================================

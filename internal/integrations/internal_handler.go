@@ -30,6 +30,7 @@ func (h *Handler) RegisterInternalRoutes(r *gin.Engine, workflowSA string) {
 	{
 		internal.GET("/integrations/"+p+"/token", h.InternalTokenForOrg)
 		internal.GET("/expenses/:id", h.InternalExpenseForPush)
+		internal.GET("/expenses/:id/attachment", h.InternalExpenseAttachment)
 		internal.POST("/integrations/"+p+"/push-result", h.InternalPushResult)
 	}
 }
@@ -107,6 +108,31 @@ func (h *Handler) InternalExpenseForPush(c *gin.Context) {
 	resp, err := h.svc.ExpenseForPush(c.Request.Context(), org, expenseID)
 	if err != nil {
 		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// InternalExpenseAttachment returns the expense's primary receipt as base64 (200),
+// or 204 No Content when there's nothing to push. The workflow treats both as
+// success and only adds the attachment on 200.
+func (h *Handler) InternalExpenseAttachment(c *gin.Context) {
+	org, ok := internalOrgParam(c)
+	if !ok {
+		return
+	}
+	expenseID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		kernel.RespondError(c, kernel.ErrValidation("expense id is not a valid UUID", err))
+		return
+	}
+	resp, found, err := h.svc.AttachmentForPush(c.Request.Context(), org, expenseID)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	if !found {
+		c.Status(http.StatusNoContent)
 		return
 	}
 	c.JSON(http.StatusOK, resp)

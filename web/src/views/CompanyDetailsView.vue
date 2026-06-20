@@ -259,7 +259,7 @@ function cancel() {
             option-value="value"
             placeholder="Select a company type"
             show-clear
-            class="w-72"
+            class="w-full sm:w-72"
             :disabled="!canEdit"
           />
         </FormRow>
@@ -299,20 +299,20 @@ function cancel() {
           <InputText
             id="town"
             v-model="form.town"
-            class="w-72"
+            class="w-full sm:w-72"
             :invalid="!!errors.town"
             :disabled="!canEdit"
           />
           <p v-if="errors.town" class="text-xs text-[#c0392b]">{{ errors.town }}</p>
         </FormRow>
         <FormRow label="Region or State" label-for="region">
-          <InputText id="region" v-model="form.region" class="w-72" :disabled="!canEdit" />
+          <InputText id="region" v-model="form.region" class="w-full sm:w-72" :disabled="!canEdit" />
         </FormRow>
         <FormRow label="Post/Zip code" label-for="postcode" required>
           <InputText
             id="postcode"
             v-model="form.postcode"
-            class="w-40"
+            class="w-full sm:w-40"
             :invalid="!!errors.postcode"
             :disabled="!canEdit"
           />
@@ -327,7 +327,7 @@ function cancel() {
             option-value="value"
             filter
             filter-placeholder="Search countries"
-            class="w-72"
+            class="w-full sm:w-72"
             :disabled="!canEdit"
           />
         </FormRow>
@@ -335,7 +335,7 @@ function cancel() {
           <InputText
             id="business-phone"
             v-model="form.businessPhone"
-            class="w-56"
+            class="w-full sm:w-56"
             :disabled="!canEdit"
           />
         </FormRow>
@@ -343,7 +343,7 @@ function cancel() {
           <InputText
             id="crn"
             v-model="form.companiesHouseNumber"
-            class="w-56"
+            class="w-full sm:w-56"
             :invalid="!!errors.companiesHouseNumber"
             :disabled="!canEdit"
           />
@@ -352,20 +352,20 @@ function cancel() {
           </p>
         </FormRow>
         <FormRow label="PAYE Reference" label-for="paye">
-          <InputText id="paye" v-model="form.payeReference" class="w-56" :disabled="!canEdit" />
+          <InputText id="paye" v-model="form.payeReference" class="w-full sm:w-56" :disabled="!canEdit" />
           <p class="text-xs text-fa-muted">e.g. 123/A246</p>
         </FormRow>
         <FormRow label="Accounts Office Reference" label-for="aor">
           <InputText
             id="aor"
             v-model="form.accountsOfficeReference"
-            class="w-56"
+            class="w-full sm:w-56"
             :disabled="!canEdit"
           />
           <p class="text-xs text-fa-muted">e.g. 123PA00045678</p>
         </FormRow>
         <FormRow label="Corporation Tax Reference" label-for="utr">
-          <InputText id="utr" v-model="form.utr" class="w-56" :disabled="!canEdit" />
+          <InputText id="utr" v-model="form.utr" class="w-full sm:w-56" :disabled="!canEdit" />
           <p class="text-xs text-fa-muted">Also known as a COTAX Reference e.g. 1234567890</p>
         </FormRow>
       </FaCard>
@@ -389,7 +389,7 @@ function cancel() {
           <InputText
             id="contact-phone"
             v-model="form.contactPhone"
-            class="w-56"
+            class="w-full sm:w-56"
             :disabled="!canEdit"
           />
         </FormRow>

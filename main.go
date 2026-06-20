@@ -314,7 +314,7 @@ func main() {
 	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
 	// local dev sets it in .env.
 	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
-	integrationSvc := integrations.NewService(integrationQueries, authQueries, faClient, freeagent.ProviderKey, tokenMaker, apiPublicURL, appBaseURL)
+	integrationSvc := integrations.NewService(integrationQueries, authQueries, faClient, attachmentService, freeagent.MaxAttachmentBytes, freeagent.ProviderKey, tokenMaker, apiPublicURL, appBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
 	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/%s/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"), freeagent.ProviderKey)
 

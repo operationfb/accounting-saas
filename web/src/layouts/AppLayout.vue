@@ -10,7 +10,7 @@ import AppFooter from '@/components/AppFooter.vue'
   <div class="flex min-h-screen flex-col bg-white">
     <AppTopBar />
     <main class="flex-1">
-      <div class="mx-auto max-w-[1200px] px-4 py-6">
+      <div class="mx-auto max-w-[1200px] px-3 py-4 sm:px-4 sm:py-6">
         <slot />
       </div>
     </main>

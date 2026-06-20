@@ -780,7 +780,7 @@ async function onSmartFilePicked(e: Event) {
         v-model:visible="smartDialog"
         modal
         header="Smart upload"
-        :style="{ width: '30rem' }"
+        :style="{ width: 'min(30rem, 95vw)' }"
         :closable="!capturing"
       >
         <p class="mb-4 text-sm text-fa-muted">What are you uploading? We’ll use the right reader.</p>
@@ -834,7 +834,7 @@ async function onSmartFilePicked(e: Event) {
             :placeholder="membersLoading ? 'Loading…' : 'Select a person'"
             :loading="membersLoading"
             :disabled="isEdit || !auth.isOrgAdmin"
-            class="w-72"
+            class="w-full sm:w-72"
           />
           <p v-if="membersError" class="text-xs text-[#c0392b]">
             {{ membersError }}
@@ -859,7 +859,7 @@ async function onSmartFilePicked(e: Event) {
             :invalid="!!errors.category"
             filter
             filter-placeholder="Search categories"
-            class="w-72"
+            class="w-full sm:w-72"
           />
           <p v-if="categoriesError" class="text-xs text-[#c0392b]">
             {{ categoriesError }}
@@ -883,13 +883,13 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
 
         <FormRow label="Currency" label-for="currency" required>
-          <Select id="currency" v-model="form.currency" :options="currencyOptions" class="w-40" />
+          <Select id="currency" v-model="form.currency" :options="currencyOptions" class="w-full sm:w-40" />
         </FormRow>
 
         <FormRow label="Total value" label-for="total" required>
           <!-- Money is entered as text (never a numeric/float input) and validated
                as a positive decimal with ≤2 dp before sending. -->
-          <InputGroup class="w-56">
+          <InputGroup class="w-full sm:w-56">
             <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
             <InputText
               id="total"
@@ -923,7 +923,7 @@ async function onSmartFilePicked(e: Event) {
             :placeholder="vatRatesLoading ? 'Loading…' : 'Select a VAT rate'"
             :loading="vatRatesLoading"
             :invalid="!!errors.vatRate"
-            class="w-56"
+            class="w-full sm:w-56"
           />
           <p v-if="vatRatesError" class="text-xs text-[#c0392b]">
             {{ vatRatesError }}
@@ -933,7 +933,7 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
 
         <FormRow label="VAT amount" label-for="vatamount" required>
-          <InputGroup class="w-56">
+          <InputGroup class="w-full sm:w-56">
             <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
             <InputText
               id="vatamount"
@@ -965,22 +965,22 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
 
         <FormRow label="Supplier name" label-for="supplier">
-          <InputText id="supplier" v-model="form.supplierName" class="w-72" />
+          <InputText id="supplier" v-model="form.supplierName" class="w-full sm:w-72" />
           <span v-if="ocrPolling" class="block text-xs text-fa-muted"><i class="pi pi-spin pi-spinner" /> reading…</span>
         </FormRow>
 
         <FormRow label="Supplier VAT number" label-for="supplier-vat">
-          <InputText id="supplier-vat" v-model="form.supplierVat" class="w-56" />
+          <InputText id="supplier-vat" v-model="form.supplierVat" class="w-full sm:w-56" />
           <span v-if="ocrPolling" class="block text-xs text-fa-muted"><i class="pi pi-spin pi-spinner" /> reading…</span>
         </FormRow>
 
         <FormRow label="Invoice number" label-for="invoice">
-          <InputText id="invoice" v-model="form.invoiceNumber" class="w-56" />
+          <InputText id="invoice" v-model="form.invoiceNumber" class="w-full sm:w-56" />
           <span v-if="ocrPolling" class="block text-xs text-fa-muted"><i class="pi pi-spin pi-spinner" /> reading…</span>
         </FormRow>
 
         <FormRow label="Receipt reference" label-for="receipt">
-          <InputText id="receipt" v-model="form.receiptReference" class="w-40" />
+          <InputText id="receipt" v-model="form.receiptReference" class="w-full sm:w-40" />
         </FormRow>
       </FaCard>
 
@@ -997,7 +997,7 @@ async function onSmartFilePicked(e: Event) {
             :loading="projectsLoading"
             filter
             filter-placeholder="Search projects"
-            class="w-72"
+            class="w-full sm:w-72"
           />
           <p v-if="projectsError" class="text-xs text-[#c0392b]">
             {{ projectsError }}

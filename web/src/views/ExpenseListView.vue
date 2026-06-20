@@ -301,7 +301,7 @@ const templateFields = [
   <AppLayout>
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-[22px] font-bold">Out-of-Pocket Expenses</h1>
-      <div class="flex gap-2.5">
+      <div class="flex flex-wrap gap-2.5">
         <Button label="Import expenses" severity="secondary" outlined @click="showImport = true" />
         <Button
           label="Export expenses"
@@ -370,6 +370,7 @@ const templateFields = [
 
       <!-- Data -->
       <div v-else>
+        <div class="overflow-x-auto">
         <table class="w-full border-collapse text-sm">
           <thead>
             <tr>
@@ -411,6 +412,7 @@ const templateFields = [
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- Pagination — only for lists longer than 25 rows; sits bottom-left. -->
         <div

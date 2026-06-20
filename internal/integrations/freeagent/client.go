@@ -43,6 +43,14 @@ const (
 	TokenPath   = "/v2/token_endpoint" // code->token exchange + refresh
 )
 
+// MaxAttachmentBytes is FreeAgent's documented cap for an expense attachment: 5MB
+// (https://dev.freeagent.com/docs/expenses). We take the conservative DECIMAL
+// reading (5,000,000, not 5 MiB) so a borderline receipt is skipped on our side
+// rather than rejected by FreeAgent mid-push. main passes this into
+// integrations.NewService as a plain int64 — the integrations package never
+// imports this one (the provider-agnostic guardrail).
+const MaxAttachmentBytes int64 = 5_000_000
+
 // Client talks to one FreeAgent environment (prod or sandbox), fixed at
 // construction. It holds no credentials — those are passed into each call.
 type Client struct {

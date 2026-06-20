@@ -242,6 +242,71 @@ func TestAttachmentUpload_HappyPath(t *testing.T) {
 	}
 }
 
+// TestPrimaryAttachmentForPush covers the receipt fetch behind the FreeAgent push:
+// it returns the PRIMARY attachment's real bytes + metadata, skips an oversized
+// file via the metadata guard (before any download), and is org-scoped.
+func TestPrimaryAttachmentForPush(t *testing.T) {
+	requireGCS(t)
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+
+	// bigEnough exceeds the tiny sample files, so the size guard is a no-op for the
+	// happy path. A literal keeps this test off the freeagent package's constant.
+	const bigEnough int64 = 10_000_000
+
+	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
+	// PDF first → it becomes the primary; the PNG is a secondary file.
+	_ = uploadAs(t, ts, devUserID, devOrgID, expenseID, "receipt.pdf", samplePDF(), nil)
+	_ = uploadAs(t, ts, devUserID, devOrgID, expenseID, "extra.png", samplePNG(), nil)
+
+	org := mustUUID(t, devOrgID)
+	exp := mustUUID(t, expenseID)
+
+	t.Run("returns the PRIMARY attachment's bytes + metadata", func(t *testing.T) {
+		data, name, ctype, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, bigEnough)
+		if err != nil {
+			t.Fatalf("PrimaryAttachmentForPush: %v", err)
+		}
+		if !found {
+			t.Fatal("expected found=true")
+		}
+		if name != "receipt.pdf" || ctype != "application/pdf" {
+			t.Errorf("metadata: got %q/%q, want receipt.pdf/application/pdf (the primary)", name, ctype)
+		}
+		if !bytes.Equal(data, samplePDF()) {
+			t.Errorf("bytes did not round-trip from GCS: got %q", data)
+		}
+	})
+
+	t.Run("oversized → skipped (found=false, no error, no download)", func(t *testing.T) {
+		// maxBytes smaller than the file → the metadata guard skips it before download.
+		data, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, 1)
+		if err != nil {
+			t.Fatalf("oversized: unexpected error: %v", err)
+		}
+		if found || data != nil {
+			t.Errorf("oversized: expected found=false/nil, got found=%v len=%d", found, len(data))
+		}
+	})
+
+	t.Run("no attachment → found=false", func(t *testing.T) {
+		empty := createExpenseAs(t, ts, devUserID, devOrgID)
+		_, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, mustUUID(t, empty), bigEnough)
+		if err != nil || found {
+			t.Errorf("no attachment: expected found=false/nil err, got found=%v err=%v", found, err)
+		}
+	})
+
+	t.Run("cross-tenant org → found=false (isolation)", func(t *testing.T) {
+		otherOrg, _ := newOrgWithOwner(t, ts)
+		_, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, mustUUID(t, otherOrg), exp, bigEnough)
+		if err != nil || found {
+			t.Errorf("cross-tenant: expected found=false/nil err, got found=%v err=%v", found, err)
+		}
+	})
+}
+
 // TestAttachmentPrimary_SetAndPromote covers changing the primary and the
 // promote-on-delete rule.
 func TestAttachmentPrimary_SetAndPromote(t *testing.T) {

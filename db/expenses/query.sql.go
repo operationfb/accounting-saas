@@ -1269,6 +1269,49 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 	return i, err
 }
 
+const getPrimaryAttachmentForPush = `-- name: GetPrimaryAttachmentForPush :one
+SELECT storage_path, file_name, content_type, file_size_bytes
+FROM expense_attachments
+WHERE expense_id      = $1
+  AND organisation_id = $2
+ORDER BY is_primary DESC, created_at ASC
+LIMIT 1
+`
+
+type GetPrimaryAttachmentForPushParams struct {
+	ExpenseID      uuid.UUID `json:"expense_id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+type GetPrimaryAttachmentForPushRow struct {
+	StoragePath   string `json:"storage_path"`
+	FileName      string `json:"file_name"`
+	ContentType   string `json:"content_type"`
+	FileSizeBytes int32  `json:"file_size_bytes"`
+}
+
+// -----------------------------------------------------------------------------
+// GetPrimaryAttachmentForPush
+// The PRIMARY attachment for an expense, for an outbound integration push (e.g.
+// FreeAgent): the external Cloud Workflow fetches it via the OIDC internal
+// endpoint. Org-scoped on the denormalised organisation_id, so a cross-tenant
+// expense id finds no row (reads back as "no attachment"). Returns only what the
+// push needs — the GCS key plus the metadata we base64-encode + send.
+// is_primary DESC, created_at ASC + LIMIT 1 = the same "primary, else oldest"
+// ordering the UI list uses, collapsed to the single file we push.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetPrimaryAttachmentForPush(ctx context.Context, arg GetPrimaryAttachmentForPushParams) (GetPrimaryAttachmentForPushRow, error) {
+	row := q.db.QueryRow(ctx, getPrimaryAttachmentForPush, arg.ExpenseID, arg.OrganisationID)
+	var i GetPrimaryAttachmentForPushRow
+	err := row.Scan(
+		&i.StoragePath,
+		&i.FileName,
+		&i.ContentType,
+		&i.FileSizeBytes,
+	)
+	return i, err
+}
+
 const getSuggestedCategory = `-- name: GetSuggestedCategory :one
 
 SELECT category_id

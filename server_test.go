@@ -181,7 +181,7 @@ func newTestServer(t *testing.T) *testServer {
 	// "freeagent"), so the global provider_credentials row tests seed never
 	// touches the operator-managed real row on the shared dev DB.
 	faProvider := "fa-test-" + testutil.RandomString(8)
-	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), faProvider, tokenMaker, "http://api.test", testAppBaseURL)
+	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
 	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)

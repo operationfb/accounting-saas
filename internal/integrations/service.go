@@ -45,6 +45,15 @@ type Service struct {
 	oauth       OAuthClient
 	tokenMaker  token.Maker
 
+	// attachments fetches an expense's primary receipt for the push (a narrow
+	// cross-domain seam, like the Handler's ExpenseRepublisher). nil disables
+	// attachment push — AttachmentForPush then behaves as "no attachment".
+	attachments AttachmentFetcher
+	// maxAttachmentBytes is the provider's attachment size cap, passed through to
+	// the fetcher's size guard. Injected by main from the provider's own constant
+	// (e.g. freeagent.MaxAttachmentBytes), so this package stays provider-agnostic.
+	maxAttachmentBytes int64
+
 	// provider is the key this instance manages ("freeagent", …) — BOTH the DB key
 	// and the public URL slug (/api/v1/{provider}/callback, ?{provider}=connected).
 	provider string
@@ -57,16 +66,20 @@ type Service struct {
 	appBaseURL string
 }
 
-// NewService is the constructor, called once per provider in main.go.
-func NewService(iq integrationsdb.Querier, authQueries auth.Querier, oauth OAuthClient, provider string, tokenMaker token.Maker, apiPublicURL, appBaseURL string) *Service {
+// NewService is the constructor, called once per provider in main.go. attachments
+// + maxAttachmentBytes wire the receipt-push fetch (the fetcher lives in the
+// expenses/attachments domain; the size cap is the provider's own constant).
+func NewService(iq integrationsdb.Querier, authQueries auth.Querier, oauth OAuthClient, attachments AttachmentFetcher, maxAttachmentBytes int64, provider string, tokenMaker token.Maker, apiPublicURL, appBaseURL string) *Service {
 	return &Service{
-		iq:           iq,
-		authQueries:  authQueries,
-		oauth:        oauth,
-		tokenMaker:   tokenMaker,
-		provider:     provider,
-		apiPublicURL: apiPublicURL,
-		appBaseURL:   appBaseURL,
+		iq:                 iq,
+		authQueries:        authQueries,
+		oauth:              oauth,
+		attachments:        attachments,
+		maxAttachmentBytes: maxAttachmentBytes,
+		tokenMaker:         tokenMaker,
+		provider:           provider,
+		apiPublicURL:       apiPublicURL,
+		appBaseURL:         appBaseURL,
 	}
 }
 

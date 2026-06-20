@@ -48,6 +48,18 @@ main:
           - condition: ${exp.body.already_pushed}
             return: "already pushed — nothing to do"
 
+    # ---- 1b. Fetch the primary receipt (base64). 200 = present, 204 = none. ------
+    #         The monolith reads it from storage and base64-encodes it, so binary
+    #         never enters this YAML; we forward it on the payload below. A 204
+    #         (no usable attachment, e.g. a receipt-less draft) is normal, not an error.
+    - getAttachment:
+        call: http.get
+        args:
+          url: ${MONOLITH + "/internal/v1/expenses/" + expenseId + "/attachment?org=" + org}
+          auth:
+            type: OIDC
+        result: att
+
     # ---- 2. Get a valid access token + the FreeAgent base URL --------------------
     - getToken:
         call: http.get
@@ -130,6 +142,25 @@ main:
           - condition: ${map.get(exp.body, "sales_tax_rate") != null}
             assign:
               - expensePayload.sales_tax_rate: ${exp.body.sales_tax_rate}
+    # Attach the receipt when getAttachment returned 200 (204 = none → omit it).
+    # content_type is remapped into FreeAgent's vocabulary here (the YAML owns
+    # provider mapping, like ec_status + the category URL): application/pdf ->
+    # application/x-pdf; image/jpeg + image/png are already in FreeAgent's allowlist.
+    - maybeAddAttachment:
+        switch:
+          - condition: ${att.code == 200}
+            assign:
+              # Remap content_type the SAME way ec_status is mapped above
+              # (default(map.get(...))): application/pdf -> application/x-pdf; any
+              # other type (image/jpeg, image/png — already in FreeAgent's allowlist)
+              # passes through via default().
+              - ctypeMap:
+                  "application/pdf": "application/x-pdf"
+              - expensePayload.attachment:
+                  data: ${att.body.data}
+                  file_name: ${att.body.file_name}
+                  content_type: ${default(map.get(ctypeMap, att.body.content_type), att.body.content_type)}
+                  description: "Receipt"
 
     # ---- 5. Create the expense in FreeAgent -------------------------------------
     - createExpense:
