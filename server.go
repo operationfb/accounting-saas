@@ -49,37 +49,29 @@ type Server struct {
 	organisationService *OrganisationService
 	userService         *UserService
 	emailInboxService   *EmailInboxService
-	integrationService  *IntegrationService
 	authHandler         *AuthHandler
 	tokenMaker          token.Maker
 
 	// mailgunSigningKey authenticates the inbound-email webhook (HMAC). Empty
 	// when the channel isn't configured, in which case the webhook isn't mounted.
 	mailgunSigningKey string
-
-	// workflowServiceAccount is the email of the Cloud Workflow's service account.
-	// The /internal/v1 endpoints accept only OIDC tokens for this identity; empty
-	// makes them fail closed (the workflow's calls are the only legitimate ones).
-	workflowServiceAccount string
 }
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, userService *UserService, emailInboxService *EmailInboxService, integrationService *IntegrationService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, workflowServiceAccount string, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, contactService *ContactService, projectService *ProjectService, memberService *MemberService, organisationService *OrganisationService, userService *UserService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
 	s := &Server{
-		expenseService:         expenseService,
-		attachmentService:      attachmentService,
-		contactService:         contactService,
-		projectService:         projectService,
-		memberService:          memberService,
-		organisationService:    organisationService,
-		userService:            userService,
-		emailInboxService:      emailInboxService,
-		integrationService:     integrationService,
-		authHandler:            authHandler,
-		tokenMaker:             tokenMaker,
-		mailgunSigningKey:      mailgunSigningKey,
-		workflowServiceAccount: workflowServiceAccount,
+		expenseService:      expenseService,
+		attachmentService:   attachmentService,
+		contactService:      contactService,
+		projectService:      projectService,
+		memberService:       memberService,
+		organisationService: organisationService,
+		userService:         userService,
+		emailInboxService:   emailInboxService,
+		authHandler:         authHandler,
+		tokenMaker:          tokenMaker,
+		mailgunSigningKey:   mailgunSigningKey,
 	}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
@@ -119,6 +111,12 @@ func NewServer(expenseService *ExpenseService, attachmentService *AttachmentServ
 func (s *Server) Run(addr string) error {
 	return s.router.Run(addr)
 }
+
+// Router exposes the underlying gin engine so domain packages (e.g.
+// internal/integrations) can register their OWN routes on the same engine from
+// main, AFTER NewServer has applied the global middleware (CORS). This is the
+// per-domain RegisterRoutes pattern: the god Server doesn't grow per integration.
+func (s *Server) Router() *gin.Engine { return s.router }
 
 // enableStaticSPA serves the built Vue SPA (the contents of web/dist, copied into
 // the container image at distDir) from the SAME origin as the API. It is wired up
@@ -331,35 +329,11 @@ func (s *Server) registerRoutes() {
 			profile.PUT("", s.handleUpdateProfile)
 		}
 
-		// Integration settings (FreeAgent). Managing an integration is an
-		// owner/admin action and the org is taken from the bearer token, so these
-		// are singleton-style routes with no id in the path.
-		integrationSettings := v1.Group("/integrations/freeagent")
-		integrationSettings.Use(authMiddleware(s.tokenMaker))
-		{
-			// GET    /api/v1/integrations/freeagent → connection status
-			// DELETE /api/v1/integrations/freeagent → disconnect (drop tokens)
-			// (App credentials are global, in provider_credentials, managed in the
-			//  DB — there is no save-credentials route.)
-			integrationSettings.GET("", s.handleGetFreeAgentStatus)
-			integrationSettings.DELETE("", s.handleDisconnectFreeAgent)
-			// POST /api/v1/integrations/freeagent/expenses/:id/push → manual re-push
-			// of an APPROVED expense (re-emits expense.approved; idempotent).
-			integrationSettings.POST("/expenses/:id/push", s.handleRepushExpense)
-			// GET /api/v1/integrations/freeagent/expenses/:id/push → push status for
-			// the detail-page badge (same path, different verb from the re-push POST).
-			integrationSettings.GET("/expenses/:id/push", s.handleGetFreeAgentPushStatus)
-		}
-
-		// FreeAgent OAuth dance. /connect is authed (owner/admin) and returns the
-		// authorize URL as JSON; /callback is PUBLIC — FreeAgent redirects the
-		// browser there with no bearer token, so the org is recovered from the
-		// signed `state` and the handler ends in a 302 back to the SPA.
-		freeagent := v1.Group("/freeagent")
-		{
-			freeagent.GET("/connect", authMiddleware(s.tokenMaker), s.handleFreeAgentConnect)
-			freeagent.GET("/callback", s.handleFreeAgentCallback)
-		}
+		// NOTE: the integration routes (/api/v1/integrations/{provider},
+		// /api/v1/{provider}/{connect,callback}) and the /internal/v1 endpoints are
+		// registered by internal/integrations' Handler.RegisterRoutes /
+		// RegisterInternalRoutes, called from main on Server.Router() — so adding a
+		// provider never touches this file.
 
 		// Email-to-expense (Mailgun inbound). The webhook is PUBLIC — it carries
 		// no bearer token and is authenticated by Mailgun's HMAC signature in the
@@ -380,23 +354,6 @@ func (s *Server) registerRoutes() {
 			// GET /api/v1/inbox-address → the caller's receipt-forwarding address
 			inboxAddress.GET("", s.handleGetInboxAddress)
 		}
-	}
-
-	// =========================================================================
-	// INTERNAL service-to-service routes — consumed ONLY by the Cloud Workflow.
-	// Top-level /internal/v1 (NOT /api/v1), gated by requireWorkflowOIDC (a Google
-	// OIDC token for the workflow's service account — no user PASETO). When
-	// WORKFLOW_SERVICE_ACCOUNT is unset the middleware fails closed.
-	// =========================================================================
-	internal := s.router.Group("/internal/v1")
-	internal.Use(requireWorkflowOIDC(s.workflowServiceAccount))
-	{
-		// GET  /internal/v1/integrations/freeagent/token?org=  → access token + base URL
-		// GET  /internal/v1/expenses/:id?org=                  → expense data for the push
-		// POST /internal/v1/integrations/freeagent/push-result → record the outcome
-		internal.GET("/integrations/freeagent/token", s.handleInternalTokenForOrg)
-		internal.GET("/expenses/:id", s.handleInternalExpenseForPush)
-		internal.POST("/integrations/freeagent/push-result", s.handleInternalPushResult)
 	}
 }
 

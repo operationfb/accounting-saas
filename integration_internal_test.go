@@ -21,8 +21,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 // =============================================================================
@@ -33,7 +31,7 @@ func TestIntegrationInternal_ExpenseForPush(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.pool.Close()
 	ctx := context.Background()
-	svc := ts.server.integrationService
+	svc := ts.integrationService
 
 	member := newMemberUser(t, ts, devOrgID)
 	expenseID := createExpenseAs(t, ts, member, devOrgID)
@@ -98,7 +96,7 @@ func TestIntegrationInternal_PushResultAndAlreadyPushed(t *testing.T) {
 	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
-	svc := ts.server.integrationService
+	svc := ts.integrationService
 
 	// "Connect" the dev org directly — no OAuth dance, since this test exercises
 	// the push-result ledger, not the connect flow. Clean up the row afterwards,
@@ -198,8 +196,8 @@ func TestIntegrationInternal_TokenForOrg(t *testing.T) {
 		if resp.AccessToken != "fa-access-123" {
 			t.Errorf("access_token: got %q, want %q", resp.AccessToken, "fa-access-123")
 		}
-		if resp.FreeAgentBaseURL != fake.URL+"/v2" {
-			t.Errorf("freeagent_base_url: got %q, want %q", resp.FreeAgentBaseURL, fake.URL+"/v2")
+		if resp.APIBaseURL != fake.URL+"/v2" {
+			t.Errorf("freeagent_base_url: got %q, want %q", resp.APIBaseURL, fake.URL+"/v2")
 		}
 		if resp.IntegrationID == "" {
 			t.Error("integration_id: expected non-empty")
@@ -238,21 +236,6 @@ func TestIntegrationInternal_TokenForOrg(t *testing.T) {
 // OIDC GUARD
 // =============================================================================
 
-// TestRequireWorkflowOIDC_Unconfigured: an empty service account → fail closed
-// (503), without touching idtoken/network.
-func TestRequireWorkflowOIDC_Unconfigured(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request, _ = http.NewRequest(http.MethodGet, "/internal/v1/x", nil)
-
-	requireWorkflowOIDC("")(c)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("unconfigured guard: expected 503, got %d", rec.Code)
-	}
-}
-
 // TestInternalEndpoints_RejectNoToken: with a service account configured (the test
 // harness sets testWorkflowServiceAccount), a call with no bearer token is 401 —
 // proving the /internal routes are gated. Exercised through the real router.
@@ -263,9 +246,9 @@ func TestInternalEndpoints_RejectNoToken(t *testing.T) {
 	paths := []struct {
 		method, path string
 	}{
-		{http.MethodGet, "/internal/v1/integrations/freeagent/token?org=" + devOrgID},
+		{http.MethodGet, "/internal/v1/integrations/" + ts.faProvider + "/token?org=" + devOrgID},
 		{http.MethodGet, "/internal/v1/expenses/" + devOrgID + "?org=" + devOrgID},
-		{http.MethodPost, "/internal/v1/integrations/freeagent/push-result"},
+		{http.MethodPost, "/internal/v1/integrations/" + ts.faProvider + "/push-result"},
 	}
 	for _, p := range paths {
 		rec := httptest.NewRecorder()

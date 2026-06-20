@@ -98,11 +98,11 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 	})
 }
 
-// postRepush hits POST /api/v1/integrations/freeagent/expenses/:id/push.
+// postRepush hits POST /api/v1/integrations/{provider}/expenses/:id/push.
 func postRepush(t *testing.T, ts *testServer, id, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodPost, "/api/v1/integrations/freeagent/expenses/"+id+"/push", nil)
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/integrations/"+ts.faProvider+"/expenses/"+id+"/push", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}

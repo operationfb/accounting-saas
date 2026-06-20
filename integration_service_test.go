@@ -44,6 +44,8 @@ import (
 
 	"github.com/operationfb/accounting-saas/db/auth"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
+	integrations "github.com/operationfb/accounting-saas/internal/integrations"
+	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 )
 
 // =============================================================================
@@ -53,7 +55,7 @@ import (
 func getFreeAgentStatus(t *testing.T, ts *testServer, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/v1/integrations/freeagent", nil)
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/integrations/"+ts.faProvider, nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
@@ -64,7 +66,7 @@ func getFreeAgentStatus(t *testing.T, ts *testServer, authHeader string) *httpte
 func deleteFreeAgentReq(t *testing.T, ts *testServer, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/integrations/freeagent", nil)
+	req, _ := http.NewRequest(http.MethodDelete, "/api/v1/integrations/"+ts.faProvider, nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
@@ -75,7 +77,7 @@ func deleteFreeAgentReq(t *testing.T, ts *testServer, authHeader string) *httpte
 func getFreeAgentConnect(t *testing.T, ts *testServer, authHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/v1/freeagent/connect", nil)
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/"+ts.faProvider+"/connect", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
@@ -83,10 +85,10 @@ func getFreeAgentConnect(t *testing.T, ts *testServer, authHeader string) *httpt
 	return rec
 }
 
-func decodeFAStatus(t *testing.T, body []byte) FreeAgentStatusResponse {
+func decodeFAStatus(t *testing.T, body []byte) integrations.StatusResponse {
 	t.Helper()
 	var resp struct {
-		Integration FreeAgentStatusResponse `json:"integration"`
+		Integration integrations.StatusResponse `json:"integration"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode integration status: %v — body: %s", err, string(body))
@@ -97,7 +99,7 @@ func decodeFAStatus(t *testing.T, body []byte) FreeAgentStatusResponse {
 func getFreeAgentPushStatus(t *testing.T, ts *testServer, authHeader, expenseID string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	req, _ := http.NewRequest(http.MethodGet, "/api/v1/integrations/freeagent/expenses/"+expenseID+"/push", nil)
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/integrations/"+ts.faProvider+"/expenses/"+expenseID+"/push", nil)
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
 	}
@@ -105,10 +107,10 @@ func getFreeAgentPushStatus(t *testing.T, ts *testServer, authHeader, expenseID 
 	return rec
 }
 
-func decodeFAPush(t *testing.T, body []byte) FreeAgentPushStatusResponse {
+func decodeFAPush(t *testing.T, body []byte) integrations.PushStatusResponse {
 	t.Helper()
 	var resp struct {
-		Push FreeAgentPushStatusResponse `json:"push"`
+		Push integrations.PushStatusResponse `json:"push"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode push status: %v — body: %s", err, string(body))
@@ -167,7 +169,7 @@ func markConnectedDirect(t *testing.T, ts *testServer, org string) {
 func fakeFreeAgentTokenServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != freeAgentTokenPath {
+		if r.URL.Path != freeagent.TokenPath {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -181,9 +183,9 @@ func fakeFreeAgentTokenServer(t *testing.T) *httptest.Server {
 // freeAgentServiceWithHost builds an IntegrationService whose FreeAgent client
 // points at host (an httptest.Server URL), so token calls hit the fake instead of
 // real FreeAgent. It shares the harness's pool + maker + throwaway provider key.
-func freeAgentServiceWithHost(ts *testServer, host string) *IntegrationService {
-	client := &freeAgentClient{host: host, httpClient: &http.Client{Timeout: 5 * time.Second}}
-	return NewIntegrationService(integrationsdb.New(ts.pool), auth.New(ts.pool), client, ts.tokenMaker, ts.faProvider, "http://api.test", testAppBaseURL)
+func freeAgentServiceWithHost(ts *testServer, host string) *integrations.Service {
+	client := freeagent.NewClientWithHost(host)
+	return integrations.NewService(integrationsdb.New(ts.pool), auth.New(ts.pool), client, ts.faProvider, ts.tokenMaker, "http://api.test", testAppBaseURL)
 }
 
 // =============================================================================
@@ -321,7 +323,7 @@ func TestFreeAgentIntegration_Callback(t *testing.T) {
 		if internalErr != nil {
 			t.Fatalf("HandleCallback internal error: %v", internalErr)
 		}
-		if !strings.Contains(redirectURL, "freeagent=connected") {
+		if !strings.Contains(redirectURL, ts.faProvider+"=connected") {
 			t.Errorf("expected success redirect, got %q", redirectURL)
 		}
 
@@ -349,7 +351,7 @@ func TestFreeAgentIntegration_Callback(t *testing.T) {
 		if internalErr != nil {
 			t.Fatalf("unexpected internal error: %v", internalErr)
 		}
-		if !strings.Contains(redirectURL, "freeagent=error") || !strings.Contains(redirectURL, "reason=invalid_state") {
+		if !strings.Contains(redirectURL, ts.faProvider+"=error") || !strings.Contains(redirectURL, "reason=invalid_state") {
 			t.Errorf("expected invalid_state error redirect, got %q", redirectURL)
 		}
 
@@ -432,7 +434,7 @@ func TestFreeAgentIntegration_PushStatus(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.pool.Close()
 	ctx := context.Background()
-	svc := ts.server.integrationService
+	svc := ts.integrationService
 
 	// "connect" an org WITHOUT the OAuth dance (the connect flow is covered
 	// elsewhere): write a connected per-org row directly. It cascade-deletes with

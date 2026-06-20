@@ -32,6 +32,8 @@ import (
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	projects "github.com/operationfb/accounting-saas/db/projects"
+	integrations "github.com/operationfb/accounting-saas/internal/integrations"
+	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -305,15 +307,16 @@ func main() {
 	// -------------------------------------------------------------------------
 	integrationQueries := dbintegrations.New(pool)
 	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
-	faClient := newFreeAgentClient(freeAgentSandbox)
+	faClient := freeagent.NewClient(freeAgentSandbox)
 	// apiPublicURL is OUR backend's externally reachable base URL — it builds the
-	// OAuth redirect_uri FreeAgent sends the browser back to (the BACKEND, distinct
+	// OAuth redirect_uri the provider sends the browser back to (the BACKEND, distinct
 	// from the frontend appBaseURL). Defaults to the production host so a deployment
 	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
 	// local dev sets it in .env.
 	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
-	integrationService := NewIntegrationService(integrationQueries, authQueries, faClient, tokenMaker, providerFreeAgent, apiPublicURL, appBaseURL)
-	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/freeagent/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"))
+	integrationSvc := integrations.NewService(integrationQueries, authQueries, faClient, freeagent.ProviderKey, tokenMaker, apiPublicURL, appBaseURL)
+	integrationHandler := integrations.NewHandler(integrationSvc, service)
+	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/%s/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"), freeagent.ProviderKey)
 
 	// -------------------------------------------------------------------------
 	// Pub/Sub publisher for the "expense.approved" event (the trigger that drives
@@ -346,7 +349,13 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, mailgunSigningKey, workflowServiceAccount, corsOrigins)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+
+	// Each integration registers its OWN routes on the shared engine (the
+	// per-domain pattern) — after NewServer so the global middleware (CORS) is in
+	// place. Adding a provider is another NewService/NewHandler + these two calls.
+	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
+	integrationHandler.RegisterInternalRoutes(server.Router(), workflowServiceAccount)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

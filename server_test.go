@@ -50,6 +50,8 @@ import (
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	integrations "github.com/operationfb/accounting-saas/internal/integrations"
+	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -68,8 +70,12 @@ type testServer struct {
 	emailSender       *fakeEmailSender
 	emailInboxService *EmailInboxService
 
+	// integrationService is the freeagent integration service the harness wires; its
+	// Handler registers routes on server.Router(). Exposed for the direct-call tests.
+	integrationService *integrations.Service
+
 	// faProvider is the UNIQUE throwaway FreeAgent provider key this test server's
-	// IntegrationService is built with. It scopes both the global
+	// integration service is built with. It scopes both the global
 	// provider_credentials row the tests seed and the per-org
 	// organisation_integrations rows, so tests never collide with (or clobber) the
 	// real 'freeagent' global credentials row on the shared dev DB.
@@ -175,16 +181,20 @@ func newTestServer(t *testing.T) *testServer {
 	// "freeagent"), so the global provider_credentials row tests seed never
 	// touches the operator-managed real row on the shared dev DB.
 	faProvider := "fa-test-" + testutil.RandomString(8)
-	integrationService := NewIntegrationService(integrationsdb.New(pool), authQueries, newFreeAgentClient(true), tokenMaker, faProvider, "http://api.test", testAppBaseURL)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, testMailgunSigningKey, testWorkflowServiceAccount, []string{testCORSOrigin})
+	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), faProvider, tokenMaker, "http://api.test", testAppBaseURL)
+	integrationHandler := integrations.NewHandler(integrationSvc, service)
+	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
+	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
 	return &testServer{
-		server:            server,
-		pool:              pool,
-		tokenMaker:        tokenMaker,
-		emailSender:       emailSender,
-		emailInboxService: emailInboxService,
-		faProvider:        faProvider,
+		server:             server,
+		pool:               pool,
+		tokenMaker:         tokenMaker,
+		emailSender:        emailSender,
+		emailInboxService:  emailInboxService,
+		integrationService: integrationSvc,
+		faProvider:         faProvider,
 	}
 }
 

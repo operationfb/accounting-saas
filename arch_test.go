@@ -15,8 +15,12 @@ package main
 //     at which point main moves to cmd/server and this flips to "no root .go").
 //
 //   TestKernelHasNoDomainImports — keeps internal/kernel foundational: it must
-//     not import any other internal/ package. Forward guard (no domain packages
-//     exist yet, but this catches the first violation).
+//     not import any other internal/ package.
+//
+//   TestIntegrationsCoreHasNoProviderImports — keeps the shared
+//     internal/integrations package provider-agnostic: it must not import any
+//     provider sub-package (freeagent, future xero, …). Providers depend on the
+//     core, never the reverse.
 // =============================================================================
 
 import (
@@ -34,53 +38,48 @@ import (
 // be sure the file truly belongs in root wiring — almost everything belongs in
 // internal/<domain> or internal/kernel instead.
 var rootAllowlist = map[string]bool{
-	"aliases.go":                      true,
-	"arch_test.go":                    true,
-	"attachment_handler.go":           true,
-	"attachment_handler_test.go":      true,
-	"attachment_service.go":           true,
-	"attachment_service_test.go":      true,
-	"auth_handler.go":                 true,
-	"contact_service.go":              true,
-	"contact_service_test.go":         true,
-	"email.go":                        true,
-	"email_content.go":                true,
-	"email_inbox_handler.go":          true,
-	"email_inbox_service.go":          true,
-	"email_inbox_test.go":             true,
-	"email_smtp.go":                   true,
-	"events.go":                       true,
-	"events_pubsub.go":                true,
-	"events_test.go":                  true,
-	"expense_service.go":              true,
-	"expense_status.go":               true,
-	"expense_status_test.go":          true,
-	"freeagent_client.go":             true,
-	"html_renderer.go":                true,
-	"inbound_email.go":                true,
-	"integration_handler.go":          true,
-	"integration_internal.go":         true,
-	"integration_internal_handler.go": true,
-	"integration_internal_test.go":    true,
-	"integration_service.go":          true,
-	"integration_service_test.go":     true,
-	"main.go":                         true,
-	"member_service.go":               true,
-	"member_service_test.go":          true,
-	"ocr_documentai.go":               true,
-	"ocr_service.go":                  true,
-	"ocr_service_test.go":             true,
-	"organisation_service.go":         true,
-	"organisation_service_test.go":    true,
-	"project_service.go":              true,
-	"server.go":                       true,
-	"server_test.go":                  true,
-	"storage.go":                      true,
-	"storage_gcs.go":                  true,
-	"supplier_category_test.go":       true,
-	"user_service.go":                 true,
-	"user_service_test.go":            true,
-	"vat_rates_test.go":               true,
+	"aliases.go":                   true,
+	"arch_test.go":                 true,
+	"attachment_handler.go":        true,
+	"attachment_handler_test.go":   true,
+	"attachment_service.go":        true,
+	"attachment_service_test.go":   true,
+	"auth_handler.go":              true,
+	"contact_service.go":           true,
+	"contact_service_test.go":      true,
+	"email.go":                     true,
+	"email_content.go":             true,
+	"email_inbox_handler.go":       true,
+	"email_inbox_service.go":       true,
+	"email_inbox_test.go":          true,
+	"email_smtp.go":                true,
+	"events.go":                    true,
+	"events_pubsub.go":             true,
+	"events_test.go":               true,
+	"expense_service.go":           true,
+	"expense_status.go":            true,
+	"expense_status_test.go":       true,
+	"html_renderer.go":             true,
+	"inbound_email.go":             true,
+	"integration_internal_test.go": true,
+	"integration_service_test.go":  true,
+	"main.go":                      true,
+	"member_service.go":            true,
+	"member_service_test.go":       true,
+	"ocr_documentai.go":            true,
+	"ocr_service.go":               true,
+	"ocr_service_test.go":          true,
+	"organisation_service.go":      true,
+	"organisation_service_test.go": true,
+	"project_service.go":           true,
+	"server.go":                    true,
+	"server_test.go":               true,
+	"storage.go":                   true,
+	"storage_gcs.go":               true,
+	"supplier_category_test.go":    true,
+	"user_service.go":              true,
+	"user_service_test.go":         true,
+	"vat_rates_test.go":            true,
 }
 
 func TestRootPackageIsWiringOnly(t *testing.T) {
@@ -128,5 +127,36 @@ func TestKernelHasNoDomainImports(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk internal/kernel: %v", err)
+	}
+}
+
+// TestIntegrationsCoreHasNoProviderImports keeps the shared internal/integrations
+// package provider-agnostic: it must NOT import any provider sub-package (e.g.
+// internal/integrations/freeagent). Providers depend on the core, never the
+// reverse — that dependency direction is what makes the core reusable for Xero etc.
+func TestIntegrationsCoreHasNoProviderImports(t *testing.T) {
+	const (
+		coreDir         = "internal/integrations"
+		providersPrefix = "github.com/operationfb/accounting-saas/internal/integrations/"
+	)
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(coreDir) // top-level only — not the provider sub-dirs
+	if err != nil {
+		t.Fatalf("read %s: %v", coreDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(coreDir, e.Name()), nil, parser.ImportsOnly)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", e.Name(), perr)
+		}
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			if strings.HasPrefix(p, providersPrefix) {
+				t.Errorf("%s/%s imports %q — the shared integrations package must not depend on a provider sub-package", coreDir, e.Name(), p)
+			}
+		}
 	}
 }
