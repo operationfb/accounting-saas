@@ -450,14 +450,8 @@ func contactToResponse(c contacts.Contact) *ContactResponse {
 // and must be PRESERVED — only a nil pointer becomes NULL.
 // =============================================================================
 
-// pgInt32FromPtr converts a *int32 to pgtype.Int4 preserving 0.
-// nil pointer → NULL; non-nil pointer → its value (including 0).
-func pgInt32FromPtr(n *int32) pgtype.Int4 {
-	if n == nil {
-		return pgtype.Int4{Valid: false}
-	}
-	return pgtype.Int4{Int32: *n, Valid: true}
-}
+// pgInt32FromPtr (0-preserving *int32 → pgtype.Int4) moved to internal/kernel as
+// kernel.Int32FromPtr; it stays callable here under the same name via aliases.go.
 
 // nullInt32ToPtr is the reverse: pgtype.Int4 → *int32.
 // NULL → nil; otherwise a pointer to the value (0 is kept, not dropped).

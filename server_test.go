@@ -50,8 +50,8 @@ import (
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	"github.com/operationfb/accounting-saas/token"
-	util "github.com/operationfb/accounting-saas/util"
 )
 
 // =============================================================================
@@ -174,7 +174,7 @@ func newTestServer(t *testing.T) *testServer {
 	// Each test server manages a UNIQUE throwaway provider key (not the real
 	// "freeagent"), so the global provider_credentials row tests seed never
 	// touches the operator-managed real row on the shared dev DB.
-	faProvider := "fa-test-" + util.RandomString(8)
+	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationService := NewIntegrationService(integrationsdb.New(pool), authQueries, newFreeAgentClient(true), tokenMaker, faProvider, "http://api.test", testAppBaseURL)
 	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, integrationService, authHandler, tokenMaker, testMailgunSigningKey, testWorkflowServiceAccount, []string{testCORSOrigin})
 
@@ -271,10 +271,10 @@ func createExpenseAs(t *testing.T, ts *testServer, userID, orgID string) string 
 	categoryID := randomCategoryUUID(t, ts.pool)
 	reqBody := CreateExpenseRequest{
 		CategoryID:       categoryID,
-		DatedOn:          util.RandomDatedOn(),
-		Description:      util.RandomExpenseDescription(),
+		DatedOn:          testutil.RandomDatedOn(),
+		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
-		GrossValuePounds: util.RandomGrossValue(),
+		GrossValuePounds: testutil.RandomGrossValue(),
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 	recorder := httptest.NewRecorder()
@@ -366,14 +366,14 @@ func TestHandleCreateExpense(t *testing.T) {
 	// -------------------------------------------------------------------------
 	orgID := "00000000-0000-0000-0000-000000000001" // matches the stub in handleCreateExpense
 	userID := "00000000-0000-0000-0000-000000000002"
-	grossValue := util.RandomGrossValue()
-	description := util.RandomExpenseDescription()
-	supplierName := util.RandomSupplierName()
-	receiptRef := util.RandomReceiptReference()
+	grossValue := testutil.RandomGrossValue()
+	description := testutil.RandomExpenseDescription()
+	supplierName := testutil.RandomSupplierName()
+	receiptRef := testutil.RandomReceiptReference()
 
 	reqBody := CreateExpenseRequest{
 		CategoryID:       categoryID,
-		DatedOn:          util.RandomDatedOn(),
+		DatedOn:          testutil.RandomDatedOn(),
 		Description:      description,
 		CurrencyCode:     "GBP",
 		GrossValuePounds: grossValue,
@@ -519,9 +519,9 @@ func TestHandleCreateExpense_MissingDescription(t *testing.T) {
 	// Deliberately omit description — it is `binding:"required"` in the struct
 	body := map[string]string{
 		"category_id": "7200",
-		"dated_on":    util.RandomDatedOn(),
+		"dated_on":    testutil.RandomDatedOn(),
 		"currency":    "GBP",
-		"gross_value": util.RandomGrossValue(),
+		"gross_value": testutil.RandomGrossValue(),
 		// "description" intentionally missing
 	}
 
@@ -549,8 +549,8 @@ func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
 
 	body := CreateExpenseRequest{
 		CategoryID:       categoryID,
-		DatedOn:          util.RandomDatedOn(),
-		Description:      util.RandomExpenseDescription(),
+		DatedOn:          testutil.RandomDatedOn(),
+		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
 		GrossValuePounds: "not-a-number", // invalid
 	}
@@ -900,10 +900,10 @@ func onBehalfBody(t *testing.T, ts *testServer, claimantID string) CreateExpense
 	t.Helper()
 	return CreateExpenseRequest{
 		CategoryID:       randomCategoryUUID(t, ts.pool),
-		DatedOn:          util.RandomDatedOn(),
-		Description:      util.RandomExpenseDescription(),
+		DatedOn:          testutil.RandomDatedOn(),
+		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
-		GrossValuePounds: util.RandomGrossValue(),
+		GrossValuePounds: testutil.RandomGrossValue(),
 		UserID:           strPtr(claimantID),
 	}
 }
@@ -1185,10 +1185,10 @@ func validUpdateBody(t *testing.T, ts *testServer) UpdateExpenseRequest {
 	t.Helper()
 	return UpdateExpenseRequest{
 		CategoryID:       randomCategoryUUID(t, ts.pool),
-		DatedOn:          util.RandomDatedOn(),
-		Description:      util.RandomExpenseDescription(),
+		DatedOn:          testutil.RandomDatedOn(),
+		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
-		GrossValuePounds: util.RandomGrossValue(),
+		GrossValuePounds: testutil.RandomGrossValue(),
 	}
 }
 
@@ -1219,7 +1219,7 @@ func TestHandleUpdateExpense(t *testing.T) {
 		id := createExpenseAs(t, ts, devUserID, devOrgID)
 
 		body := validUpdateBody(t, ts)
-		body.Description = "Updated " + util.RandomExpenseDescription()
+		body.Description = "Updated " + testutil.RandomExpenseDescription()
 		body.GrossValuePounds = "99.99"
 
 		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), body)
@@ -1519,8 +1519,8 @@ func TestExpenseVAT(t *testing.T) {
 	baseBody := func() CreateExpenseRequest {
 		return CreateExpenseRequest{
 			CategoryID:       randomCategoryUUID(t, ts.pool),
-			DatedOn:          util.RandomDatedOn(),
-			Description:      util.RandomExpenseDescription(),
+			DatedOn:          testutil.RandomDatedOn(),
+			Description:      testutil.RandomExpenseDescription(),
 			CurrencyCode:     "GBP",
 			GrossValuePounds: "100.00",
 		}

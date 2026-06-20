@@ -1,4 +1,6 @@
-package util
+// Package testutil holds random test-data generators shared by the test suites.
+// It is test-only (imported solely by *_test.go files), so it ships in no binary.
+package testutil
 
 import (
 	"fmt"
@@ -8,10 +10,6 @@ import (
 )
 
 const alphabet = "abcdefghijklmnopqrstuvwxyz"
-
-func init() {
-	//rand.Seed(time.Now().UnixNano())
-}
 
 func RandomInt(min, max int64) int64 {
 	return min + rand.Int63n(max-min+1)
@@ -31,12 +29,6 @@ func RandomString(n int) string {
 // RandomEmail returns a random valid-looking email address.
 func RandomEmail() string {
 	return fmt.Sprintf("%s@email.com", RandomString(7))
-}
-
-// RandomCurrency returns a random ISO 4217 currency code from a small list.
-func RandomCurrency() string {
-	currencies := []string{"GBP", "EUR", "USD"}
-	return currencies[rand.Intn(len(currencies))]
 }
 
 // =============================================================================

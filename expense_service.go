@@ -33,6 +33,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -87,13 +88,6 @@ func (s *ExpenseService) authorize(ctx context.Context, userID, orgID uuid.UUID)
 	return authorizeMember(ctx, s.authQueries, userID, orgID)
 }
 
-// isOrgAdmin reports whether a role may read ALL expenses in the organisation.
-// Per product decision this is owner and admin only; member/accountant/read_only
-// are limited to their own expenses.
-func isOrgAdmin(role auth.OrganisationRole) bool {
-	return role == auth.OrganisationRoleOwner || role == auth.OrganisationRoleAdmin
-}
-
 // =============================================================================
 // TRANSACTION HELPER
 // =============================================================================
@@ -122,28 +116,11 @@ func isOrgAdmin(role auth.OrganisationRole) bool {
 // The `fn` signature takes *expenses.Queries so callers work with the same
 // type whether inside a transaction or not.
 func (s *ExpenseService) withTransaction(ctx context.Context, fn func(*expenses.Queries) error) error {
-	// Begin acquires a connection from the pool and starts a transaction on it.
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-
-	// expenses.New(tx) creates a Queries struct that uses the transaction
-	// connection instead of the pool. Every query run through qtx is part
-	// of this transaction.
-	qtx := expenses.New(tx)
-
-	// Run the caller's function. If it returns an error, roll back.
-	if err := fn(qtx); err != nil {
-		// Rollback undoes all writes made inside fn.
-		// We log the rollback error but return the original error from fn
-		// because that's what the caller cares about.
-		_ = tx.Rollback(ctx)
-		return err
-	}
-
-	// Commit makes all writes permanent.
-	return tx.Commit(ctx)
+	// Delegates to the shared, generic kernel.WithTx; we just wrap the pgx.Tx with
+	// the expenses Queries so every call site here stays unchanged.
+	return kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		return fn(expenses.New(tx))
+	})
 }
 
 // =============================================================================
@@ -1230,30 +1207,10 @@ func uuidToStringPtr(u pgtype.UUID) *string {
 // When Valid is false, pgx sends NULL to PostgreSQL regardless of String.
 // =============================================================================
 
-// pgNullText converts a *string to pgtype.Text.
-// nil pointer → NULL in the database.
-// non-nil pointer → the string value.
-func pgNullText(s *string) pgtype.Text {
-	if s == nil {
-		return pgtype.Text{Valid: false}
-	}
-	return pgtype.Text{String: *s, Valid: true}
-}
-
-// nullTextToPtr is the reverse: pgtype.Text → *string.
-// Invalid (NULL) → nil. Valid → pointer to string.
-func nullTextToPtr(t pgtype.Text) *string {
-	if !t.Valid {
-		return nil
-	}
-	return &t.String
-}
-
-// pgNullInt32 wraps an int32 in pgtype.Int4.
-// Used for nullable integer columns (e.g. vat_rate_bps when no VAT).
-func pgNullInt32(n int32) pgtype.Int4 {
-	return pgtype.Int4{Int32: n, Valid: n != 0}
-}
+// NOTE: pgNullText / nullTextToPtr / pgNullInt32 moved to internal/kernel
+// (kernel.NullText / NullTextToPtr / NullInt32) — they are widely shared. They
+// remain callable here under the same names via the aliases in aliases.go. The
+// UUID/Numeric/Date helpers below are expense-local for now and stay put.
 
 // pgNullUUID converts a *string UUID to pgtype.UUID.
 // If the string is nil or fails to parse, returns an invalid (NULL) UUID.

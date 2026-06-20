@@ -26,7 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
-	util "github.com/operationfb/accounting-saas/util"
+	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 )
 
 // ptr returns a pointer to v — convenient for the optional *string/*bool/*int32
@@ -122,7 +122,7 @@ func contactIDsFromList(t *testing.T, body []byte) []string {
 // user/org and returns its id, registering hard-delete cleanup.
 func createContactAs(t *testing.T, ts *testServer, userID, orgID string) string {
 	t.Helper()
-	orgName := util.RandomContactOrgName()
+	orgName := testutil.RandomContactOrgName()
 	rec := postContact(t, ts, bearer(t, ts, userID, orgID), CreateContactRequest{OrganisationName: &orgName})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("createContactAs: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
@@ -146,12 +146,12 @@ func TestHandleCreateContact(t *testing.T) {
 	defer ts.pool.Close()
 
 	t.Run("full body round-trips and persists", func(t *testing.T) {
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		body := CreateContactRequest{
 			FirstName:               ptr("Ada"),
 			LastName:                ptr("Lovelace"),
 			OrganisationName:        &orgName,
-			Email:                   ptr(util.RandomEmail()),
+			Email:                   ptr(testutil.RandomEmail()),
 			Telephone:               ptr("020 7946 0000"),
 			AddressLine1:            ptr("1 Test Street"),
 			Town:                    ptr("London"),
@@ -213,7 +213,7 @@ func TestHandleCreateContact(t *testing.T) {
 	})
 
 	t.Run("defaults applied when fields omitted", func(t *testing.T) {
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		rec := postContact(t, ts, bearer(t, ts, devUserID, devOrgID), CreateContactRequest{OrganisationName: &orgName})
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
@@ -240,7 +240,7 @@ func TestHandleCreateContact(t *testing.T) {
 
 	t.Run("payment terms 0 persists as 0, omitted persists as NULL", func(t *testing.T) {
 		// 0 ("Due on Receipt") must survive as 0 — NOT collapse to NULL.
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		rec := postContact(t, ts, bearer(t, ts, devUserID, devOrgID), CreateContactRequest{
 			OrganisationName:        &orgName,
 			DefaultPaymentTermsDays: ptr(int32(0)),
@@ -261,7 +261,7 @@ func TestHandleCreateContact(t *testing.T) {
 		}
 
 		// Omitted → NULL.
-		orgName2 := util.RandomContactOrgName()
+		orgName2 := testutil.RandomContactOrgName()
 		rec = postContact(t, ts, bearer(t, ts, devUserID, devOrgID), CreateContactRequest{OrganisationName: &orgName2})
 		nullID := decodeContact(t, rec.Body.Bytes()).ID
 		t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), "DELETE FROM contacts WHERE id = $1", nullID) })
@@ -277,7 +277,7 @@ func TestHandleCreateContact(t *testing.T) {
 	})
 
 	t.Run("invalid charge_vat is rejected (400 binding)", func(t *testing.T) {
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		rec := postContact(t, ts, bearer(t, ts, devUserID, devOrgID), CreateContactRequest{
 			OrganisationName: &orgName,
 			ChargeVAT:        "MAYBE",
@@ -288,7 +288,7 @@ func TestHandleCreateContact(t *testing.T) {
 	})
 
 	t.Run("invalid email is rejected (400 binding)", func(t *testing.T) {
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		rec := postContact(t, ts, bearer(t, ts, devUserID, devOrgID), CreateContactRequest{
 			OrganisationName: &orgName,
 			Email:            ptr("not-an-email"),
@@ -299,7 +299,7 @@ func TestHandleCreateContact(t *testing.T) {
 	})
 
 	t.Run("requires auth", func(t *testing.T) {
-		orgName := util.RandomContactOrgName()
+		orgName := testutil.RandomContactOrgName()
 		rec := postContact(t, ts, "", CreateContactRequest{OrganisationName: &orgName})
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
@@ -314,7 +314,7 @@ func TestContactService_InvalidChargeVAT_Direct(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.pool.Close()
 
-	orgName := util.RandomContactOrgName()
+	orgName := testutil.RandomContactOrgName()
 	_, err := ts.server.contactService.CreateContact(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 		CreateContactRequest{OrganisationName: &orgName, ChargeVAT: "MAYBE"},
@@ -381,7 +381,7 @@ func TestHandleUpdateContact(t *testing.T) {
 	t.Run("creator updates own → 200, persisted", func(t *testing.T) {
 		id := createContactAs(t, ts, devUserID, devOrgID)
 
-		newName := util.RandomContactOrgName()
+		newName := testutil.RandomContactOrgName()
 		rec := putContact(t, ts, id, bearer(t, ts, devUserID, devOrgID), UpdateContactRequest{
 			OrganisationName: &newName,
 			ChargeVAT:        "ALWAYS",
@@ -412,7 +412,7 @@ func TestHandleUpdateContact(t *testing.T) {
 		memberID := newMemberUser(t, ts, devOrgID)
 		id := createContactAs(t, ts, memberID, devOrgID)
 
-		newName := util.RandomContactOrgName()
+		newName := testutil.RandomContactOrgName()
 		rec := putContact(t, ts, id, bearer(t, ts, devUserID, devOrgID), UpdateContactRequest{OrganisationName: &newName})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("admin editing member's contact: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -423,7 +423,7 @@ func TestHandleUpdateContact(t *testing.T) {
 		ownerContact := createContactAs(t, ts, devUserID, devOrgID)
 		memberID := newMemberUser(t, ts, devOrgID)
 
-		newName := util.RandomContactOrgName()
+		newName := testutil.RandomContactOrgName()
 		rec := putContact(t, ts, ownerContact, bearer(t, ts, memberID, devOrgID), UpdateContactRequest{OrganisationName: &newName})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("member editing owner's contact: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
@@ -431,7 +431,7 @@ func TestHandleUpdateContact(t *testing.T) {
 	})
 
 	t.Run("unknown id → 404", func(t *testing.T) {
-		newName := util.RandomContactOrgName()
+		newName := testutil.RandomContactOrgName()
 		rec := putContact(t, ts, uuid.NewString(), bearer(t, ts, devUserID, devOrgID), UpdateContactRequest{OrganisationName: &newName})
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
@@ -439,7 +439,7 @@ func TestHandleUpdateContact(t *testing.T) {
 	})
 
 	t.Run("requires auth → 401", func(t *testing.T) {
-		newName := util.RandomContactOrgName()
+		newName := testutil.RandomContactOrgName()
 		rec := putContact(t, ts, uuid.NewString(), "", UpdateContactRequest{OrganisationName: &newName})
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
@@ -547,7 +547,7 @@ func TestContacts_TenantIsolation(t *testing.T) {
 	}
 
 	// PUT across tenants → 404.
-	newName := util.RandomContactOrgName()
+	newName := testutil.RandomContactOrgName()
 	if rec := putContact(t, ts, contactA, authB, UpdateContactRequest{OrganisationName: &newName}); rec.Code != http.StatusNotFound {
 		t.Errorf("cross-tenant PUT: expected 404, got %d — body: %s", rec.Code, rec.Body.String())
 	}

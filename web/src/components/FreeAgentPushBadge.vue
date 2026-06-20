@@ -4,9 +4,14 @@
 // now for owner/admins. It renders ONLY for owner/admins on an APPROVED expense —
 // for anyone/anything else it's empty, so the parent can drop it in unconditionally.
 //
-// The push happens asynchronously (a Cloud Workflow reacts to the approval), so just
-// after approval there's no result row yet → state "none". While connected + none we
-// poll a few times to catch the workflow finishing, then fall back to a "Push now".
+// The push happens asynchronously (a Cloud Workflow reacts to the approval and
+// later writes the result back to OUR backend — there is no live callback to the
+// browser), so the badge POLLS. Two cases need polling:
+//   1. just approved → no result row yet (state "none") → wait for the first result.
+//   2. Retry/Push now → the backend STILL returns the previous terminal row
+//      (failed/pushed) until the workflow overwrites it. So we must NOT stop on that
+//      stale value — we keep "Pushing…" and poll until a NEW result lands, detected
+//      by the result's `pushed_at` timestamp changing from the one we're superseding.
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { getExpensePushStatus, repushExpense } from '@/services/integrations.service'
@@ -26,72 +31,101 @@ const active = computed(() => auth.isOrgAdmin && props.expenseStatus === 'APPROV
 
 const push = ref<FreeAgentPushStatus | null>(null)
 const loading = ref(false) // first fetch in flight
-const polling = ref(false) // re-polling while the workflow is in flight
-const retrying = ref(false)
+const awaiting = ref(false) // a push is in flight (just-approved or retry) — show "Pushing…", keep polling
+const retrying = ref(false) // the Retry/Push-now POST itself is in flight
 const errorMsg = ref('')
 
-// Poll bookkeeping for the "Pushing…" window (workflow in flight).
+// Poll cadence + budget for the "Pushing…" window. The workflow round-trip
+// (Pub/Sub → Eventarc → workflow → FreeAgent → callback) can take a while, so the
+// window is generous; if it elapses we fall back to the latest known state.
 const POLL_MS = 3000
-const MAX_POLLS = 10
+const MAX_POLLS = 15
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let polls = 0
+// The `pushed_at` of the result we're waiting to supersede. null = we're waiting for
+// the FIRST result (nothing pushed yet), so any terminal result counts as new.
+let baselineStamp: string | null | undefined = null
+
+function clearTimer() {
+  if (pollTimer) {
+    clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
 
 function stopPolling() {
-  polling.value = false
-  if (pollTimer) {
-    clearTimeout(pollTimer)
-    pollTimer = null
-  }
+  awaiting.value = false
+  clearTimer()
 }
 
-async function fetchStatus() {
+// Is `fresh` a NEW outcome (vs the baseline we're waiting past)? A "none" never
+// counts; with no baseline any terminal result is new; otherwise the row must have
+// been rewritten (its pushed_at changed).
+function isNewResult(fresh: FreeAgentPushStatus): boolean {
+  if (fresh.state === 'none') return false
+  if (!baselineStamp) return true
+  return fresh.pushed_at !== baselineStamp
+}
+
+async function fetchStatus(): Promise<FreeAgentPushStatus | null> {
   try {
-    push.value = await getExpensePushStatus(props.expenseId)
+    const fresh = await getExpensePushStatus(props.expenseId)
     errorMsg.value = ''
+    return fresh
   } catch (err) {
     // 401 is handled globally by apiFetch; a 403 shouldn't happen (we gate on admin).
-    // A failed status read just leaves the badge hidden rather than nagging.
     errorMsg.value = (err as ApiError)?.message ?? 'Could not load FreeAgent status.'
+    return null
   }
 }
 
-// Poll while the expense is approved + connected but no result has landed yet.
-function maybeSchedulePoll() {
-  if (pollTimer) {
-    clearTimeout(pollTimer)
-    pollTimer = null
-  }
-  const p = push.value
-  if (!p || !p.connected || p.state !== 'none' || polls >= MAX_POLLS) {
-    polling.value = false // resolved (pushed/failed) or gave up — stop
+function scheduleNextPoll() {
+  clearTimer()
+  if (polls >= MAX_POLLS) {
+    stopPolling() // gave up — display falls back to the latest known push.value
     return
   }
-  polling.value = true
   pollTimer = setTimeout(async () => {
     polls += 1
-    await fetchStatus()
-    maybeSchedulePoll()
+    const fresh = await fetchStatus()
+    if (fresh && (isNewResult(fresh) || !fresh.connected)) {
+      // A genuinely new outcome (or the integration vanished) → apply it and stop.
+      push.value = fresh
+      stopPolling()
+      return
+    }
+    // Stale (the old row hasn't been overwritten yet) → keep "Pushing…", keep polling.
+    scheduleNextPoll()
   }, POLL_MS)
+}
+
+// Begin awaiting a result newer than `baseline` (null = the first result after approval).
+function startAwaiting(baseline: string | null | undefined) {
+  baselineStamp = baseline
+  polls = 0
+  awaiting.value = true
+  scheduleNextPoll()
 }
 
 async function load() {
   loading.value = true
-  polls = 0
-  await fetchStatus()
+  const fresh = await fetchStatus()
   loading.value = false
-  maybeSchedulePoll()
+  if (!fresh) return
+  push.value = fresh
+  // Approved + connected but nothing landed yet → wait for the first result.
+  if (fresh.connected && fresh.state === 'none') startAwaiting(null)
 }
 
-// Manually (re-)push, then drop back into the polling window for the fresh attempt.
+// Manually (re-)push. Keep showing the current pill until the POST returns, then
+// switch to "Pushing…" and poll for the NEW result (newer pushed_at than now).
 async function retry() {
   if (retrying.value) return
   retrying.value = true
   errorMsg.value = ''
   try {
     await repushExpense(props.expenseId)
-    polls = 0
-    if (push.value) push.value = { ...push.value, state: 'none', error: null, external_url: null }
-    maybeSchedulePoll()
+    startAwaiting(push.value?.pushed_at ?? null)
   } catch (err) {
     errorMsg.value = (err as ApiError)?.message ?? 'Could not start the push.'
   } finally {
@@ -118,12 +152,12 @@ onUnmounted(stopPolling)
 // Single derived display state, so the template stays declarative.
 const display = computed<'hidden' | 'pushed' | 'failed' | 'pushing' | 'not_pushed'>(() => {
   if (!active.value) return 'hidden'
+  if (awaiting.value || (loading.value && !push.value)) return 'pushing' // in flight
   const p = push.value
-  if (!p) return loading.value ? 'pushing' : 'hidden' // first fetch
-  if (!p.connected) return 'hidden' // FreeAgent isn't set up for this org
+  if (!p || !p.connected) return 'hidden' // FreeAgent isn't set up for this org
   if (p.state === 'pushed') return 'pushed'
   if (p.state === 'failed') return 'failed'
-  return polling.value ? 'pushing' : 'not_pushed' // state === 'none'
+  return 'not_pushed' // state none, not awaiting → gave up / never attempted
 })
 </script>
 
