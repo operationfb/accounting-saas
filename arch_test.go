@@ -45,6 +45,7 @@ var rootAllowlist = map[string]bool{
 	"attachment_service.go":        true,
 	"attachment_service_test.go":   true,
 	"auth_handler.go":              true,
+	"banking_test.go":              true,
 	"contact_service.go":           true,
 	"contact_service_test.go":      true,
 	"email.go":                     true,

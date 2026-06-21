@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-19_
+_Last updated: 2026-06-21_
 
 ## Auth & authorization
 
@@ -177,6 +177,56 @@ _Last updated: 2026-06-19_
   `accounts_office_reference` and `postcode` are stored as free text. Add format
   checks (PAYE `NNN/XXNNNNN`, Accounts Office `NNNXXNNNNNNNN`, UK postcode) in the
   service. _File: `organisation_service.go`._
+
+## Currencies
+
+- **Make money conversion `minor_unit`-aware.** `currencies.minor_unit` is now
+  stored (2 for most, 0 for JPY/KRW, 3 for the Gulf dinars), but `money/money.go`
+  still assumes 2 dp everywhere (`PoundsToMinor` × 100). Before supporting a
+  non-2dp currency end-to-end, thread `minor_unit` through the pounds↔minor
+  conversion. _File: `money/money.go`._
+
+- **Optional `is_active` curation flag on currencies.** If the full ISO 4217 list
+  proves too long for the picker, add an `is_active BOOLEAN` column so currencies
+  can be hidden from dropdowns without deleting rows (keeps the FK target intact).
+  _Files: `db/schema/schema.sql`, `db/queries/currencies.sql`._
+
+- **Validate submitted currency codes in the service layer.** The FK now rejects
+  an invalid code at the DB (500-class). For a clean 422, validate against
+  `GetCurrencyByCode` in the expense/project services when a currency is set.
+  _Files: `expense_service.go`, `project_service.go`._
+
+## Banking
+
+The data layer (schema + sqlc queries + dev seed) for `bank_accounts` +
+`bank_transactions` landed first; the rest of the module is deferred:
+
+- **Service + HTTP layer.** No `banking_service.go`, handlers, routes or `main.go`
+  wiring yet — the generated `db/banking` package is not referenced by any
+  running code. Build the create/list/get/update/soft-delete account endpoints
+  (and the unset-then-set-primary flow inside one tx) next, mirroring
+  `contact_service.go` + the `/api/v1/contacts` handlers. _Files: new
+  `internal/banking/...` or root `banking_service.go`, `server.go`, `main.go`._
+- **Frontend.** The "New Bank Account" form + account/transaction list views
+  (the screenshots) are not built. The Currency dropdown should consume
+  `GET /api/v1/currencies` (see Currencies backlog), not a hardcoded list.
+- **Bank feed ingestion (TrueLayer / Open Banking).** Populate transactions with
+  `source = 'feed'`, deduping on `external_id` via the existing partial unique
+  index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking
+  integration. _Files: new ingestion code, `db/queries/banking.sql`._
+- **Statement upload (CSV / OFX import).** Manual statement import →
+  `source = 'statement'`.
+- **Transaction reconciliation / "explain".** Link a transaction to an expense /
+  invoice / category and drive the Explained / Unexplained / For-approval tabs +
+  the "Guess explanations" engine. Today `status` / `source` are plain
+  classification columns with no link-to-record FK. _Files: `db/schema/banking_schema.sql`
+  (a future `explained_*` / link table), `db/queries/banking.sql`._
+- **Multi-currency balance display.** Accounts can be GBP / USD / EUR; the list's
+  total balance vs the org `native_currency` needs conversion (depends on the
+  `minor_unit`-aware money work in the Currencies backlog).
+- **Closing-balance reconciliation check.** `bank_transactions.balance_minor`
+  stores the bank-reported running balance; nothing yet asserts it matches our
+  derived `opening + Σ(amount)`. A reconciliation report could flag drift.
 
 ## Projects (frontend / SPA)
 

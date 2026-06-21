@@ -6,7 +6,7 @@
 // screen (Project / Time and money / More options). Money/time are kept as the
 // strings the API parses — the backend converts pounds→pence and "H:MM"→minutes,
 // so we never do that arithmetic here.
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
@@ -24,6 +24,9 @@ import { toISODate } from '@/lib/format'
 import type { Contact } from '@/types/contact'
 import type { CreateProjectRequest } from '@/types/project'
 import type { ApiError } from '@/lib/api'
+import { listCurrencies } from '@/services/currencies.service'
+import { buildCurrencyOptions } from '@/lib/currency'
+import type { Currency } from '@/types/currency'
 
 const router = useRouter()
 const route = useRoute()
@@ -39,11 +42,18 @@ const statusOptions = [
   { label: 'Completed', value: 'completed' },
   { label: 'Cancelled', value: 'cancelled' },
 ]
-const currencyOptions = [
-  { label: 'Pounds Sterling (GBP)', value: 'GBP' },
-  { label: 'Euro (EUR)', value: 'EUR' },
-  { label: 'US Dollar (USD)', value: 'USD' },
-]
+// Currencies come from the global ISO 4217 endpoint; buildCurrencyOptions pins
+// GBP/EUR/USD on top with a disabled dashed separator (shared with the expense form).
+const currencies = ref<Currency[]>([])
+const currencyOptions = computed(() => buildCurrencyOptions(currencies.value))
+
+async function loadCurrencies() {
+  try {
+    currencies.value = await listCurrencies()
+  } catch {
+    // Non-fatal: leave the picker empty; the GBP default still submits.
+  }
+}
 // The budget unit IS the API's budget_type. A zero/blank amount means "no budget"
 // (we omit budget_type entirely), so the unit only matters once an amount is typed.
 const budgetUnitOptions = [
@@ -157,6 +167,7 @@ async function loadForEdit() {
 
 onMounted(() => {
   loadContacts()
+  loadCurrencies()
   if (isEdit) loadForEdit()
 })
 
@@ -346,6 +357,7 @@ function addNewContact() {
             :options="currencyOptions"
             option-label="label"
             option-value="value"
+            option-disabled="disabled"
             class="w-72"
           />
         </FormRow>

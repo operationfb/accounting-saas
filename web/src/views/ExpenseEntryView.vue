@@ -29,6 +29,9 @@ import {
 } from '@/services/expenses.service'
 import { toISODate, computeFixedVatPounds } from '@/lib/format'
 import type { ExpenseCategory, VatRate, CreateExpenseRequest, ExpenseDetail } from '@/types/expense'
+import { listCurrencies } from '@/services/currencies.service'
+import { buildCurrencyOptions, currencySymbolMap } from '@/lib/currency'
+import type { Currency } from '@/types/currency'
 import type { ApiError } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
 import { listMembers } from '@/services/members.service'
@@ -214,9 +217,21 @@ const form = reactive({
   receiptReference: '',
   projectId: '', // linked project (the "Is this a project expense?" card); '' = none
 })
-const currencyOptions = ['GBP', 'EUR', 'USD']
-const currencySymbols: Record<string, string> = { GBP: '£', EUR: '€', USD: '$' }
-const currencySymbol = computed(() => currencySymbols[form.currency] ?? '')
+// --- reference data: currencies (the global ISO 4217 list) ---
+const currencies = ref<Currency[]>([])
+const currencyOptions = computed(() => buildCurrencyOptions(currencies.value))
+// The amount-input symbol (£/€/¥) is derived from the fetched list, so it works
+// for any of the currencies — not just the old hardcoded three.
+const currencySymbol = computed(() => currencySymbolMap(currencies.value)[form.currency] ?? '')
+
+async function loadCurrencies() {
+  try {
+    currencies.value = await listCurrencies()
+  } catch {
+    // Non-fatal: leave the picker empty. The GBP default still submits, so a
+    // currencies fetch failure shouldn't block the whole form (unlike categories).
+  }
+}
 
 // --- projects (the "Is this a project expense?" card) ---
 // Linking an expense to a project is optional and open to any member. listProjects
@@ -307,7 +322,7 @@ async function loadForEdit() {
     // Reference data FIRST so the pre-selected options exist on the dropdowns.
     // For an admin, also load members so the disabled claimant picker can show the
     // claimant's name (an admin may be editing another user's draft).
-    const refData = [loadCategories(), loadVatRates(), loadProjects()]
+    const refData = [loadCategories(), loadVatRates(), loadProjects(), loadCurrencies()]
     if (auth.isOrgAdmin) refData.push(loadMembers())
     await Promise.all(refData)
     const exp = await getExpense(editId)
@@ -370,6 +385,7 @@ onMounted(() => {
     loadCategories()
     loadVatRates()
     loadProjects()
+    loadCurrencies()
     // Only owners/admins get the member picker; everyone else is pinned to self.
     if (auth.isOrgAdmin) loadMembers()
   }
@@ -893,7 +909,15 @@ async function onSmartFilePicked(e: Event) {
         </FormRow>
 
         <FormRow label="Currency" label-for="currency" required>
-          <Select id="currency" v-model="form.currency" :options="currencyOptions" class="w-full sm:w-40" />
+          <Select
+            id="currency"
+            v-model="form.currency"
+            :options="currencyOptions"
+            option-label="label"
+            option-value="value"
+            option-disabled="disabled"
+            class="w-full sm:w-40"
+          />
         </FormRow>
 
         <FormRow label="Total value" label-for="total" required>

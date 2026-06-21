@@ -155,7 +155,7 @@ CREATE TABLE organisations (
     -- -------------------------------------------------------------------------
     -- ISO 4217 currency code. GBP for UK, but a UK company trading in USD
     -- might want USD as their native currency.
-    native_currency         CHAR(3)     NOT NULL DEFAULT 'GBP',
+    native_currency         CHAR(3)     NOT NULL DEFAULT 'GBP' REFERENCES currencies(code),
 
     -- ISO 3166-1 alpha-2 country code the organisation belongs to: 'GB', 'DE',
     -- 'FR'. Determines which set of vat_rates (also keyed by country_code) apply.

@@ -110,6 +110,33 @@ CREATE TABLE vat_rates (
 CREATE INDEX idx_vat_rates_country ON vat_rates (country_code);
 
 
+-- -----------------------------------------------------------------------------
+-- currencies
+-- Global reference data: ISO 4217 currency definitions (code + name + symbol +
+-- minor unit). Like vat_rates these are NOT scoped per organisation — a currency
+-- is a universal standard shared by every org. Seeded once from the ISO 4217 list
+-- (db/seeds/currencies.sql) and read-mostly.
+--
+-- The 3-letter code is the NATURAL primary key: there is one row per currency,
+-- and the code is exactly the value already stored in every currency /
+-- native_currency column — so the FK from those columns is a drop-in
+-- REFERENCES currencies(code). (vat_rates uses a surrogate UUID only because its
+-- country_code is non-unique — many rates per country; here code is unique.)
+--
+-- minor_unit is how many decimal digits the currency uses (ISO 4217): 2 for most,
+-- 0 for JPY/KRW, 3 for KWD/BHD/OMR. Stored now for forward-looking correctness;
+-- the money kernel (money/money.go) still assumes 2 dp — see BACKLOG.
+-- -----------------------------------------------------------------------------
+CREATE TABLE currencies (
+    code        CHAR(3)      PRIMARY KEY CHECK (code = upper(code)), -- ISO 4217, uppercase
+    name        VARCHAR(100) NOT NULL,                              -- e.g. 'British Pound'
+    symbol      VARCHAR(8),                                         -- e.g. '£', '€', 'kr'; NULL if none well-known
+    minor_unit  SMALLINT     NOT NULL DEFAULT 2                     -- ISO 4217 decimal digits
+                CHECK (minor_unit BETWEEN 0 AND 4),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+
 -- =============================================================================
 -- CORE TABLES
 -- =============================================================================
@@ -155,8 +182,8 @@ CREATE TABLE expenses (
     -- currency is the ISO 4217 code of the expense (may differ from company native).
     -- native_currency is the company's home currency (almost always 'GBP' for UK).
     -- -------------------------------------------------------------------------
-    currency                CHAR(3)     NOT NULL DEFAULT 'GBP', -- ISO 4217 e.g. 'GBP', 'USD', 'EUR'
-    native_currency         CHAR(3)     NOT NULL DEFAULT 'GBP', -- company's base currency
+    currency                CHAR(3)     NOT NULL DEFAULT 'GBP' REFERENCES currencies(code), -- ISO 4217 e.g. 'GBP', 'USD', 'EUR'
+    native_currency         CHAR(3)     NOT NULL DEFAULT 'GBP' REFERENCES currencies(code), -- company's base currency
     exchange_rate           NUMERIC(18,6),                      -- rate used to convert to native; NULL if same currency
 
     gross_value_minor       INTEGER     NOT NULL,               -- total in expense currency (pence/cents/etc)
@@ -680,6 +707,7 @@ COMMENT ON TABLE expense_categories     IS 'Chart of Accounts categories availab
 COMMENT ON TABLE supplier_category_map  IS 'Learned supplier→category dictionary for auto-categorisation. Derived data: populated by the learn_supplier_category() trigger from CONFIRMED expenses only (needs_review = FALSE). Safe to rebuild from expenses.';
 COMMENT ON COLUMN supplier_category_map.supplier_key IS 'Supplier name normalised to lower(btrim(...)) so case/whitespace variants collapse. Apply the same normalisation when looking up.';
 COMMENT ON TABLE vat_rates              IS 'Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.';
+COMMENT ON TABLE currencies             IS 'ISO 4217 currency codes, names, symbols and minor units. Global reference data, not org-scoped (like vat_rates). The code is the natural PK and the FK target for every currency / native_currency column.';
 
 COMMENT ON COLUMN expenses.gross_value_minor         IS 'Total amount in minor units of expense currency (e.g. pence for GBP). Negative = owed to claimant.';
 COMMENT ON COLUMN expenses.native_gross_value_minor  IS 'Total amount in minor units of company home currency (GBP pence for UK companies).';

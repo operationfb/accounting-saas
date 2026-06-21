@@ -28,10 +28,12 @@ import (
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
 	contacts "github.com/operationfb/accounting-saas/db/contacts"
+	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	projects "github.com/operationfb/accounting-saas/db/projects"
+	currencies "github.com/operationfb/accounting-saas/internal/currencies"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
@@ -358,6 +360,13 @@ func main() {
 	// place. Adding a provider is another NewService/NewHandler + these two calls.
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), workflowServiceAccount)
+
+	// Currencies: a thin read-only service over the GLOBAL ISO 4217 reference
+	// table. Like the integration handler it registers its own route on the shared
+	// engine (the per-domain pattern), behind bearer-token auth. No org scoping —
+	// the list is universal.
+	currencyHandler := currencies.NewHandler(currencies.NewService(dbcurrencies.New(pool)))
+	currencyHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

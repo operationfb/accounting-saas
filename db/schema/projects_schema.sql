@@ -56,7 +56,7 @@ CREATE TABLE projects (
     -- -------------------------------------------------------------------------
     -- Time and money
     -- -------------------------------------------------------------------------
-    currency                    TEXT NOT NULL DEFAULT 'GBP',
+    currency                    CHAR(3) NOT NULL DEFAULT 'GBP' REFERENCES currencies(code), -- ISO 4217; FK to the global currencies table
 
     -- Budget discriminator: which of the three budget columns is active.
     -- NULL means "no budget set" (the form default shows 0 Hours but the user

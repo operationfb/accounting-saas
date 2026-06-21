@@ -9,6 +9,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// ISO 4217 currency codes, names, symbols and minor units. Global reference data, not org-scoped (like vat_rates). The code is the natural PK and the FK target for every currency / native_currency column.
+type Currency struct {
+	Code      string             `json:"code"`
+	Name      string             `json:"name"`
+	Symbol    pgtype.Text        `json:"symbol"`
+	MinorUnit int16              `json:"minor_unit"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 // Core expense claims/receipts. One row per expense event.
 type Expense struct {
 	ID               uuid.UUID      `json:"id"`

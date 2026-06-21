@@ -332,3 +332,92 @@ sql:
               type: "RawMessage"
           - db_type: "pg_catalog.numeric"
             go_type: "string"
+
+  # ===========================================================================
+  # CURRENCIES MODULE
+  # Global reference data: ISO 4217 currency code + name + symbol + minor unit,
+  # generated into package `currencies` at db/currencies.
+  #
+  # Loads ONLY schema.sql, because the currencies table is defined there (next to
+  # vat_rates) and has no cross-file dependencies of its own. omit_unused_structs
+  # keeps the rest of schema.sql's tables out of db/currencies — only the Currency
+  # struct (referenced by currencies.sql) is emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+
+    queries: "db/queries/currencies.sql"
+
+    gen:
+      go:
+        package: "currencies"
+        out: "db/currencies"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Emit only what currencies.sql references (the Currency struct).
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+
+  # ===========================================================================
+  # BANKING MODULE
+  # Generates the data layer for the bank_accounts + bank_transactions tables
+  # into package `banking` at db/banking — its own domain package.
+  #
+  # Loads schema.sql + auth_schema.sql + banking_schema.sql in dependency order:
+  # banking_schema.sql references set_updated_at() (schema.sql) and the
+  # organisations / users tables its foreign keys point at (auth_schema.sql).
+  # omit_unused_structs keeps the other domains' structs out of db/banking —
+  # only BankAccount, BankTransaction and the List/Get *Row structs (carrying the
+  # derived current_balance_minor) are emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/banking_schema.sql"
+
+    queries: "db/queries/banking.sql"
+
+    gen:
+      go:
+        package: "banking"
+        out: "db/banking"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep the expenses/auth structs (loaded only to satisfy FK deps) out of
+        # db/banking — emit only what banking.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
