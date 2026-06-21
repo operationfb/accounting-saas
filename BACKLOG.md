@@ -198,18 +198,17 @@ _Last updated: 2026-06-21_
 
 ## Banking
 
-The data layer (schema + sqlc queries + dev seed) for `bank_accounts` +
-`bank_transactions` landed first; the rest of the module is deferred:
+The data layer, the bank-ACCOUNT service/API (`internal/banking`, the
+`/api/v1/bank-accounts` CRUD), and the account list + entry/edit views have
+landed. What remains is the TRANSACTION side and richer features:
 
-- **Service + HTTP layer.** No `banking_service.go`, handlers, routes or `main.go`
-  wiring yet — the generated `db/banking` package is not referenced by any
-  running code. Build the create/list/get/update/soft-delete account endpoints
-  (and the unset-then-set-primary flow inside one tx) next, mirroring
-  `contact_service.go` + the `/api/v1/contacts` handlers. _Files: new
-  `internal/banking/...` or root `banking_service.go`, `server.go`, `main.go`._
-- **Frontend.** The "New Bank Account" form + account/transaction list views
-  (the screenshots) are not built. The Currency dropdown should consume
-  `GET /api/v1/currencies` (see Currencies backlog), not a hardcoded list.
+- **Delete-account UI.** The `DELETE /api/v1/bank-accounts/:id` endpoint exists
+  (soft delete, owner/admin) but no SPA affordance calls it yet — mirrors
+  Projects. Add an edit-form/list delete when needed.
+  _File: `web/src/views/BankAccountEntryView.vue`._
+- **Transaction views.** The statement/transaction list (the second screenshot)
+  and manual transaction entry are not built. The data layer + `db/banking`
+  transaction queries exist; needs transaction endpoints + a view.
 - **Bank feed ingestion (TrueLayer / Open Banking).** Populate transactions with
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking

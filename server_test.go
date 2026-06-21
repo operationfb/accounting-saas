@@ -45,14 +45,18 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/operationfb/accounting-saas/db/auth"
-	contacts "github.com/operationfb/accounting-saas/db/contacts"
+	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	banking "github.com/operationfb/accounting-saas/internal/banking"
+	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
+	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	"github.com/operationfb/accounting-saas/token"
@@ -75,6 +79,16 @@ type testServer struct {
 	// integrationService is the freeagent integration service the harness wires; its
 	// Handler registers routes on server.Router(). Exposed for the direct-call tests.
 	integrationService *integrations.Service
+
+	// bankingService is the banking domain service the harness wires (its Handler
+	// registers /api/v1/bank-accounts on server.Router()). Exposed for direct-call tests.
+	bankingService *banking.Service
+
+	// contactService + organisationService are the domain services the harness wires
+	// (their Handlers register /api/v1/contacts* + /api/v1/organisation on
+	// server.Router()). Exposed for the direct-call tests.
+	contactService      *contacts.Service
+	organisationService *organisation.Service
 
 	// faProvider is the UNIQUE throwaway FreeAgent provider key this test server's
 	// integration service is built with. It scopes both the global
@@ -166,10 +180,10 @@ func newTestServer(t *testing.T) *testServer {
 		store = gcsStore
 	}
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
-	contactService := NewContactService(pool, contacts.New(pool), authQueries)
-	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, contacts.New(pool))
+	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries)
+	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	memberService := NewMemberService(authQueries)
-	organisationService := NewOrganisationService(authQueries)
+	organisationSvc := organisation.NewService(authQueries)
 	userService := NewUserService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
@@ -189,18 +203,31 @@ func newTestServer(t *testing.T) *testServer {
 	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	server := NewServer(service, attachmentService, projectService, memberService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
+	// Banking: build + register like the per-domain handlers above; exposed on the
+	// harness so the service-level tests can call it directly.
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries)
+	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
+
+	// Contacts + Organisation (Company Details): build + register like the per-domain
+	// handlers above; exposed on the harness for the direct-call tests.
+	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
+	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
+
 	return &testServer{
-		server:             server,
-		pool:               pool,
-		tokenMaker:         tokenMaker,
-		emailSender:        emailSender,
-		emailInboxService:  emailInboxService,
-		integrationService: integrationSvc,
-		faProvider:         faProvider,
+		server:              server,
+		pool:                pool,
+		tokenMaker:          tokenMaker,
+		emailSender:         emailSender,
+		emailInboxService:   emailInboxService,
+		integrationService:  integrationSvc,
+		bankingService:      bankingSvc,
+		contactService:      contactSvc,
+		organisationService: organisationSvc,
+		faProvider:          faProvider,
 	}
 }
 

@@ -27,16 +27,20 @@ import (
 	// These import paths match the `out` directories in sqlc.yaml.
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
-	contacts "github.com/operationfb/accounting-saas/db/contacts"
+	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	projects "github.com/operationfb/accounting-saas/db/projects"
+	banking "github.com/operationfb/accounting-saas/internal/banking"
+	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
+	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -114,9 +118,10 @@ func main() {
 	authQueries := auth.New(pool)
 	service := NewExpenseService(pool, queries, authQueries)
 
-	// Contacts: its own sqlc package + service, wired the same way as expenses.
-	contactQueries := contacts.New(pool)
-	contactService := NewContactService(pool, contactQueries, authQueries)
+	// Contacts: its own sqlc package + internal/contacts service. The service +
+	// Handler self-register routes after NewServer (per-domain pattern).
+	contactQueries := dbcontacts.New(pool)
+	contactSvc := contacts.NewService(pool, contactQueries, authQueries)
 
 	// Projects: depends on contactQueries to validate contact ownership when
 	// a project is created or updated (contact_id must belong to the same org).
@@ -129,8 +134,8 @@ func main() {
 
 	// Organisation: read/update the caller's own company details (the Company
 	// Details settings screen). Read by any active member; edit by owner/admin.
-	// Reuses the shared authQueries.
-	organisationService := NewOrganisationService(authQueries)
+	// Reuses the shared authQueries. Self-registers its routes after NewServer.
+	organisationSvc := organisation.NewService(authQueries)
 
 	// User: read/update the caller's own profile (the "My Details" screen —
 	// first/last name; the login email is read-only). Always self-scoped via the
@@ -353,7 +358,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, contactService, projectService, memberService, organisationService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(service, attachmentService, projectService, memberService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
 
 	// Each integration registers its OWN routes on the shared engine (the
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in
@@ -367,6 +372,18 @@ func main() {
 	// the list is universal.
 	currencyHandler := currencies.NewHandler(currencies.NewService(dbcurrencies.New(pool)))
 	currencyHandler.RegisterRoutes(server.Router(), tokenMaker)
+
+	// Banking: the org's own bank accounts. Its own service + handler in
+	// internal/banking, registering its own routes on the shared engine (the
+	// per-domain pattern) — the root Server struct is untouched.
+	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries))
+	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
+
+	// Contacts + Organisation (Company Details), each self-registering its routes
+	// on the shared engine — same per-domain pattern.
+	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
+	organisationHandler := organisation.NewHandler(organisationSvc)
+	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

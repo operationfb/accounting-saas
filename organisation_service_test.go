@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 )
 
 // =============================================================================
@@ -34,7 +36,7 @@ import (
 
 // putOrganisation sends PUT /api/v1/organisation with the given auth header
 // (empty = none) and JSON body, returning the recorder.
-func putOrganisation(t *testing.T, ts *testServer, authHeader string, body UpdateOrganisationRequest) *httptest.ResponseRecorder {
+func putOrganisation(t *testing.T, ts *testServer, authHeader string, body organisation.UpdateOrganisationRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	bodyBytes, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -60,10 +62,10 @@ func getOrganisationReq(t *testing.T, ts *testServer, authHeader string) *httpte
 }
 
 // decodeOrganisation pulls the { "organisation": {...} } envelope into a response.
-func decodeOrganisation(t *testing.T, body []byte) OrganisationDetailsResponse {
+func decodeOrganisation(t *testing.T, body []byte) organisation.OrganisationDetailsResponse {
 	t.Helper()
 	var resp struct {
-		Organisation OrganisationDetailsResponse `json:"organisation"`
+		Organisation organisation.OrganisationDetailsResponse `json:"organisation"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode organisation: %v — body: %s", err, string(body))
@@ -93,7 +95,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 		authHeader := bearer(t, ts, ownerB, orgB)
 
-		body := UpdateOrganisationRequest{
+		body := organisation.UpdateOrganisationRequest{
 			Name:                    "AXION LONDON LIMITED",
 			LegalName:               ptr("Axion London Ltd"),
 			CompanyType:             ptr("limited"),
@@ -166,7 +168,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		orgB, _ := newOrgWithOwner(t, ts)
 		memberB := newMemberUser(t, ts, orgB)
 
-		rec := putOrganisation(t, ts, bearer(t, ts, memberB, orgB), UpdateOrganisationRequest{Name: "Nope"})
+		rec := putOrganisation(t, ts, bearer(t, ts, memberB, orgB), organisation.UpdateOrganisationRequest{Name: "Nope"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("member editing company details: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -176,7 +178,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		orgB, _ := newOrgWithOwner(t, ts)
 		// devUserID is a member of the dev org, not org B — a token scoped to org B
 		// is rejected by the membership check.
-		rec := putOrganisation(t, ts, bearer(t, ts, devUserID, orgB), UpdateOrganisationRequest{Name: "Nope"})
+		rec := putOrganisation(t, ts, bearer(t, ts, devUserID, orgB), organisation.UpdateOrganisationRequest{Name: "Nope"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("non-member editing: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -184,7 +186,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 
 	t.Run("missing name → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
-		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB), UpdateOrganisationRequest{}) // name empty
+		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB), organisation.UpdateOrganisationRequest{}) // name empty
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -193,7 +195,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 	t.Run("invalid company_type → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-			UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")})
+			organisation.UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -202,14 +204,14 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 	t.Run("invalid country_code → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-			UpdateOrganisationRequest{Name: "X", CountryCode: "GBR"}) // 3 letters fails len=2
+			organisation.UpdateOrganisationRequest{Name: "X", CountryCode: "GBR"}) // 3 letters fails len=2
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("requires auth → 401", func(t *testing.T) {
-		rec := putOrganisation(t, ts, "", UpdateOrganisationRequest{Name: "X"})
+		rec := putOrganisation(t, ts, "", organisation.UpdateOrganisationRequest{Name: "X"})
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -230,15 +232,15 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 
 	cases := []struct {
 		name string
-		req  UpdateOrganisationRequest
+		req  organisation.UpdateOrganisationRequest
 	}{
-		{"invalid company_type", UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")}},
-		{"invalid country_code", UpdateOrganisationRequest{Name: "X", CountryCode: "ZZZ"}},
-		{"blank name", UpdateOrganisationRequest{Name: "   "}},
+		{"invalid company_type", organisation.UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")}},
+		{"invalid country_code", organisation.UpdateOrganisationRequest{Name: "X", CountryCode: "ZZZ"}},
+		{"blank name", organisation.UpdateOrganisationRequest{Name: "   "}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ts.server.organisationService.UpdateOrganisation(
+			_, err := ts.organisationService.UpdateOrganisation(
 				context.Background(), mustUUID(t, ownerB), mustUUID(t, orgB), tc.req)
 			assertAppCode(t, err, ErrCodeValidation)
 		})
@@ -270,7 +272,7 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 
 	// PUT company details — none of slug/native_currency/timezone/vrn are sent.
 	rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-		UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("landlord"), CountryCode: "GB"})
+		organisation.UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("landlord"), CountryCode: "GB"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
@@ -372,7 +374,7 @@ func TestOrganisation_TenantIsolation(t *testing.T) {
 	if rec := getOrganisationReq(t, ts, outsider); rec.Code != http.StatusForbidden {
 		t.Errorf("cross-tenant GET: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 	}
-	if rec := putOrganisation(t, ts, outsider, UpdateOrganisationRequest{Name: "Hacked"}); rec.Code != http.StatusForbidden {
+	if rec := putOrganisation(t, ts, outsider, organisation.UpdateOrganisationRequest{Name: "Hacked"}); rec.Code != http.StatusForbidden {
 		t.Errorf("cross-tenant PUT: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 	}
 

@@ -10,6 +10,8 @@ import ContactListView from '@/views/ContactListView.vue'
 import ContactEntryView from '@/views/ContactEntryView.vue'
 import ProjectListView from '@/views/ProjectListView.vue'
 import ProjectEntryView from '@/views/ProjectEntryView.vue'
+import BankAccountListView from '@/views/BankAccountListView.vue'
+import BankAccountEntryView from '@/views/BankAccountEntryView.vue'
 import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
@@ -31,6 +33,9 @@ const router = createRouter({
     { path: '/projects', name: 'projects', component: ProjectListView, meta: { requiresAuth: true, title: 'Projects' } },
     { path: '/projects/new', name: 'project-new', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
     { path: '/projects/:id/edit', name: 'project-edit', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
+    { path: '/bank-accounts', name: 'bank-accounts', component: BankAccountListView, meta: { requiresAuth: true, title: 'Banking' } },
+    { path: '/bank-accounts/new', name: 'bank-account-new', component: BankAccountEntryView, meta: { requiresAuth: true, title: 'Banking' } },
+    { path: '/bank-accounts/:id/edit', name: 'bank-account-edit', component: BankAccountEntryView, meta: { requiresAuth: true, title: 'Banking' } },
     { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true, title: 'Expenses' } },

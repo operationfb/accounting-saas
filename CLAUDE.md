@@ -50,8 +50,10 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
 ├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
-├── contact_service.go   # Contact business logic + request/response DTOs (CRUD, validation, creator/admin auth) for the contacts module
-├── organisation_service.go  # OrganisationService: read/update the org's own "Company Details" (GET/PUT /api/v1/organisation; member read, owner/admin edit)
+│   # NOTE: contacts + organisation (Company Details) were extracted to internal/ (2026-06-21):
+│   #   internal/contacts/      — contacts.Service + Handler + DTOs (CRUD over db/contacts; self-registers /api/v1/contacts*). db/contacts is aliased `contactsdb` inside.
+│   #   internal/organisation/  — organisation.Service + Handler + DTOs (Company Details; self-registers /api/v1/organisation).
+│   #   normaliseCountryCode (shared by both) moved to internal/kernel (kernel.NormaliseCountryCode, in validate.go).
 ├── user_service.go      # UserService: read/update the caller's own "My Details" (GET/PUT /api/v1/profile; first/last name — always self-scoped from the token, no role check)
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
 ├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
@@ -170,7 +172,7 @@ Worth knowing:
 
 ### Contacts module
 
-A **contact** is a customer/supplier an organisation invoices or buys from (modelled on the FreeAgent "New Contact" screen). It is a **standalone domain**, structured exactly like `auth`: its own schema file (`db/schema/contacts_schema.sql`), its own queries (`db/queries/contacts.sql`), its own sqlc block generating package `db/contacts`, a service (`contact_service.go`) and handlers/DTOs/routes in `server.go` under `/api/v1/contacts` (list, create, get, update, soft-delete).
+A **contact** is a customer/supplier an organisation invoices or buys from (modelled on the FreeAgent "New Contact" screen). It is a **standalone domain**, extracted to **`internal/contacts`** (the `currencies`/`banking` exemplar): its own schema file (`db/schema/contacts_schema.sql`), its own queries (`db/queries/contacts.sql`), its own sqlc block generating package `db/contacts` (imported as `contactsdb` inside the package to avoid the name clash), a `contacts.Service`, `contacts.Handler` (self-registers `/api/v1/contacts*`), and the DTOs (`dto.go`). list, create, get, update, soft-delete.
 
 Worth knowing:
 
@@ -184,13 +186,13 @@ Worth knowing:
 
 The **Company Details** screen (modelled on FreeAgent's) lives entirely on the existing `organisations` table — it is **not** a separate domain. Rather than a 1:1 `organisation_details` table, the missing fields were **added as nullable columns** to `organisations` (`db/schema/auth_schema.sql`), beside the company/tax fields already there (`legal_name`, `companies_house_number`, `utr`, `vrn`, `country_code`). New columns: `company_type` (CHECK enum: `limited|sole_trader|partnership|landlord|corporation`), a structured address (`address_line_1..3`, `town`, `region`, `postcode`), `paye_reference`, `accounts_office_reference`, `business_phone`, `contact_email`, `contact_phone`, `website`, `business_category`, `business_description`. The legacy free-text `registered_address` is **deprecated** (kept for back-compat, no longer written; see `BACKLOG.md`).
 
-`OrganisationService` (`organisation_service.go`) is a thin layer over the existing `auth` queries (like `MemberService`), with handlers/DTOs/routes in `server.go` under **`/api/v1/organisation`** — a singleton resource (the org comes from the token, so there is no id in the path):
+`organisation.Service` (**`internal/organisation`**) is a thin layer over the existing `auth` queries (like `MemberService`), with its `Handler` self-registering routes (and the DTOs in `dto.go`) under **`/api/v1/organisation`** — a singleton resource (the org comes from the token, so there is no id in the path):
 
 - **`GET`** returns the full company details — **any active member** may read.
 - **`PUT`** updates them — **owner/admin only** (`isOrgAdmin`); reuses `GetOrganisation` / `UpdateOrganisation` (`db/queries/auth.sql`).
 - **Field mapping.** The form's "Company name" → `name`, "Company Registration Number" → `companies_house_number`, "Corporation Tax Reference" → `utr`, "Country" → `country_code` (existing columns; `legal_name` is also exposed).
 - **Read-modify-write.** PUT fetches the row first and passes through the columns this form does not own (`slug`, `native_currency`, `timezone`, and — until VAT is added to the form — `vrn`) so a save can't wipe them.
-- **Validation.** `company_type` and `country_code` are checked three ways: `oneof` / `len` binding (400), the service guards `normaliseCompanyType` / `normaliseCountryCode` (422), and the DB CHECK. Tested in `organisation_service_test.go`.
+- **Validation.** `company_type` and `country_code` are checked three ways: `oneof` / `len` binding (400), the service guards `normaliseCompanyType` (local) / `kernel.NormaliseCountryCode` (shared with contacts) (422), and the DB CHECK. Tested in `organisation_service_test.go` (kept in root, like `banking_test.go`).
 
 ### My Details (user profile)
 

@@ -40,7 +40,7 @@ const navItems: NavItem[] = [
   { label: 'Projects', caret: false, to: '/projects' },
   // { label: 'Bills', caret: false },
   { label: 'Expenses', caret: false, to: '/expenses' },
-  // { label: 'Banking', caret: true },
+  { label: 'Banking', caret: false, to: '/bank-accounts' },
   // { label: 'Taxes', caret: true },
   // { label: 'Accounting', caret: true },
 ]
