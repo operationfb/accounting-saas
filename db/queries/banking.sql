@@ -255,6 +255,23 @@ LIMIT $3 OFFSET $4;
 
 
 -- -----------------------------------------------------------------------------
+-- ListBankAccountTransactions  (the statement view — OLDEST first, all rows)
+-- Powers the read-only transactions page. Unlike ListBankTransactions (newest
+-- first, paginated), this returns the account's whole live statement in
+-- CHRONOLOGICAL order so the service can fold a running balance over it
+-- (opening + Σ amount_minor). The (dated_on, created_at, id) ordering is fully
+-- deterministic so same-dated lines accumulate in a stable order. v1 has no
+-- LIMIT — the running balance needs the full ordered set; pagination is deferred.
+-- -----------------------------------------------------------------------------
+-- name: ListBankAccountTransactions :many
+SELECT * FROM bank_transactions
+WHERE organisation_id = $1   -- tenant scope
+  AND bank_account_id = $2   -- which account's statement
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC, id ASC;
+
+
+-- -----------------------------------------------------------------------------
 -- GetBankTransactionByExternalID  (feed dedupe lookup)
 -- Used by the future bank-feed ingestion to skip a transaction it already has.
 -- Keyed on (bank_account_id, external_id) — exactly the columns of the partial

@@ -42,6 +42,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.GET("", h.List)
 		g.POST("", h.Create)
 		g.GET("/:id", h.Get)
+		g.GET("/:id/transactions", h.ListTransactions)
 		g.PUT("/:id", h.Update)
 		g.DELETE("/:id", h.Delete)
 	}
@@ -79,6 +80,17 @@ func (h *Handler) Get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"bank_account": account})
+}
+
+// ListTransactions handles GET /api/v1/bank-accounts/:id/transactions — the
+// read-only statement: the account plus its lines (oldest first) with a running balance.
+func (h *Handler) ListTransactions(c *gin.Context) {
+	resp, err := h.svc.ListTransactions(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // Update handles PUT /api/v1/bank-accounts/:id.

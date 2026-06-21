@@ -236,6 +236,102 @@ func (s *Service) ListBankAccounts(ctx context.Context, authUserID, authOrgID uu
 }
 
 // =============================================================================
+// TRANSACTIONS (read-only statement view)
+// =============================================================================
+
+// BankTransactionResponse is one statement line in the API shape. Money is split
+// into money_in / money_out (one set, pound strings) by the sign of amount_minor,
+// and running_balance is the derived balance AFTER this line.
+type BankTransactionResponse struct {
+	ID             string  `json:"id"`
+	DatedOn        string  `json:"dated_on"` // YYYY-MM-DD
+	Description    *string `json:"description,omitempty"`
+	BankMemo       *string `json:"bank_memo,omitempty"`
+	Status         string  `json:"status"`              // unexplained | explained | for_approval
+	Source         string  `json:"source"`              // feed | manual | statement
+	MoneyIn        *string `json:"money_in,omitempty"`  // pounds, set when amount_minor > 0
+	MoneyOut       *string `json:"money_out,omitempty"` // pounds, set when amount_minor < 0
+	RunningBalance string  `json:"running_balance"`     // pounds, opening + Σ up to this line
+}
+
+// BankAccountTransactionsResponse is the combined statement-page payload: the
+// account (header + sidebar + opening/current balances) plus its lines in
+// chronological order, each carrying a running balance.
+type BankAccountTransactionsResponse struct {
+	Account      *BankAccountResponse       `json:"account"`
+	Transactions []*BankTransactionResponse `json:"transactions"`
+}
+
+// ListTransactions returns an account's whole live statement (oldest first) with a
+// server-computed running balance (opening + Σ amount_minor) — the final running
+// balance equals the account's current balance. Any active member may read.
+func (s *Service) ListTransactions(ctx context.Context, authUserID, authOrgID uuid.UUID, id string) (*BankAccountTransactionsResponse, error) {
+	accountUUID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, kernel.ErrValidation("id is not a valid UUID", err)
+	}
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+
+	// The account supplies the opening balance (the running-balance seed + the
+	// brought-forward row) and the header/sidebar fields. 404 if missing/other org.
+	acct, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: authOrgID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("bank account", id)
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+
+	rows, err := s.queries.ListBankAccountTransactions(ctx, banking.ListBankAccountTransactionsParams{
+		OrganisationID: authOrgID,
+		BankAccountID:  accountUUID,
+	})
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// Fold a running balance over the chronological lines: opening + cumulative sum.
+	running := acct.OpeningBalanceMinor
+	out := make([]*BankTransactionResponse, 0, len(rows))
+	for _, t := range rows {
+		running += t.AmountMinor
+		out = append(out, bankTransactionToResponse(t, running))
+	}
+
+	return &BankAccountTransactionsResponse{
+		Account:      bankAccountToResponse(accountFromGetRow(acct), acct.CurrentBalanceMinor),
+		Transactions: out,
+	}, nil
+}
+
+// bankTransactionToResponse maps one stored line + its running balance into the API
+// shape, splitting the signed amount into money_in / money_out (pound strings).
+func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64) *BankTransactionResponse {
+	var moneyIn, moneyOut *string
+	switch {
+	case t.AmountMinor > 0:
+		s := money.MinorToPounds(t.AmountMinor)
+		moneyIn = &s
+	case t.AmountMinor < 0:
+		s := money.MinorToPounds(-t.AmountMinor)
+		moneyOut = &s
+	}
+	return &BankTransactionResponse{
+		ID:             t.ID.String(),
+		DatedOn:        t.DatedOn.Time.Format("2006-01-02"),
+		Description:    kernel.NullTextToPtr(t.Description),
+		BankMemo:       kernel.NullTextToPtr(t.BankMemo),
+		Status:         t.Status,
+		Source:         t.Source,
+		MoneyIn:        moneyIn,
+		MoneyOut:       moneyOut,
+		RunningBalance: money.MinorToPounds(runningMinor),
+	}
+}
+
+// =============================================================================
 // UPDATE / DELETE
 // =============================================================================
 

@@ -2,7 +2,9 @@ import { apiFetch } from '@/lib/api'
 import {
   ListBankAccountsResponseSchema,
   GetBankAccountResponseSchema,
+  BankAccountTransactionsResponseSchema,
   type BankAccount,
+  type BankTransaction,
   type CreateBankAccountRequest,
 } from '@/types/bank-account'
 
@@ -37,4 +39,15 @@ export async function updateBankAccount(id: string, payload: CreateBankAccountRe
     body: payload,
   })
   return GetBankAccountResponseSchema.parse(data).bank_account
+}
+
+// GET /api/v1/bank-accounts/:id/transactions — the read-only statement: the account
+// (header/sidebar/opening balance) plus its lines, oldest first, each with a running
+// balance computed server-side. The transactions list may arrive as null → default [].
+export async function getBankAccountTransactions(
+  id: string,
+): Promise<{ account: BankAccount; transactions: BankTransaction[] }> {
+  const data = await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(id)}/transactions`, { method: 'GET' })
+  const parsed = BankAccountTransactionsResponseSchema.parse(data)
+  return { account: parsed.account, transactions: parsed.transactions ?? [] }
 }

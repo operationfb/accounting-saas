@@ -69,3 +69,28 @@ export interface CreateBankAccountRequest {
   opening_balance_date?: string
   guess_explanations?: boolean
 }
+
+// One statement line (mirrors the backend's BankTransactionResponse). The backend
+// pre-splits money into money_in / money_out (pound strings, exactly one set) by the
+// sign of the amount, and running_balance is the derived balance AFTER this line.
+export const BankTransactionSchema = z.object({
+  id: z.string(),
+  dated_on: z.string(), // YYYY-MM-DD
+  description: z.string().nullish(),
+  bank_memo: z.string().nullish(),
+  status: z.string(), // 'unexplained' | 'explained' | 'for_approval'
+  source: z.string(), // 'feed' | 'manual' | 'statement'
+  money_in: z.string().nullish(),
+  money_out: z.string().nullish(),
+  running_balance: z.string(),
+})
+export type BankTransaction = z.infer<typeof BankTransactionSchema>
+
+// GET /api/v1/bank-accounts/:id/transactions → { account, transactions } — the
+// account (header/sidebar/opening balance) plus its lines, oldest first.
+export const BankAccountTransactionsResponseSchema = z.object({
+  account: BankAccountSchema,
+  transactions: z.array(BankTransactionSchema).nullish(),
+})
+export type BankAccountTransactions = z.infer<typeof BankAccountTransactionsResponseSchema>
+

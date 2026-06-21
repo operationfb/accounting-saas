@@ -237,4 +237,65 @@ func TestBankAccountService(t *testing.T) {
 			bankReq("Bad", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "not-a-number" }))
 		assertAppCode(t, err, ErrCodeValidation)
 	})
+
+	t.Run("ListTransactions returns the statement with a running balance", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("Statement", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		// Distinct dates so the chronological (ASC) order is deterministic.
+		mkTxn := func(date string, amount int64) {
+			if _, err := ts.pool.Exec(ctx,
+				`INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source)
+				 VALUES ($1, $2, $3, $4, 'unexplained', 'manual')`, org, acc.ID, date, amount); err != nil {
+				t.Fatalf("insert txn: %v", err)
+			}
+		}
+		mkTxn("2026-06-01", 50_000)  // +£500.00 in
+		mkTxn("2026-06-02", -20_000) // -£200.00 out
+
+		st, err := svc.ListTransactions(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID)
+		if err != nil {
+			t.Fatalf("ListTransactions: %v", err)
+		}
+		if len(st.Transactions) != 2 {
+			t.Fatalf("transactions: got %d, want 2", len(st.Transactions))
+		}
+		in, out := st.Transactions[0], st.Transactions[1] // oldest first
+
+		// Money split by sign: exactly one of in/out is set per row.
+		if in.MoneyIn == nil || *in.MoneyIn != "500.00" || in.MoneyOut != nil {
+			t.Errorf("money-in row: in=%v out=%v, want in=500.00 / out=nil", in.MoneyIn, in.MoneyOut)
+		}
+		if out.MoneyOut == nil || *out.MoneyOut != "200.00" || out.MoneyIn != nil {
+			t.Errorf("money-out row: in=%v out=%v, want out=200.00 / in=nil", out.MoneyIn, out.MoneyOut)
+		}
+		// Running balance accumulates: 1000 +500 = 1500, then -200 = 1300.
+		if in.RunningBalance != "1500.00" {
+			t.Errorf("running balance after +500: got %q, want 1500.00", in.RunningBalance)
+		}
+		if out.RunningBalance != "1300.00" {
+			t.Errorf("running balance after -200: got %q, want 1300.00", out.RunningBalance)
+		}
+		// The final running balance equals the account's derived current balance.
+		if out.RunningBalance != st.Account.CurrentBalance {
+			t.Errorf("final running balance %q != account.current_balance %q", out.RunningBalance, st.Account.CurrentBalance)
+		}
+
+		// Authz: a non-member of the org → 403; another org's id → 404.
+		otherOrg, otherUser := newOrgWithOwner(t, ts)
+		if _, err := svc.ListTransactions(ctx, mustUUID(t, otherUser), mustUUID(t, org), acc.ID); err == nil {
+			t.Error("expected an error for a non-member caller")
+		} else {
+			assertAppCode(t, err, ErrCodeForbidden)
+		}
+		if _, err := svc.ListTransactions(ctx, mustUUID(t, otherUser), mustUUID(t, otherOrg), acc.ID); err == nil {
+			t.Error("expected 404 reading another org's account")
+		} else {
+			assertAppCode(t, err, ErrCodeNotFound)
+		}
+	})
 }

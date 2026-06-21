@@ -82,6 +82,16 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	GetBankTransactionByExternalID(ctx context.Context, arg GetBankTransactionByExternalIDParams) (BankTransaction, error)
 	// -----------------------------------------------------------------------------
+	// ListBankAccountTransactions  (the statement view — OLDEST first, all rows)
+	// Powers the read-only transactions page. Unlike ListBankTransactions (newest
+	// first, paginated), this returns the account's whole live statement in
+	// CHRONOLOGICAL order so the service can fold a running balance over it
+	// (opening + Σ amount_minor). The (dated_on, created_at, id) ordering is fully
+	// deterministic so same-dated lines accumulate in a stable order. v1 has no
+	// LIMIT — the running balance needs the full ordered set; pagination is deferred.
+	// -----------------------------------------------------------------------------
+	ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]BankTransaction, error)
+	// -----------------------------------------------------------------------------
 	// ListBankAccounts  (the "list", with derived balance)
 	// All live accounts for an organisation, each with its derived current balance,
 	// for the bank-accounts list page. Primary account first (the form note: "appear

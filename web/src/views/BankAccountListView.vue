@@ -24,8 +24,8 @@ const error = ref('')
 function newAccount() {
   router.push('/bank-accounts/new')
 }
-function openEdit(id: string) {
-  router.push(`/bank-accounts/${id}/edit`)
+function openTransactions(id: string) {
+  router.push(`/bank-accounts/${id}`)
 }
 
 // The identifier line under the account name: UK account/sort, else IBAN, else —.
@@ -111,7 +111,7 @@ onMounted(load)
                       <button
                         type="button"
                         class="text-left font-semibold text-fa-blue hover:underline"
-                        @click="openEdit(a.id)"
+                        @click="openTransactions(a.id)"
                       >
                         {{ a.name }}
                       </button>

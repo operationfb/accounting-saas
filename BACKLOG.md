@@ -199,16 +199,22 @@ _Last updated: 2026-06-21_
 ## Banking
 
 The data layer, the bank-ACCOUNT service/API (`internal/banking`, the
-`/api/v1/bank-accounts` CRUD), and the account list + entry/edit views have
-landed. What remains is the TRANSACTION side and richer features:
+`/api/v1/bank-accounts` CRUD), the account list + entry/edit views, and the
+read-only TRANSACTION (statement) view (`GET /:id/transactions` +
+`BankAccountTransactionsView`) have landed. What remains is transaction WRITE +
+the reconciliation/feed richness:
 
 - **Delete-account UI.** The `DELETE /api/v1/bank-accounts/:id` endpoint exists
   (soft delete, owner/admin) but no SPA affordance calls it yet — mirrors
-  Projects. Add an edit-form/list delete when needed.
-  _File: `web/src/views/BankAccountEntryView.vue`._
-- **Transaction views.** The statement/transaction list (the second screenshot)
-  and manual transaction entry are not built. The data layer + `db/banking`
-  transaction queries exist; needs transaction endpoints + a view.
+  Projects. A natural home is the transaction view's inert **"More ▾"** menu (and
+  the inert **"Upload statement"** button maps to statement upload below).
+  _Files: `web/src/views/BankAccountTransactionsView.vue`, `BankAccountEntryView.vue`._
+- **Manual transaction entry.** Add/edit/delete a transaction (the `CreateBankTransaction`
+  / `SoftDeleteBankTransaction` queries exist; needs service methods + endpoints + a
+  form/modal). The "Manually added" tab already surfaces `source='manual'` rows.
+- **Transaction-view richness (deferred from the statement view).** Period filter
+  (brought-forward = balance at period start), search, real server-side pagination
+  (v1 loads all rows), bulk-checkbox actions, and the account-switcher dropdown.
 - **Bank feed ingestion (TrueLayer / Open Banking).** Populate transactions with
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking

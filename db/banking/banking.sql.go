@@ -419,6 +419,64 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 	return i, err
 }
 
+const listBankAccountTransactions = `-- name: ListBankAccountTransactions :many
+SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at FROM bank_transactions
+WHERE organisation_id = $1   -- tenant scope
+  AND bank_account_id = $2   -- which account's statement
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC, id ASC
+`
+
+type ListBankAccountTransactionsParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	BankAccountID  uuid.UUID `json:"bank_account_id"`
+}
+
+// -----------------------------------------------------------------------------
+// ListBankAccountTransactions  (the statement view — OLDEST first, all rows)
+// Powers the read-only transactions page. Unlike ListBankTransactions (newest
+// first, paginated), this returns the account's whole live statement in
+// CHRONOLOGICAL order so the service can fold a running balance over it
+// (opening + Σ amount_minor). The (dated_on, created_at, id) ordering is fully
+// deterministic so same-dated lines accumulate in a stable order. v1 has no
+// LIMIT — the running balance needs the full ordered set; pagination is deferred.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]BankTransaction, error) {
+	rows, err := q.db.Query(ctx, listBankAccountTransactions, arg.OrganisationID, arg.BankAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BankTransaction
+	for rows.Next() {
+		var i BankTransaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.BankAccountID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.AmountMinor,
+			&i.Description,
+			&i.BankMemo,
+			&i.BalanceMinor,
+			&i.Status,
+			&i.Source,
+			&i.ExternalID,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT
     a.id, a.organisation_id, a.created_by_user_id, a.name, a.currency, a.status, a.is_personal, a.is_primary, a.bank_name, a.account_number, a.sort_code, a.routing_number, a.bank_account_type, a.iban, a.bic, a.show_on_invoices, a.opening_balance_minor, a.opening_balance_date, a.guess_explanations, a.deleted_at, a.created_at, a.updated_at,
