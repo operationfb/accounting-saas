@@ -43,6 +43,8 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	ocr "github.com/operationfb/accounting-saas/internal/ocr"
+	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
 
 // placeholderCategoryNominal is the nominal code of the catch-all category a
@@ -89,7 +91,7 @@ type AttachmentService struct {
 	pool        *pgxpool.Pool
 	queries     *expenses.Queries
 	authQueries auth.Querier
-	storage     Storage
+	storage     storage.Storage
 	ocr         ocrEnqueuer // nil when OCR isn't configured
 
 	maxBytes int64
@@ -101,7 +103,7 @@ type AttachmentService struct {
 // GCS configured (GCS_BUCKET unset); in that case the upload/download paths
 // return a clear internal error rather than panicking. ocr may be nil when
 // Document AI isn't configured; Smart Upload then creates drafts without OCR.
-func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier, store Storage, ocr ocrEnqueuer, maxBytes int64, urlTTL time.Duration) *AttachmentService {
+func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier, store storage.Storage, ocr ocrEnqueuer, maxBytes int64, urlTTL time.Duration) *AttachmentService {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxUploadBytes
 	}
@@ -354,7 +356,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 	if s.storage == nil {
 		return nil, ErrInternal(errors.New("file storage is not configured (GCS_BUCKET unset)"))
 	}
-	if !validDocumentType(documentType) {
+	if !ocr.ValidDocumentType(documentType) {
 		return nil, ErrValidation(`document_type must be "receipt" or "invoice"`, nil)
 	}
 

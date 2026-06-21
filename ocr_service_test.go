@@ -27,14 +27,18 @@ import (
 	"testing"
 	"time"
 
-	"cloud.google.com/go/documentai/apiv1/documentaipb"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/shopspring/decimal"
-	money "google.golang.org/genproto/googleapis/type/money"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	// Dot-import: these capture→OCR integration tests reference many of the ocr
+	// package's symbols (OcrService, NewOcrService, ExtractionResult,
+	// DocumentTypeReceipt, …). A dot-import in this test file keeps them unqualified
+	// (as before the package split) without a wall of `ocr.` prefixes. Scoped to
+	// this file only; production code always imports ocr qualified.
+	. "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
 // =============================================================================
@@ -103,7 +107,7 @@ func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, d
 // newOCRService builds an OcrService against the test pool + real storage with
 // the given (fake) extractor.
 func newOCRService(ts *testServer, ext DocumentExtractor) *OcrService {
-	return NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext)
+	return NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
 }
 
 func containsExpense(list []*ExpenseResponse, id string) bool {
@@ -113,35 +117,6 @@ func containsExpense(list []*ExpenseResponse, id string) bool {
 		}
 	}
 	return false
-}
-
-// =============================================================================
-// MONEY CONVERSION (pure unit — always runs)
-// =============================================================================
-
-// TestOCRMoneyToMinor pins the Document AI MoneyValue → integer pence conversion,
-// including half-up rounding on a half-penny. No float drift is permitted.
-func TestOCRMoneyToMinor(t *testing.T) {
-	cases := []struct {
-		name      string
-		units     int64
-		nanos     int32
-		wantMinor int64
-	}{
-		{"whole pounds", 42, 0, 4200},
-		{"pence", 42, 990_000_000, 4299},              // £42.99
-		{"five pence", 0, 50_000_000, 5},              // £0.05
-		{"half penny rounds up", 42, 5_000_000, 4201}, // £42.005 → 4200.5p → 4201
-		{"zero", 0, 0, 0},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := &money.Money{CurrencyCode: "GBP", Units: c.units, Nanos: c.nanos}
-			if got := moneyToMinor(m); got != c.wantMinor {
-				t.Errorf("moneyToMinor(units=%d nanos=%d) = %d, want %d", c.units, c.nanos, got, c.wantMinor)
-			}
-		})
-	}
 }
 
 // =============================================================================
@@ -262,7 +237,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 			Confidence:    decimal.NewFromFloat(0.93),
 		}}
 
-		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
+		if err := newOCRService(ts, fake).Process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
 			t.Fatalf("process: %v", err)
 		}
 		if fake.gotDocumentType != DocumentTypeInvoice {
@@ -323,7 +298,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 
 		x := "Some Supplier"
 		fake := &fakeExtractor{result: &ExtractionResult{SupplierName: &x, Confidence: decimal.NewFromInt(1)}} // no Description
-		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
+		if err := newOCRService(ts, fake).Process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
 			t.Fatalf("process: %v", err)
 		}
 		var desc string
@@ -348,7 +323,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 
 		ocrSupplier := "OCR Supplier Ltd"
 		fake := &fakeExtractor{result: &ExtractionResult{SupplierName: &ocrSupplier, Confidence: decimal.NewFromInt(1)}}
-		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
+		if err := newOCRService(ts, fake).Process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
 			t.Fatalf("process: %v", err)
 		}
 
@@ -367,7 +342,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
 		fake := &fakeExtractor{err: errors.New("document AI exploded")}
-		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeReceipt); err == nil {
+		if err := newOCRService(ts, fake).Process(context.Background(), attID, devOrg, DocumentTypeReceipt); err == nil {
 			t.Fatal("expected process to surface the extractor error")
 		}
 
@@ -391,9 +366,10 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
-		svc := newOCRService(ts, &fakeExtractor{result: &ExtractionResult{}})
-		svc.maxBytes = 4 // smaller than samplePDF(), so the guard trips
-		if err := svc.process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
+		// maxBytes=4 (smaller than samplePDF()) so the size guard trips → SKIPPED.
+		svc := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage,
+			&fakeExtractor{result: &ExtractionResult{}}, placeholderDescription, WithMaxBytes(4))
+		if err := svc.Process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
 			t.Fatalf("process: %v", err)
 		}
 		var ocrStatus string
@@ -406,13 +382,17 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		}
 	})
 
-	t.Run("foreign currency is not auto-filled into money", func(t *testing.T) {
+	t.Run("foreign/unsupported currency amount is still pre-filled for review", func(t *testing.T) {
+		// A receipt in a currency that isn't the expense's (here RON, which we don't
+		// support) must NOT be dropped to 0: we pre-fill the number in the expense's
+		// currency units so the reviewer corrects it rather than re-keying it. The
+		// capture stays needs_review=TRUE and the real currency is kept in the JSON.
 		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeInvoice, "inv.pdf", samplePDF())
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
-		usd, total := "USD", int64(5000)
-		fake := &fakeExtractor{result: &ExtractionResult{Currency: &usd, TotalMinor: &total, Confidence: decimal.NewFromInt(1)}}
-		if err := newOCRService(ts, fake).process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
+		ron, total := "RON", int64(7298) // 72.98 RON
+		fake := &fakeExtractor{result: &ExtractionResult{Currency: &ron, TotalMinor: &total, Confidence: decimal.NewFromInt(1)}}
+		if err := newOCRService(ts, fake).Process(context.Background(), attID, devOrg, DocumentTypeInvoice); err != nil {
 			t.Fatalf("process: %v", err)
 		}
 		var gross int32
@@ -420,8 +400,8 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 			"SELECT gross_value_minor FROM expenses WHERE id=$1", draft.ID).Scan(&gross); err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		if gross != 0 {
-			t.Errorf("a USD amount must not fill a GBP expense; gross_value_minor=%d", gross)
+		if gross != 7298 {
+			t.Errorf("foreign-currency amount should be pre-filled for review; gross_value_minor=%d, want 7298", gross)
 		}
 	})
 }
@@ -500,7 +480,7 @@ func TestDocumentAILive(t *testing.T) {
 
 	// Build the REAL extractor from the .env config — this is the connection
 	// (auth + API + processor ids + region) under test.
-	ext, err := newDocumentAIExtractor(context.Background(),
+	ext, err := NewDocumentAIExtractor(context.Background(),
 		os.Getenv("DOCAI_PROJECT_ID"),
 		envOr("DOCAI_LOCATION", "eu"),
 		os.Getenv("DOCAI_INVOICE_PROCESSOR_ID"),
@@ -508,7 +488,7 @@ func TestDocumentAILive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not build Document AI extractor: %v", err)
 	}
-	ocr := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext)
+	ocrSvc := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
 	devOrg := mustUUID(t, devOrgID)
 	pdf := buildInvoicePDF() // a valid single-page PDF with real invoice text
 
@@ -522,7 +502,7 @@ func TestDocumentAILive(t *testing.T) {
 
 			// Drive the real pipeline synchronously (process is what the background
 			// goroutine calls) so the assertions aren't racy.
-			if err := ocr.process(context.Background(), attID, devOrg, c.docType); err != nil {
+			if err := ocrSvc.Process(context.Background(), attID, devOrg, c.docType); err != nil {
 				t.Fatalf("REAL Document AI process(%s) failed — check the API is enabled, the SA has 'Document AI API User', and the processor id/region are correct: %v", c.docType, err)
 			}
 
@@ -637,79 +617,4 @@ func buildInvoicePDF() []byte {
 // pdfEscape escapes the characters that are special inside a PDF literal string.
 func pdfEscape(s string) string {
 	return strings.NewReplacer("\\", "\\\\", "(", "\\(", ")", "\\)").Replace(s)
-}
-
-// =============================================================================
-// DESCRIPTION ASSEMBLY (unit — always runs)
-// =============================================================================
-
-// TestBuildExpenseDescription pins the supplier + line-item → description format.
-func TestBuildExpenseDescription(t *testing.T) {
-	sp := func(s string) *string { return &s }
-	cases := []struct {
-		name     string
-		supplier *string
-		items    []string
-		want     *string
-	}{
-		{"supplier, no items", sp("Pret A Manger"), nil, sp("Pret A Manger")},
-		{"supplier, one item", sp("Pret A Manger"), []string{"Flat White"}, sp("Pret A Manger — Flat White")},
-		{"supplier, three items", sp("Pret A Manger"), []string{"Flat White", "Croissant", "Juice"}, sp("Pret A Manger — 3 items")},
-		{"supplier, blank items ignored", sp("Pret A Manger"), []string{"  ", ""}, sp("Pret A Manger")},
-		{"no supplier, items → top item", nil, []string{"Flat White", "Croissant"}, sp("Flat White")},
-		{"nothing → nil", nil, nil, nil},
-		{"blank supplier, no items → nil", sp("   "), nil, nil},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := buildExpenseDescription(c.supplier, c.items)
-			switch {
-			case c.want == nil && got != nil:
-				t.Errorf("got %q, want nil", *got)
-			case c.want != nil && got == nil:
-				t.Errorf("got nil, want %q", *c.want)
-			case c.want != nil && got != nil && *got != *c.want:
-				t.Errorf("got %q, want %q", *got, *c.want)
-			}
-		})
-	}
-}
-
-// TestMapDocumentLineItemsToDescription proves the line items the parser returns
-// (nested line_item/description) — previously discarded — now drive the assembled
-// description, and validates the nested entity type name.
-func TestMapDocumentLineItemsToDescription(t *testing.T) {
-	lineItem := func(desc string) *documentaipb.Document_Entity {
-		return &documentaipb.Document_Entity{
-			Type: "line_item",
-			Properties: []*documentaipb.Document_Entity{
-				{Type: "line_item/description", MentionText: desc},
-			},
-		}
-	}
-
-	t.Run("supplier + 2 line items → count", func(t *testing.T) {
-		res := mapDocumentToResult(&documentaipb.Document{
-			Entities: []*documentaipb.Document_Entity{
-				{Type: "supplier_name", MentionText: "ACME Cafe"},
-				lineItem("Flat White"),
-				lineItem("Croissant"),
-			},
-		})
-		if res.Description == nil || *res.Description != "ACME Cafe — 2 items" {
-			t.Errorf("description: got %v, want \"ACME Cafe — 2 items\"", res.Description)
-		}
-	})
-
-	t.Run("supplier + 1 line item → item text", func(t *testing.T) {
-		res := mapDocumentToResult(&documentaipb.Document{
-			Entities: []*documentaipb.Document_Entity{
-				{Type: "supplier_name", MentionText: "ACME Cafe"},
-				lineItem("Large Flat White"),
-			},
-		})
-		if res.Description == nil || *res.Description != "ACME Cafe — Large Flat White" {
-			t.Errorf("description: got %v, want \"ACME Cafe — Large Flat White\"", res.Description)
-		}
-	})
 }

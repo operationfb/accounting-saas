@@ -36,11 +36,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
-	"cloud.google.com/go/storage"
+	gcs "cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
 
 // =============================================================================
@@ -92,13 +93,13 @@ func expensePrefix(orgID, expenseID string) string {
 func gcsObjectsUnder(t *testing.T, prefix string) []string {
 	t.Helper()
 	ctx := context.Background()
-	client, err := storage.NewClient(ctx)
+	client, err := gcs.NewClient(ctx)
 	if err != nil {
 		t.Fatalf("gcs client: %v", err)
 	}
 	defer client.Close()
 
-	it := client.Bucket(os.Getenv("GCS_BUCKET")).Objects(ctx, &storage.Query{Prefix: prefix})
+	it := client.Bucket(os.Getenv("GCS_BUCKET")).Objects(ctx, &gcs.Query{Prefix: prefix})
 	var keys []string
 	for {
 		obj, err := it.Next()
@@ -523,7 +524,7 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 // "the file landed in GCS but the metadata write then failed", which is exactly
 // the orphan scenario the service must clean up after.
 type poolClosingStorage struct {
-	inner Storage
+	inner storage.Storage
 	pool  *pgxpool.Pool
 }
 

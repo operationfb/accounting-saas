@@ -19,10 +19,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"testing"
 
@@ -562,6 +564,10 @@ func mailgunWebhookRequest(t *testing.T, fields map[string]string, attachment []
 // mailgunWebhookRequestFiles is like mailgunWebhookRequest but supports several
 // attachment parts keyed by their Mailgun field name (e.g. "attachment-1"), so a
 // test can include an inline image alongside a real attachment.
+//
+// Each file part's Content-Type is sniffed from its bytes via http.DetectContentType
+// (matching what Mailgun does when it reassembles the MIME parts), so
+// isInlineImageGroup in the handler can distinguish a real image from a PDF.
 func mailgunWebhookRequestFiles(t *testing.T, fields map[string]string, files map[string][]byte) *http.Request {
 	t.Helper()
 	var body bytes.Buffer
@@ -570,7 +576,11 @@ func mailgunWebhookRequestFiles(t *testing.T, fields map[string]string, files ma
 		_ = w.WriteField(k, v)
 	}
 	for name, data := range files {
-		fw, err := w.CreateFormFile(name, name+".bin")
+		ct := http.DetectContentType(data)
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, name, name))
+		h.Set("Content-Type", ct)
+		fw, err := w.CreatePart(h)
 		if err != nil {
 			t.Fatalf("create form file %s: %v", name, err)
 		}
@@ -627,13 +637,15 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status: got %d, want 200 — body: %s", rec.Code, rec.Body.String())
 		}
+		// The webhook acks BEFORE processing now, so the response status is "accepted"
+		// (the terminal "processed" lands on the event row once the background work —
+		// run inline in tests — completes). The effect is verified via the DB.
 		var resp struct {
-			Status        string `json:"status"`
-			DraftsCreated int    `json:"drafts_created"`
+			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		if resp.Status != "processed" || resp.DraftsCreated != 1 {
-			t.Errorf("body: got %+v, want processed/1", resp)
+		if resp.Status != "accepted" {
+			t.Errorf("body status: got %q, want accepted", resp.Status)
 		}
 		if n := draftCountForOrg(t, ts, orgID); n != 1 {
 			t.Errorf("draft count: got %d, want 1", n)
@@ -679,6 +691,50 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 		}
 		if contentType != "application/pdf" {
 			t.Errorf("captured the wrong file: content_type=%q file=%q, want application/pdf (the PDF, not the logo)", contentType, fileName)
+		}
+	})
+
+	t.Run("PDF in content-id-map is still captured (not filtered as inline)", func(t *testing.T) {
+		// Regression: some email clients (Outlook, iOS) assign a Content-ID to every
+		// MIME part, including real PDF attachments. Mailgun then lists the PDF in
+		// content-id-map. The handler must not treat it as an inline image.
+		requireGCS(t)
+		ts := newTestServer(t)
+		defer ts.pool.Close()
+
+		orgID, ownerID, local := newCaptureOrg(t, ts)
+
+		const tsField, token = "1700000000", "pdf-cid-token"
+		req := mailgunWebhookRequestFiles(t, map[string]string{
+			"timestamp":      tsField,
+			"token":          token,
+			"signature":      mailgunSignature(tsField, token),
+			"recipient":      local + "@" + testInboxDomain,
+			"from":           ownerEmailFor(ownerID),
+			"subject":        "Invoice from Supplier",
+			"Message-Id":     newMessageID(t, ts),
+			"content-id-map": `{"<Invoice.pdf@mail.example.com>":"attachment-1"}`, // PDF has a CID but is NOT inline
+		}, map[string][]byte{
+			"attachment-1": samplePDF(),
+		})
+
+		rec := httptest.NewRecorder()
+		ts.server.router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 — body: %s", rec.Code, rec.Body.String())
+		}
+		// The PDF must produce one draft; the HTML-body fallback must NOT fire.
+		if n := draftCountForOrg(t, ts, orgID); n != 1 {
+			t.Fatalf("draft count: got %d, want 1 (the PDF must be captured, not the HTML body)", n)
+		}
+		var contentType, fileName string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT content_type, file_name FROM expense_attachments WHERE organisation_id = $1`, orgID).
+			Scan(&contentType, &fileName); err != nil {
+			t.Fatalf("read attachment: %v", err)
+		}
+		if contentType != "application/pdf" || fileName == "email-body.pdf" {
+			t.Errorf("captured wrong file: content_type=%q file=%q — expected the PDF attachment, not the rendered body", contentType, fileName)
 		}
 	})
 
@@ -759,13 +815,14 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 		setInboxLocalPart(t, ts, orgID, ownerID, local)
 
 		const tsField, token = "1700000000", "urlenc-empty"
+		msg := newMessageID(t, ts)
 		req := mailgunWebhookURLEncoded(t, map[string]string{
 			"timestamp":  tsField,
 			"token":      token,
 			"signature":  mailgunSignature(tsField, token),
 			"recipient":  local + "@" + testInboxDomain,
 			"from":       ownerEmailFor(ownerID),
-			"Message-Id": newMessageID(t, ts),
+			"Message-Id": msg,
 			// no body, no attachments
 		})
 
@@ -774,12 +831,25 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status: got %d, want 200 (must not 400) — body: %s", rec.Code, rec.Body.String())
 		}
+		// The webhook acks with "accepted"; the terminal ignore outcome lands on the
+		// event row (background work runs inline in tests).
 		var resp struct {
 			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		if resp.Status != "ignored_no_attachments" {
-			t.Errorf("status: got %q, want ignored_no_attachments", resp.Status)
+		if resp.Status != "accepted" {
+			t.Errorf("body status: got %q, want accepted", resp.Status)
+		}
+		var eventStatus string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT status FROM inbound_email_events WHERE provider_message_id = $1`, msg).Scan(&eventStatus); err != nil {
+			t.Fatalf("read event row: %v", err)
+		}
+		if eventStatus != "ignored_no_attachments" {
+			t.Errorf("event status: got %q, want ignored_no_attachments", eventStatus)
+		}
+		if n := draftCountForOrg(t, ts, orgID); n != 0 {
+			t.Errorf("draft count: got %d, want 0", n)
 		}
 	})
 }

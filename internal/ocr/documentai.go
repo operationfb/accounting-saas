@@ -1,9 +1,9 @@
-package main
+package ocr
 
-// ocr_documentai.go
+// documentai.go
 // =============================================================================
 // documentAIExtractor — the Google Document AI implementation of
-// DocumentExtractor (ocr_service.go). It is to Document AI what gcsStorage is to
+// DocumentExtractor (service.go). It is to Document AI what gcsStorage is to
 // GCS: the one concrete adapter behind an interface, reached via Application
 // Default Credentials (no key files in the repo).
 //
@@ -41,7 +41,7 @@ type documentAIExtractor struct {
 // newDocumentAIExtractor builds the extractor against a regional endpoint.
 // location is the Document AI multi-region (use "eu" for UK/EU data residency);
 // the two processor IDs are the bare ids from the Cloud console.
-func newDocumentAIExtractor(ctx context.Context, projectID, location, invoiceProcessorID, receiptProcessorID string) (*documentAIExtractor, error) {
+func NewDocumentAIExtractor(ctx context.Context, projectID, location, invoiceProcessorID, receiptProcessorID string) (*documentAIExtractor, error) {
 	// Regional endpoint — REQUIRED for residency. e.g. "eu-documentai.googleapis.com:443".
 	endpoint := fmt.Sprintf("%s-documentai.googleapis.com:443", location)
 	client, err := documentai.NewDocumentProcessorClient(ctx, option.WithEndpoint(endpoint))

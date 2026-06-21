@@ -52,6 +52,8 @@ import (
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	ocr "github.com/operationfb/accounting-saas/internal/ocr"
+	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -155,13 +157,13 @@ func newTestServer(t *testing.T) *testServer {
 	// Attachment storage: when GCS_BUCKET is set the tests exercise the real GCS
 	// code path against that bucket; otherwise storage is nil and the attachment
 	// tests skip (see requireGCS in attachment_service_test.go).
-	var store Storage
+	var store storage.Storage
 	if bucket := os.Getenv("GCS_BUCKET"); bucket != "" {
-		gcs, gcsErr := newGCSStorage(context.Background(), bucket)
+		gcsStore, gcsErr := storage.NewGCS(context.Background(), bucket)
 		if gcsErr != nil {
 			t.Fatalf("failed to create GCS storage: %v", gcsErr)
 		}
-		store = gcs
+		store = gcsStore
 	}
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
 	contactService := NewContactService(pool, contacts.New(pool), authQueries)
@@ -174,6 +176,10 @@ func newTestServer(t *testing.T) *testServer {
 	// tests can compute a valid HMAC). Capture still flows through the real
 	// attachment service, so attachment/HTML tests require GCS like other captures.
 	emailInboxService := NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
+	// Run the webhook's background processing INLINE in tests so handler tests can
+	// assert the effect (draft created, event-row status) right after ServeHTTP,
+	// instead of racing the goroutine Accept spawns in production.
+	emailInboxService.runInBackground = func(fn func()) { fn() }
 	// FreeAgent integration: a sandbox-host client (no real calls are made unless a
 	// test drives the OAuth flow) plus the shared maker/queries. apiPublicURL is a
 	// fixed test value used only to build the redirect_uri.
@@ -1431,7 +1437,7 @@ func TestHandleDeleteExpense(t *testing.T) {
 
 	t.Run("needs_review capture is deleted and leaves the inbox", func(t *testing.T) {
 		requireGCS(t) // captureAs stores a file in the real GCS dev bucket
-		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
+		draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, ocr.DocumentTypeReceipt, "r.pdf", samplePDF())
 
 		// captureAs's own cleanup can't reclaim the GCS object once the expense is
 		// soft-deleted (DeleteAttachment won't find it), so reclaim it directly here.

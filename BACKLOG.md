@@ -265,12 +265,20 @@ _Last updated: 2026-06-19_
   `inbound_email_events.sender`. Extend `CaptureFromReceipt` with a
   claimant/creator split (matching the on-behalf model) and pass the resolved
   sender. _Files: `attachment_service.go`, `email_inbox_service.go`._
-- **Recover stalled ingests.** A webhook that 500s after claiming the Message-Id
-  but before finishing leaves a non-terminal `inbound_email_events` row; Mailgun's
-  retry reprocesses it. The content-hash dedupe now stops that retry from
-  duplicating already-created drafts (their file hash is found and skipped), so
-  the remaining gap is just a sweep for stuck `received`/`error` rows (like the OCR
-  stale-`PROCESSING` item). _Files: `email_inbox_service.go`, `db/queries/email_inbox.sql`._
+- **Durable retry for background processing.** The webhook now ACKS Mailgun after a
+  fast synchronous claim and does the capture/render work in a background goroutine
+  (`EmailInboxService.Accept` → `runInBackground`), so the POST no longer times out.
+  The tradeoff: a transient failure in the background is logged and marks the
+  `inbound_email_events` row `error`, but Mailgun has already been 200'd and will NOT
+  re-deliver — so there is no automatic retry anymore. Replace the fire-and-forget
+  goroutine with a durable queue (Pub/Sub, as the FreeAgent push already uses) and/or
+  a sweep that reprocesses stuck `received`/`error` rows (the content-hash dedupe
+  keeps a re-run from duplicating drafts; like the OCR stale-`PROCESSING` item).
+  _Files: `email_inbox_service.go`, `db/queries/email_inbox.sql`._
+- **Cloud Run CPU for post-ack work.** The background goroutine (above) — and the
+  existing OCR `Enqueue` goroutine — need CPU after the response returns. Run the
+  service with "CPU always allocated" (or min-instances ≥ 1) so post-ack processing
+  isn't throttled/paused. _Ops (Cloud Run config)._
 - **Concurrent-duplicate race (TOCTOU).** The content dedupe is read-then-check,
   so two *identical* emails arriving truly concurrently could both pass the check
   before either's draft commits → a duplicate. Tighten with an advisory lock keyed
@@ -340,6 +348,20 @@ _Last updated: 2026-06-19_
   `~/.claude/plans/i-d-like-to-push-peppy-papert.md`. Add/remove as each lands.
 
 ## Cleanups (also flagged as background tasks)
+
+- **Extract `AttachmentService` out of `package main` → `internal/attachments`.**
+  Deferred deliberately (2026-06-21) after extracting `internal/storage` +
+  `internal/ocr`. The blocker: `AttachmentService.CaptureFromReceipt` (Smart Upload)
+  returns `*ExpenseDetailResponse` and calls `buildExpenseDetail` — both root
+  **expense-domain** code (`server.go`, `expense_service.go`) that `internal/`
+  can't import. Clean extraction needs either (a) decoupling capture so it returns
+  just the new expense+attachment IDs (the Smart Upload handler + `/expenses/capture`
+  route stay in root and build the detail), or (b) extracting the expense domain
+  first (`ExpenseDetailResponse` + `buildExpenseDetail` → a shared/expenses package).
+  Until then `attachment_service.go` + `attachment_handler.go` stay in root (and on
+  the `arch_test.go` allowlist). Note: attachments already imports `internal/storage`
+  + `internal/ocr` (for `ocr.ValidDocumentType`), so only the expense-DTO coupling
+  remains. Revisit when the expense domain is extracted.
 
 - **Strip `[DEBUG]` token logging.** `token/paseto_maker.go` `VerifyToken` logs
   the full bearer token (plus payload) on every authenticated request — a replay

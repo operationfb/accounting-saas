@@ -30,8 +30,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/mail"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
@@ -44,17 +46,24 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
 // emailDocumentType is the OCR routing for every emailed file. Per the product
 // decision, email captures always use the receipt (Expense) parser; the user can
 // correct on the review screen. (Auto-detect is a backlog item.)
-const emailDocumentType = DocumentTypeReceipt
+const emailDocumentType = ocr.DocumentTypeReceipt
 
 // maxInboxLocalPartAttempts bounds the disambiguation loop when generating an
 // address. name+org-slug collisions are very rare; this just prevents an
 // unbounded loop in a pathological case.
 const maxInboxLocalPartAttempts = 20
+
+// defaultProcessTimeout bounds the BACKGROUND processing of one email (the
+// capture/GCS/render work the webhook hands off after acking). Generous headroom
+// over the seconds a couple of GCS uploads + a Gotenberg render take; mirrors
+// internal/ocr's defaultOCRTimeout.
+const defaultProcessTimeout = 2 * time.Minute
 
 // EmailInboxService wires the inbound-email channel to the capture pipeline.
 type EmailInboxService struct {
@@ -63,17 +72,26 @@ type EmailInboxService struct {
 	attachments  *AttachmentService
 	renderer     HTMLRenderer // nil when GOTENBERG_URL is unset → HTML-body capture is skipped
 	inboxDomain  string       // e.g. "receipts.example.com" (lower-cased)
+
+	// runInBackground runs the post-claim processing off the request path so the
+	// webhook can ack Mailgun fast (see Accept). Defaults to spawning a goroutine;
+	// tests swap in an inline runner so they stay deterministic.
+	runInBackground func(func())
+	// processTimeout bounds one background processing run (see defaultProcessTimeout).
+	processTimeout time.Duration
 }
 
 // NewEmailInboxService constructs the service. renderer may be nil (HTML-body
 // capture then disabled). inboxDomain is required for the channel to do anything.
 func NewEmailInboxService(authQueries auth.Querier, eventQueries *emailinbox.Queries, attachments *AttachmentService, renderer HTMLRenderer, inboxDomain string) *EmailInboxService {
 	return &EmailInboxService{
-		authQueries:  authQueries,
-		eventQueries: eventQueries,
-		attachments:  attachments,
-		renderer:     renderer,
-		inboxDomain:  strings.ToLower(strings.TrimSpace(inboxDomain)),
+		authQueries:     authQueries,
+		eventQueries:    eventQueries,
+		attachments:     attachments,
+		renderer:        renderer,
+		inboxDomain:     strings.ToLower(strings.TrimSpace(inboxDomain)),
+		runInBackground: func(fn func()) { go fn() },
+		processTimeout:  defaultProcessTimeout,
 	}
 }
 
@@ -89,29 +107,84 @@ type IngestOutcome struct {
 // INGEST — webhook payload → draft expense(s)
 // =============================================================================
 
-// Ingest processes one parsed inbound email. It returns an outcome (mapped to an
-// HTTP status by the handler) or an error. A returned error means "couldn't
-// durably persist" — the handler 500s so Mailgun retries; because we claim the
-// Message-Id first, that retry is safe.
+// Ingest processes one parsed inbound email SYNCHRONOUSLY and returns the terminal
+// outcome. It is the claim+process pair run inline, used by the service-level tests
+// for deterministic assertions. The webhook handler uses Accept instead, which acks
+// before the (slow) processing — see that method.
 func (s *EmailInboxService) Ingest(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
-	// Without a Message-Id we can't dedupe. Reject (the handler 500s) rather than
+	eventID, done, outcome, err := s.claimOrDuplicate(ctx, in)
+	if err != nil || done {
+		return outcome, err
+	}
+	return s.process(ctx, in, eventID)
+}
+
+// Accept claims the email SYNCHRONOUSLY (a fast, durable, dedupe-safe write) and
+// hands the heavy capture/render work to the background, so the webhook can ack
+// Mailgun before processing finishes. This is what fixes the inbound webhook
+// timeout: Mailgun's POST no longer waits on GCS uploads + DB writes (+ a possible
+// Gotenberg render). It mirrors the OCR Enqueue fire-and-forget pattern.
+//
+// Tradeoff: acking before processing forfeits Mailgun's automatic retry on a
+// transient failure (the background error is logged and the event row is marked
+// 'error' for visibility; a manual re-send is dedupe-safe via the content hash).
+// A durable queue is the robust follow-up — see BACKLOG.md.
+//
+// The only errors returned synchronously are the fast ones from claimOrDuplicate:
+// a missing Message-Id (validation → 422) or a claim DB failure (internal → 500, so
+// Mailgun retries — safe because nothing was processed yet).
+func (s *EmailInboxService) Accept(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
+	eventID, done, outcome, err := s.claimOrDuplicate(ctx, in)
+	if err != nil || done {
+		return outcome, err
+	}
+	s.runInBackground(func() {
+		// The request context ends the moment the handler returns, so use a fresh
+		// bounded context for the background work.
+		bg, cancel := context.WithTimeout(context.Background(), s.processTimeout)
+		defer cancel()
+		if _, err := s.process(bg, in, eventID); err != nil {
+			// Best-effort: the error is logged and process() already marked the event
+			// row 'error'. Mailgun won't retry (we've acked), so this is the record.
+			log.Printf("email inbox: background processing of %s failed: %v", in.MessageID, err)
+		}
+	})
+	// "accepted" is an API-only status (never written to the DB); the real terminal
+	// status is recorded by process()→finish once the background work completes.
+	return IngestOutcome{Status: "accepted"}, nil
+}
+
+// claimOrDuplicate runs the fast, synchronous front of ingestion: validate the
+// Message-Id and atomically claim it (dedupe). It returns done=true with the
+// outcome to return when there is nothing more to do — a missing Message-Id (err
+// set) or a genuine duplicate of an already-finished email. Otherwise done=false
+// and the caller proceeds to process(eventID).
+func (s *EmailInboxService) claimOrDuplicate(ctx context.Context, in *InboundEmail) (eventID uuid.UUID, done bool, outcome IngestOutcome, err error) {
+	// Without a Message-Id we can't dedupe. Reject (the handler 422s) rather than
 	// risk creating duplicates on every Mailgun retry.
 	if strings.TrimSpace(in.MessageID) == "" {
-		return IngestOutcome{}, ErrValidation("inbound email has no Message-Id", nil)
+		return uuid.Nil, true, IngestOutcome{}, ErrValidation("inbound email has no Message-Id", nil)
 	}
 
-	// --- 1. Claim (dedupe). --------------------------------------------------
-	eventID, fresh, prevStatus, err := s.claim(ctx, in)
+	// --- Claim (dedupe). -----------------------------------------------------
+	id, fresh, prevStatus, err := s.claim(ctx, in)
 	if err != nil {
-		return IngestOutcome{}, err
+		return uuid.Nil, true, IngestOutcome{}, err
 	}
 	if !fresh && isTerminalStatus(prevStatus) {
 		// A genuine duplicate delivery of an email we already finished.
-		return IngestOutcome{Status: "duplicate", Duplicate: true}, nil
+		return uuid.Nil, true, IngestOutcome{Status: "duplicate", Duplicate: true}, nil
 	}
 	// Otherwise: a fresh email, OR a prior attempt that didn't finish (a 500'd
-	// 'received'/'error' row) — reprocess it on this Mailgun retry.
+	// 'received'/'error' row) — reprocess it.
+	return id, false, IngestOutcome{}, nil
+}
 
+// process runs the heavy part of ingestion: resolve the recipient → sender check →
+// capture each attachment → HTML-body fallback → record the terminal outcome. It
+// runs synchronously inline (Ingest) or in the background goroutine (Accept). The
+// Message-Id is already claimed as eventID.
+func (s *EmailInboxService) process(ctx context.Context, in *InboundEmail, eventID uuid.UUID) (IngestOutcome, error) {
 	// --- 2. Resolve the recipient address → (claimant user, org). -----------
 	localPart, ok := s.resolveLocalPart(in)
 	if !ok {

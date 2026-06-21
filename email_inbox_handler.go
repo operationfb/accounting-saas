@@ -21,6 +21,7 @@ package main
 // =============================================================================
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,7 +84,11 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 	}
 
 	// --- Hand off to the (provider-agnostic) service. ------------------------
-	outcome, err := s.emailInboxService.Ingest(c.Request.Context(), in)
+	// Accept claims the email synchronously then processes it in the BACKGROUND, so
+	// we ack Mailgun fast (the capture/GCS/render work used to run on this request
+	// path and time Mailgun out). The request context is fine here: Accept only uses
+	// it for the fast synchronous claim, and the background work gets its own.
+	outcome, err := s.emailInboxService.Accept(c.Request.Context(), in)
 	if err != nil {
 		appErr := AsAppError(err)
 		if appErr.Code == ErrCodeInternal {
@@ -105,35 +110,61 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 }
 
 // inboundAttachmentsFromForm turns Mailgun's "attachment-1".."attachment-N" file
-// parts into provider-neutral InboundAttachments. Each Open() reopens the part,
-// giving the capture pipeline a fresh io.ReadSeeker over the (buffered) bytes.
+// parts into provider-neutral InboundAttachments. It reads each part fully into
+// memory NOW (during the request) so the bytes survive the background processing
+// the webhook hands off to — the multipart temp files are tied to the request and
+// may be removed once the handler returns. Each Open() then returns a fresh reader
+// over those buffered bytes. The 35 MiB body cap bounds the total memory held.
 func inboundAttachmentsFromForm(files map[string][]*multipart.FileHeader, inline map[string]bool) []InboundAttachment {
 	// Sort the field names for deterministic ordering (handy for tests/notes).
 	names := make([]string, 0, len(files))
-	for name := range files {
-		// Capture real attachments only — skip inline body images (content-id-map).
-		if strings.HasPrefix(name, "attachment-") && !inline[name] {
-			names = append(names, name)
+	for name, fhs := range files {
+		if !strings.HasPrefix(name, "attachment-") {
+			continue
 		}
+		// Skip inline body images (logos/signatures embedded via cid: in the HTML
+		// body) — but ONLY when they are image/* types. Many email clients (Outlook,
+		// iOS Mail) assign a Content-ID to every MIME part including real PDF
+		// attachments; filtering on content-id-map alone would discard those too.
+		if inline[name] && isInlineImageGroup(fhs) {
+			continue
+		}
+		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	var out []InboundAttachment
 	for _, name := range names {
 		for _, fh := range files[name] {
-			fh := fh // capture per-iteration for the closure
+			buf, err := readMultipartFile(fh)
+			if err != nil {
+				// A part we can't read is skipped (not fatal) — other attachments may
+				// be fine, and a wholly-empty email falls through to the body render.
+				log.Printf("mailgun inbound: could not read part %s (%s): %v", name, fh.Filename, err)
+				continue
+			}
 			out = append(out, InboundAttachment{
 				Filename: fh.Filename,
-				Size:     fh.Size,
+				Size:     int64(len(buf)),
 				Open: func() (io.ReadSeeker, error) {
-					// *multipart.FileHeader.Open() returns a multipart.File, which
-					// is an io.ReadSeeker (and io.Closer — closed by the service).
-					return fh.Open()
+					// Fresh independent reader over the buffered bytes on each call —
+					// the service opens twice (hash, then upload).
+					return bytes.NewReader(buf), nil
 				},
 			})
 		}
 	}
 	return out
+}
+
+// readMultipartFile reads one multipart part fully into memory.
+func readMultipartFile(fh *multipart.FileHeader) ([]byte, error) {
+	f, err := fh.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // inlineAttachmentNames parses Mailgun's content-id-map — a JSON object mapping a
@@ -193,7 +224,7 @@ func logInboundAttachments(messageID string, files map[string][]*multipart.FileH
 		}
 		for _, fh := range fhs {
 			label := fmt.Sprintf("%s:%s(%s)", name, fh.Filename, fh.Header.Get("Content-Type"))
-			if inline[name] {
+			if inline[name] && isInlineImageGroup(fhs) {
 				skipped = append(skipped, label)
 			} else {
 				captured = append(captured, label)
@@ -203,6 +234,28 @@ func logInboundAttachments(messageID string, files map[string][]*multipart.FileH
 	sort.Strings(captured)
 	sort.Strings(skipped)
 	log.Printf("mailgun inbound %s: capturing=%v inline-skipped=%v", messageID, captured, skipped)
+}
+
+// isInlineImageGroup reports whether every FileHeader in the slice has an
+// image/* Content-Type. Inline body images (logos/signatures referenced via cid:)
+// are always image types; real document attachments (PDFs, Office files) are not.
+// This guards against discarding a PDF just because the sender's email client gave
+// it a Content-ID (which would put it in Mailgun's content-id-map).
+func isInlineImageGroup(fhs []*multipart.FileHeader) bool {
+	if len(fhs) == 0 {
+		return false
+	}
+	for _, fh := range fhs {
+		ct := strings.ToLower(strings.TrimSpace(fh.Header.Get("Content-Type")))
+		// Strip parameters: "image/png; name=logo.png" → "image/png"
+		if i := strings.Index(ct, ";"); i >= 0 {
+			ct = strings.TrimSpace(ct[:i])
+		}
+		if !strings.HasPrefix(ct, "image/") {
+			return false
+		}
+	}
+	return true
 }
 
 // handleGetInboxAddress handles GET /api/v1/inbox-address. It returns the

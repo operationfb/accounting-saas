@@ -34,6 +34,8 @@ import (
 	projects "github.com/operationfb/accounting-saas/db/projects"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	ocr "github.com/operationfb/accounting-saas/internal/ocr"
+	storage "github.com/operationfb/accounting-saas/internal/storage"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -212,13 +214,13 @@ func main() {
 	// attachment support so the rest of the API still runs in environments that
 	// have no GCS configured (e.g. a frontend dev's machine).
 	// -------------------------------------------------------------------------
-	var attachmentStorage Storage
+	var attachmentStorage storage.Storage
 	if bucket := os.Getenv("GCS_BUCKET"); bucket != "" {
-		gcs, gcsErr := newGCSStorage(context.Background(), bucket)
+		gcsStore, gcsErr := storage.NewGCS(context.Background(), bucket)
 		if gcsErr != nil {
 			log.Fatalf("could not initialise GCS storage: %v", gcsErr)
 		}
-		attachmentStorage = gcs
+		attachmentStorage = gcsStore
 		log.Printf("attachment storage: GCS bucket %q", bucket)
 	} else {
 		log.Println("attachment storage: GCS_BUCKET not set — receipt uploads are disabled")
@@ -233,7 +235,7 @@ func main() {
 	// When unset, Smart Upload still creates draft expenses; they just stay
 	// ocr_status=PENDING with no extraction.
 	// -------------------------------------------------------------------------
-	var docExtractor DocumentExtractor
+	var docExtractor ocr.DocumentExtractor
 	if projectID := os.Getenv("DOCAI_PROJECT_ID"); projectID != "" {
 		location := envOr("DOCAI_LOCATION", "eu")
 		invoiceProc := os.Getenv("DOCAI_INVOICE_PROCESSOR_ID")
@@ -241,7 +243,7 @@ func main() {
 		if invoiceProc == "" || receiptProc == "" {
 			log.Fatal("DOCAI_PROJECT_ID is set but DOCAI_INVOICE_PROCESSOR_ID and/or DOCAI_EXPENSE_PROCESSOR_ID are not")
 		}
-		ext, derr := newDocumentAIExtractor(context.Background(), projectID, location, invoiceProc, receiptProc)
+		ext, derr := ocr.NewDocumentAIExtractor(context.Background(), projectID, location, invoiceProc, receiptProc)
 		if derr != nil {
 			log.Fatalf("could not initialise Document AI: %v", derr)
 		}
@@ -257,7 +259,7 @@ func main() {
 	// by assigning only inside this guard).
 	var ocrTrigger ocrEnqueuer
 	if attachmentStorage != nil && docExtractor != nil {
-		ocrTrigger = NewOcrService(pool, queries, attachmentStorage, docExtractor)
+		ocrTrigger = ocr.NewOcrService(pool, queries, attachmentStorage, docExtractor, placeholderDescription)
 	}
 
 	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).

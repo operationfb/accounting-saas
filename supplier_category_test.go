@@ -24,6 +24,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+
+	// Dot-import (test-only, this file): the auto-categorise test references the
+	// ocr package's ExtractionResult + DocumentTypeReceipt and drives OcrService;
+	// dot-importing keeps them unqualified, as before the package split.
+	. "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
 // =============================================================================
@@ -258,7 +263,7 @@ func TestSupplierCategoryAutoCategorise(t *testing.T) {
 	runOCR := func(t *testing.T, draft *ExpenseDetailResponse, supplier string) {
 		t.Helper()
 		fake := &fakeExtractor{result: &ExtractionResult{SupplierName: &supplier, Confidence: decimal.NewFromInt(1)}}
-		if err := newOCRService(ts, fake).process(context.Background(),
+		if err := newOCRService(ts, fake).Process(context.Background(),
 			mustUUID(t, draft.Attachments[0].ID), devOrg, DocumentTypeReceipt); err != nil {
 			t.Fatalf("process: %v", err)
 		}

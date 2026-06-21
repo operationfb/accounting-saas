@@ -1,6 +1,6 @@
-package main
+package ocr
 
-// ocr_service.go
+// service.go
 // =============================================================================
 // OcrService — reads a receipt/invoice with Google Document AI and writes the
 // extracted fields back onto the expense, in the background.
@@ -45,6 +45,8 @@ import (
 	"github.com/shopspring/decimal"
 
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	"github.com/operationfb/accounting-saas/internal/kernel"
+	storage "github.com/operationfb/accounting-saas/internal/storage"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -58,8 +60,10 @@ const (
 	DocumentTypeInvoice = "invoice"
 )
 
-// validDocumentType reports whether t is one of the supported toggle values.
-func validDocumentType(t string) bool {
+// ValidDocumentType reports whether t is one of the supported toggle values.
+// Exported so the capture path (attachments) can reject a bad document_type up
+// front, before creating a skeleton.
+func ValidDocumentType(t string) bool {
 	return t == DocumentTypeReceipt || t == DocumentTypeInvoice
 }
 
@@ -113,23 +117,49 @@ type DocumentExtractor interface {
 type OcrService struct {
 	pool      *pgxpool.Pool
 	queries   *expenses.Queries
-	storage   Storage
+	storage   storage.Storage
 	extractor DocumentExtractor
 	timeout   time.Duration
 	maxBytes  int64 // files larger than this are SKIPPED (defaults to ocrMaxBytes)
+
+	// placeholderDescription is the capture-skeleton's stand-in description that
+	// OCR is allowed to overwrite (it never touches a description a human typed).
+	// Injected by main from the attachments domain, so this package needn't import
+	// it — keeping the attachments↔ocr seam interface-only.
+	placeholderDescription string
+}
+
+// Option configures an OcrService at construction (kept small — the only knob so
+// far is the size cap, which tests lower to exercise the skip-oversized path).
+type Option func(*OcrService)
+
+// WithMaxBytes overrides the file-size cap above which OCR is SKIPPED (n must be
+// > 0 to take effect).
+func WithMaxBytes(n int64) Option {
+	return func(s *OcrService) {
+		if n > 0 {
+			s.maxBytes = n
+		}
+	}
 }
 
 // NewOcrService constructs the service. Both storage and extractor are required
 // for OCR to actually run; main.go only wires this in when both are configured.
-func NewOcrService(pool *pgxpool.Pool, queries *expenses.Queries, store Storage, extractor DocumentExtractor) *OcrService {
-	return &OcrService{
-		pool:      pool,
-		queries:   queries,
-		storage:   store,
-		extractor: extractor,
-		timeout:   defaultOCRTimeout,
-		maxBytes:  ocrMaxBytes,
+// placeholderDescription is the skeleton stand-in OCR may replace (see the field).
+func NewOcrService(pool *pgxpool.Pool, queries *expenses.Queries, store storage.Storage, extractor DocumentExtractor, placeholderDescription string, opts ...Option) *OcrService {
+	s := &OcrService{
+		pool:                   pool,
+		queries:                queries,
+		storage:                store,
+		extractor:              extractor,
+		timeout:                defaultOCRTimeout,
+		maxBytes:               ocrMaxBytes,
+		placeholderDescription: placeholderDescription,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Enqueue kicks off OCR for one attachment in the BACKGROUND and returns
@@ -145,7 +175,7 @@ func (s *OcrService) Enqueue(attachmentID, orgID uuid.UUID, documentType string)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 		defer cancel()
-		if err := s.process(ctx, attachmentID, orgID, documentType); err != nil {
+		if err := s.Process(ctx, attachmentID, orgID, documentType); err != nil {
 			// Best-effort: log and move on. The attachment's ocr_status column is
 			// the durable record of the outcome.
 			log.Printf("ocr: attachment %s (%s): %v", attachmentID, documentType, err)
@@ -153,8 +183,10 @@ func (s *OcrService) Enqueue(attachmentID, orgID uuid.UUID, documentType string)
 	}()
 }
 
-// process runs the full PENDING→terminal pipeline for one attachment.
-func (s *OcrService) process(ctx context.Context, attachmentID, orgID uuid.UUID, documentType string) error {
+// Process runs the full PENDING→terminal pipeline for one attachment,
+// synchronously. Enqueue wraps it in a goroutine for the normal async path;
+// tests drive it directly for deterministic assertions.
+func (s *OcrService) Process(ctx context.Context, attachmentID, orgID uuid.UUID, documentType string) error {
 	// 1) Flip PENDING → PROCESSING so the polling frontend can show "Reading…".
 	if err := s.queries.MarkAttachmentOCRProcessing(ctx, expenses.MarkAttachmentOCRProcessingParams{
 		ID:             attachmentID,
@@ -209,8 +241,9 @@ func (s *OcrService) process(ctx context.Context, attachmentID, orgID uuid.UUID,
 // transaction" rule). The expense fill is COALESCE/CASE-guarded in SQL so it
 // only ever populates EMPTY fields — it cannot clobber data a person entered.
 func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachment, orgID uuid.UUID, documentType string, res *ExtractionResult) error {
-	// Load the parent expense's currency for the money guard below. (A skeleton is
-	// GBP, but reading it keeps us correct if that ever changes.)
+	// Load the parent expense — needed for the description-fill guard (only the
+	// skeleton placeholder is replaced, never a human's text) and the supplier→
+	// category lookup further down.
 	exp, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{
 		ID:             att.ExpenseID,
 		OrganisationID: orgID,
@@ -219,18 +252,19 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 		return fmt.Errorf("load expense for fill: %w", err)
 	}
 
-	// Money guard: only auto-fill the amount when the extracted currency matches
-	// the expense's currency. Foreign-currency receipts need the FX handling the
-	// manual flow does, so here we record the values in the JSON but pass 0 to the
-	// money columns (FillExpenseFromOCR then leaves them at their placeholder).
-	gross, vat := moneyToFill(exp.Currency, res)
+	// Pre-fill the extracted amount into the money columns regardless of the
+	// receipt's currency. The figure lands in the expense's own currency units for
+	// a human to verify (the capture stays needs_review=TRUE) and the extracted
+	// currency is recorded in ocr_extracted_data, so a foreign/unsupported currency
+	// (e.g. RON) is surfaced for correction rather than silently dropped to 0.
+	gross, vat := moneyToFill(res)
 
 	// Description: replace ONLY the skeleton's placeholder, never a description the
 	// user has already typed. OCR runs on freshly-created skeletons (so the value
 	// is the placeholder), but we guard regardless. No OCR description → keep the
 	// current value. The SQL sets description = this value verbatim.
 	description := exp.Description
-	if res.Description != nil && exp.Description == placeholderDescription {
+	if res.Description != nil && exp.Description == s.placeholderDescription {
 		description = *res.Description
 	}
 
@@ -264,9 +298,9 @@ func (s *OcrService) saveResult(ctx context.Context, att expenses.ExpenseAttachm
 		if _, err := qtx.FillExpenseFromOCR(ctx, expenses.FillExpenseFromOCRParams{
 			ID:                    att.ExpenseID,
 			OrganisationID:        orgID,
-			SupplierName:          pgNullText(res.SupplierName),
-			SupplierVatNumber:     pgNullText(res.SupplierVAT),
-			InvoiceNumber:         pgNullText(res.InvoiceNumber),
+			SupplierName:          kernel.NullText(res.SupplierName),
+			SupplierVatNumber:     kernel.NullText(res.SupplierVAT),
+			InvoiceNumber:         kernel.NullText(res.InvoiceNumber),
 			Description:           description,
 			DatedOn:               pgDateOrNull(res.Date),
 			GrossValueMinor:       gross,
@@ -361,13 +395,18 @@ func (s *OcrService) withTx(ctx context.Context, fn func(*expenses.Queries) erro
 // =============================================================================
 
 // moneyToFill decides what to write to the expense's money columns. It returns
-// the gross and VAT in minor units, or 0/0 when the amount should NOT be applied
-// (no amount found, or a currency mismatch). int64→int32 is clamped defensively;
-// a real receipt never approaches the £21m int32 ceiling.
-func moneyToFill(expenseCurrency string, res *ExtractionResult) (gross, vat int32) {
-	if res.Currency != nil && !strings.EqualFold(*res.Currency, expenseCurrency) {
-		return 0, 0 // foreign currency — leave the placeholder, value is in the JSON
-	}
+// the gross and VAT in minor units, or 0/0 when no amount was extracted.
+//
+// We do NOT gate on currency: the extracted amount is taken regardless of the
+// receipt's currency. The figure is written in the expense's own currency units
+// for a human to verify (the capture stays needs_review=TRUE), and the true
+// currency is recorded in ocr_extracted_data so the reviewer can spot a mismatch
+// — e.g. a RON 72.98 receipt pre-fills 7298 rather than being dropped to 0. FX
+// conversion for genuinely foreign-currency expenses remains a manual step.
+//
+// int64→int32 is clamped defensively; a real receipt never approaches the £21m
+// int32 ceiling.
+func moneyToFill(res *ExtractionResult) (gross, vat int32) {
 	if res.TotalMinor != nil {
 		gross = money.ClampToInt32(*res.TotalMinor)
 	}
