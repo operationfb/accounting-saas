@@ -12,10 +12,11 @@ import Checkbox from 'primevue/checkbox'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import FormRow from '@/components/FormRow.vue'
-import { getContact, createContact, updateContact } from '@/services/contacts.service'
+import { getContact, createContact, updateContact, deleteContact } from '@/services/contacts.service'
 import { COUNTRIES } from '@/lib/countries'
 import type { CreateContactRequest } from '@/types/contact'
 import type { ApiError } from '@/lib/api'
@@ -77,6 +78,9 @@ const form = reactive(defaults())
 // --- edit-mode load state ---
 const loadingContact = ref(isEdit) // spinner until the record is ready
 const loadError = ref('')
+// True when the contact is referenced elsewhere (e.g. a project): the backend
+// computes this on GET and we hide the Delete button when it's set.
+const contactInUse = ref(false)
 
 async function loadForEdit() {
   if (!editId) return
@@ -84,6 +88,7 @@ async function loadForEdit() {
   loadError.value = ''
   try {
     const c = await getContact(editId)
+    contactInUse.value = c.in_use ?? false
     form.firstName = c.first_name ?? ''
     form.lastName = c.last_name ?? ''
     form.organisationName = c.organisation_name ?? ''
@@ -227,6 +232,29 @@ async function submit(addAnother: boolean) {
 function cancel() {
   router.push('/contacts')
 }
+
+// --- delete (soft-delete) ---
+// The Delete button only shows in edit mode when the contact is not in use, but
+// the backend enforces both that guard (409) and the creator/admin rule (403),
+// so any error from the request is surfaced in deleteError.
+const deleting = ref(false)
+const showDeleteDialog = ref(false)
+const deleteError = ref('')
+
+async function confirmDelete() {
+  if (!editId || deleting.value) return
+  showDeleteDialog.value = false
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    await deleteContact(editId)
+    router.push('/contacts')
+  } catch (err) {
+    deleteError.value = (err as ApiError)?.message ?? 'Could not delete this contact.'
+  } finally {
+    deleting.value = false
+  }
+}
 </script>
 
 <template>
@@ -263,6 +291,13 @@ function cancel() {
         role="status"
       >
         {{ successMessage }}
+      </div>
+      <div
+        v-if="deleteError"
+        class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-sm text-[#c0392b]"
+        role="alert"
+      >
+        {{ deleteError }}
       </div>
 
       <!-- 1. Contact Details -->
@@ -414,7 +449,44 @@ function cancel() {
           />
         </template>
         <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancel">Cancel</button>
+
+        <!-- Delete: edit mode only, and only when the contact is not in use.
+             Pushed to the right (ml-auto) to separate it from the primary actions. -->
+        <Button
+          v-if="isEdit && !contactInUse"
+          label="Delete"
+          icon="pi pi-trash"
+          severity="danger"
+          outlined
+          class="ml-auto"
+          :disabled="submitting || deleting"
+          @click="showDeleteDialog = true"
+        />
       </div>
+
+      <!-- Delete confirmation -->
+      <Dialog
+        v-model:visible="showDeleteDialog"
+        modal
+        header="Delete contact"
+        :style="{ width: '28rem' }"
+        :closable="!deleting"
+      >
+        <p class="text-sm text-fa-muted">
+          Are you sure you want to delete this contact? It will be removed from your contacts list.
+        </p>
+        <template #footer>
+          <button
+            type="button"
+            class="mr-3 font-semibold text-fa-blue hover:underline disabled:opacity-50"
+            :disabled="deleting"
+            @click="showDeleteDialog = false"
+          >
+            Cancel
+          </button>
+          <Button label="Delete contact" severity="danger" :loading="deleting" @click="confirmDelete" />
+        </template>
+      </Dialog>
     </template>
   </AppLayout>
 </template>

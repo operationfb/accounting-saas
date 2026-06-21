@@ -12,6 +12,39 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const contactHasProjects = `-- name: ContactHasProjects :one
+
+
+SELECT EXISTS (
+    SELECT 1 FROM projects
+    WHERE contact_id      = $1   -- contact UUID
+      AND organisation_id = $2   -- tenant scope — never skip this
+) AS has_projects
+`
+
+type ContactHasProjectsParams struct {
+	ContactID      uuid.UUID `json:"contact_id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// tenant scope — guards against cross-tenant deletes
+// -----------------------------------------------------------------------------
+// ContactHasProjects
+// TRUE when at least one project still references this contact. The contacts
+// service calls this before soft-deleting a contact: a soft-delete is an UPDATE
+// (the contacts row stays), so the projects.contact_id foreign key would NOT
+// catch a contact that is still in use — we must check in the application layer.
+// Org-scoped for tenant safety. Written as EXISTS so it stops at the first match
+// and is cheap; add `OR EXISTS (...)` clauses here as more entities reference
+// contacts (e.g. invoices).
+// -----------------------------------------------------------------------------
+func (q *Queries) ContactHasProjects(ctx context.Context, arg ContactHasProjectsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, contactHasProjects, arg.ContactID, arg.OrganisationID)
+	var has_projects bool
+	err := row.Scan(&has_projects)
+	return has_projects, err
+}
+
 const createProject = `-- name: CreateProject :one
 
 

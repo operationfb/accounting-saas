@@ -43,8 +43,6 @@ type Server struct {
 	router            *gin.Engine
 	expenseService    *ExpenseService
 	attachmentService *AttachmentService
-	projectService    *ProjectService
-	memberService     *MemberService
 	userService       *UserService
 	emailInboxService *EmailInboxService
 	authHandler       *AuthHandler
@@ -57,12 +55,10 @@ type Server struct {
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, projectService *ProjectService, memberService *MemberService, userService *UserService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, userService *UserService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:    expenseService,
 		attachmentService: attachmentService,
-		projectService:    projectService,
-		memberService:     memberService,
 		userService:       userService,
 		emailInboxService: emailInboxService,
 		authHandler:       authHandler,
@@ -254,33 +250,6 @@ func (s *Server) registerRoutes() {
 		{
 			// GET /api/v1/vat-rates → VAT rates valid today for the caller's org country
 			vatRates.GET("", s.handleListVATRates)
-		}
-
-		// Project routes require a valid login. Organisation is taken from the
-		// bearer token, so every query is automatically org-scoped.
-		projectRoutes := v1.Group("/projects")
-		projectRoutes.Use(authMiddleware(s.tokenMaker))
-		{
-			// GET    /api/v1/projects      → list the org's projects
-			// POST   /api/v1/projects      → create a project
-			// GET    /api/v1/projects/:id  → fetch one project by UUID
-			// PUT    /api/v1/projects/:id  → full update
-			// DELETE /api/v1/projects/:id  → hard delete
-			projectRoutes.GET("", s.handleListProjects)
-			projectRoutes.POST("", s.handleCreateProject)
-			projectRoutes.GET("/:id", s.handleGetProject)
-			projectRoutes.PUT("/:id", s.handleUpdateProject)
-			projectRoutes.DELETE("/:id", s.handleDeleteProject)
-		}
-
-		// Member routes require a valid login. The organisation is taken from the
-		// bearer token, so the listing is automatically scoped to the caller's org
-		// — and the handler/service additionally restricts it to owners/admins.
-		members := v1.Group("/members")
-		members.Use(authMiddleware(s.tokenMaker))
-		{
-			// GET /api/v1/members → list the org's members (owner/admin only)
-			members.GET("", s.handleListMembers)
 		}
 
 		// Profile routes — the caller's own "My Details" (first/last name + the
@@ -533,25 +502,6 @@ type VATRateResponse struct {
 	RateBps      int32  `json:"rate_bps"`       // basis points: 2000 = 20.00%
 	Rate         string `json:"rate"`           // display form, e.g. "20%"
 	IsFixedRatio bool   `json:"is_fixed_ratio"` // true = amount locked to gross × rate
-}
-
-// MemberResponse is the JSON returned for one organisation member (a membership
-// joined to its user). It deliberately exposes only what a "Team / Manage users"
-// screen needs — no password hash or other secrets. UUIDs are strings and
-// timestamps are RFC3339; avatar_url and last_login_at are nullable (omitted when
-// absent). role and status are the membership enum/status values, so the UI can
-// badge each member.
-type MemberResponse struct {
-	MembershipID string  `json:"membership_id"`
-	UserID       string  `json:"user_id"`
-	Email        string  `json:"email"`
-	FirstName    string  `json:"first_name"`
-	LastName     string  `json:"last_name"`
-	Role         string  `json:"role"`   // owner | admin | member | accountant | read_only
-	Status       string  `json:"status"` // active | invited | suspended | deactivated
-	AvatarURL    *string `json:"avatar_url,omitempty"`
-	MemberSince  string  `json:"member_since"` // RFC3339 (membership created_at)
-	LastLoginAt  *string `json:"last_login_at,omitempty"`
 }
 
 // UpdateProfileRequest is the JSON body accepted by PUT /api/v1/profile (the
@@ -836,166 +786,9 @@ func (s *Server) handleListVATRates(c *gin.Context) {
 // PROJECT REQUEST / RESPONSE TYPES
 // =============================================================================
 
-// CreateProjectRequest is the JSON body accepted by POST /api/v1/projects.
-// Money amounts (billing_rate, budget_money) are decimal pound strings for
-// precision. Time values (hours_per_day, budget_hours) are "H:MM" strings.
-type CreateProjectRequest struct {
-	// Core fields
-	ContactID              string  `json:"contact_id" binding:"required,uuid"`
-	Name                   string  `json:"name" binding:"required,min=1"`
-	Status                 string  `json:"status"` // defaults to "active"
-	ContractPONumber       *string `json:"contract_po_number"`
-	ProjectInvoiceSequence bool    `json:"project_invoice_sequence"`
-
-	// Time and money
-	Currency           string  `json:"currency"`          // defaults to "GBP"
-	BudgetType         *string `json:"budget_type"`       // "hours" | "days" | "money" | nil
-	BudgetHours        *string `json:"budget_hours"`      // "H:MM" — used when budget_type="hours"
-	BudgetDays         *int32  `json:"budget_days"`       // integer — used when budget_type="days"
-	BudgetMoney        *string `json:"budget_money"`      // pound string — used when budget_type="money"
-	HoursPerDay        *string `json:"hours_per_day"`     // "H:MM" e.g. "8:00"
-	BillingRate        string  `json:"billing_rate"`      // pound string e.g. "100.00"
-	BillingRateUnit    *string `json:"billing_rate_unit"` // "per_hour" | "per_day"
-	BillingRatePlusVAT bool    `json:"billing_rate_plus_vat"`
-
-	// More options
-	IsIR35                bool    `json:"is_ir35"`
-	StartDate             *string `json:"start_date"` // "YYYY-MM-DD"
-	EndDate               *string `json:"end_date"`   // "YYYY-MM-DD"
-	IncludeUnbillableTime bool    `json:"include_unbillable_time"`
-}
-
-// UpdateProjectRequest mirrors CreateProjectRequest — PUT replaces all editable
-// fields. contact_id is required so the project can be re-linked on edit.
-type UpdateProjectRequest struct {
-	ContactID              string  `json:"contact_id" binding:"required,uuid"`
-	Name                   string  `json:"name" binding:"required,min=1"`
-	Status                 string  `json:"status"`
-	ContractPONumber       *string `json:"contract_po_number"`
-	ProjectInvoiceSequence bool    `json:"project_invoice_sequence"`
-	Currency               string  `json:"currency"`
-	BudgetType             *string `json:"budget_type"`
-	BudgetHours            *string `json:"budget_hours"`
-	BudgetDays             *int32  `json:"budget_days"`
-	BudgetMoney            *string `json:"budget_money"`
-	HoursPerDay            *string `json:"hours_per_day"`
-	BillingRate            string  `json:"billing_rate"`
-	BillingRateUnit        *string `json:"billing_rate_unit"`
-	BillingRatePlusVAT     bool    `json:"billing_rate_plus_vat"`
-	IsIR35                 bool    `json:"is_ir35"`
-	StartDate              *string `json:"start_date"`
-	EndDate                *string `json:"end_date"`
-	IncludeUnbillableTime  bool    `json:"include_unbillable_time"`
-}
-
-// ProjectResponse is the JSON returned for a created/fetched/updated project.
-// Internal fields (pgx types, raw pence) are converted to human-readable form.
-type ProjectResponse struct {
-	ID                     string  `json:"id"`
-	OrganisationID         string  `json:"organisation_id"`
-	ContactID              string  `json:"contact_id"`
-	Name                   string  `json:"name"`
-	Status                 string  `json:"status"`
-	ContractPONumber       *string `json:"contract_po_number"`
-	ProjectInvoiceSequence bool    `json:"project_invoice_sequence"`
-	Currency               string  `json:"currency"`
-	BudgetType             *string `json:"budget_type"`
-	BudgetHours            *string `json:"budget_hours"`  // "H:MM" when budget_type="hours"
-	BudgetDays             *int32  `json:"budget_days"`   // integer when budget_type="days"
-	BudgetMoney            *string `json:"budget_money"`  // pounds when budget_type="money"
-	HoursPerDay            *string `json:"hours_per_day"` // "H:MM"
-	BillingRate            string  `json:"billing_rate"`  // pound string
-	BillingRateUnit        *string `json:"billing_rate_unit"`
-	BillingRatePlusVAT     bool    `json:"billing_rate_plus_vat"`
-	IsIR35                 bool    `json:"is_ir35"`
-	StartDate              *string `json:"start_date"`
-	EndDate                *string `json:"end_date"`
-	IncludeUnbillableTime  bool    `json:"include_unbillable_time"`
-	CreatedAt              string  `json:"created_at"`
-	UpdatedAt              string  `json:"updated_at"`
-}
-
-// =============================================================================
-// PROJECT HANDLERS
-// =============================================================================
-
-// handleListProjects handles GET /api/v1/projects — every project in the
-// caller's organisation.
-func (s *Server) handleListProjects(c *gin.Context) {
-	list, err := s.projectService.ListProjects(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"projects": list})
-}
-
-// handleCreateProject handles POST /api/v1/projects — create one project.
-// Returns 201 Created with the new project in the response body.
-func (s *Server) handleCreateProject(c *gin.Context) {
-	var req CreateProjectRequest
-	if !bindJSON(c, &req) {
-		return
-	}
-
-	project, err := s.projectService.CreateProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), req)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"project": project})
-}
-
-// handleGetProject handles GET /api/v1/projects/:id.
-func (s *Server) handleGetProject(c *gin.Context) {
-	project, err := s.projectService.GetProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"))
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"project": project})
-}
-
-// handleUpdateProject handles PUT /api/v1/projects/:id — full update.
-func (s *Server) handleUpdateProject(c *gin.Context) {
-	var req UpdateProjectRequest
-	if !bindJSON(c, &req) {
-		return
-	}
-
-	project, err := s.projectService.UpdateProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), req)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"project": project})
-}
-
-// handleDeleteProject handles DELETE /api/v1/projects/:id — hard delete.
-// Returns 204 No Content on success.
-func (s *Server) handleDeleteProject(c *gin.Context) {
-	if err := s.projectService.DeleteProject(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id")); err != nil {
-		respondError(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
 // =============================================================================
 // MEMBER HANDLERS
 // =============================================================================
-
-// handleListMembers handles GET /api/v1/members — every member of the caller's
-// organisation. The org is taken from the token; the service restricts this to
-// owners/admins (a plain member gets 403).
-func (s *Server) handleListMembers(c *gin.Context) {
-	list, err := s.memberService.ListMembers(c.Request.Context(), getAuthUserID(c), getAuthOrgID(c))
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"members": list})
-}
 
 // handleGetProfile handles GET /api/v1/profile — the caller's own "My Details".
 // The user is taken from the token, so a caller can only ever read themselves.

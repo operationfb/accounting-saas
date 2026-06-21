@@ -43,6 +43,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	contactsdb "github.com/operationfb/accounting-saas/db/contacts"
+	projects "github.com/operationfb/accounting-saas/db/projects"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 )
 
@@ -54,20 +55,30 @@ var validChargeVAT = map[string]bool{
 	"SAME_COUNTRY": true, // only when the contact is in our country/VAT area
 }
 
-// Service holds the connection pool, the contacts query set, and the auth
-// query set used to resolve the caller's membership/role.
+// Service holds the connection pool, the contacts query set, the auth query set
+// used to resolve the caller's membership/role, and the projects query set used
+// to check whether a contact is still referenced before deleting it.
 type Service struct {
-	pool        *pgxpool.Pool
-	queries     *contactsdb.Queries
-	authQueries auth.Querier
+	pool           *pgxpool.Pool
+	queries        *contactsdb.Queries
+	authQueries    auth.Querier
+	projectQueries projects.Querier
 }
 
-// NewService is the constructor, called once in main.go.
-func NewService(pool *pgxpool.Pool, queries *contactsdb.Queries, authQueries auth.Querier) *Service {
+// NewService is the constructor, called once in main.go. The projects querier is
+// a cross-domain dependency (like authQueries) used only for the "is this contact
+// in use?" guard on delete.
+func NewService(
+	pool *pgxpool.Pool,
+	queries *contactsdb.Queries,
+	authQueries auth.Querier,
+	projectQueries projects.Querier,
+) *Service {
 	return &Service{
-		pool:        pool,
-		queries:     queries,
-		authQueries: authQueries,
+		pool:           pool,
+		queries:        queries,
+		authQueries:    authQueries,
+		projectQueries: projectQueries,
 	}
 }
 
@@ -81,6 +92,22 @@ func NewService(pool *pgxpool.Pool, queries *contactsdb.Queries, authQueries aut
 // role can gate who may modify a contact (see the update/delete ownership rule).
 func (s *Service) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
 	return kernel.AuthorizeMember(ctx, s.authQueries, userID, orgID)
+}
+
+// contactInUse reports whether the contact is still referenced by another entity
+// (today only projects) and therefore must not be deleted. Centralised so the
+// GetContact response flag and the DeleteContact guard share one definition —
+// extend the underlying query (ContactHasProjects) as more entities reference
+// contacts (e.g. invoices).
+func (s *Service) contactInUse(ctx context.Context, contactID, orgID uuid.UUID) (bool, error) {
+	inUse, err := s.projectQueries.ContactHasProjects(ctx, projects.ContactHasProjectsParams{
+		ContactID:      contactID,
+		OrganisationID: orgID,
+	})
+	if err != nil {
+		return false, kernel.ErrInternal(err)
+	}
+	return inUse, nil
 }
 
 // =============================================================================
@@ -189,7 +216,16 @@ func (s *Service) GetContact(
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-	return contactToResponse(row), nil
+
+	// Derive the in_use flag so the edit page can hide Delete when the contact is
+	// still referenced (today: by a project).
+	inUse, err := s.contactInUse(ctx, contactUUID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	resp := contactToResponse(row)
+	resp.InUse = inUse
+	return resp, nil
 }
 
 // =============================================================================
@@ -355,6 +391,17 @@ func (s *Service) DeleteContact(
 	}
 	if existing.CreatedByUserID != authUserID && !kernel.IsOrgAdmin(role) {
 		return kernel.ErrForbidden("you do not have access to this contact")
+	}
+
+	// Guard: refuse to delete a contact that is still in use. The soft-delete is
+	// an UPDATE (the row stays), so the projects.contact_id foreign key would NOT
+	// stop this — we have to check ourselves. 409 Conflict.
+	inUse, err := s.contactInUse(ctx, contactUUID, authOrgID)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return kernel.ErrConflict("this contact is in use by one or more projects and can't be deleted")
 	}
 
 	if err := s.queries.SoftDeleteContact(ctx, contactsdb.SoftDeleteContactParams{

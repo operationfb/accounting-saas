@@ -43,6 +43,10 @@ export const ContactSchema = z.object({
   bank_recipient_name: z.string().nullish(),
 
   is_active: z.boolean(),
+  // Derived (not a column): TRUE when another entity (today a project) references
+  // this contact, so it can't be deleted. The backend sets it only on
+  // GET /contacts/:id; create/list/update responses omit it, hence optional.
+  in_use: z.boolean().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 })

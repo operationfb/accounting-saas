@@ -1170,15 +1170,6 @@ func numericToStringPtr(n pgtype.Numeric) *string {
 	return &s
 }
 
-// timestampToStringPtr renders a nullable timestamp as RFC3339; nil when NULL.
-func timestampToStringPtr(t pgtype.Timestamptz) *string {
-	if !t.Valid {
-		return nil
-	}
-	s := t.Time.Format(time.RFC3339)
-	return &s
-}
-
 // uuidToStringPtr renders a nullable UUID as a string; nil when NULL.
 func uuidToStringPtr(u pgtype.UUID) *string {
 	if !u.Valid {

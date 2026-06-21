@@ -68,8 +68,9 @@ var (
 
 // --- pg conversions (the shared subset -> kernel.pgconv) --------------------
 var (
-	pgNullText     = kernel.NullText
-	nullTextToPtr  = kernel.NullTextToPtr
-	pgNullInt32    = kernel.NullInt32
-	pgInt32FromPtr = kernel.Int32FromPtr
+	pgNullText           = kernel.NullText
+	nullTextToPtr        = kernel.NullTextToPtr
+	pgNullInt32          = kernel.NullInt32
+	pgInt32FromPtr       = kernel.Int32FromPtr
+	timestampToStringPtr = kernel.TimestampToStringPtr
 )

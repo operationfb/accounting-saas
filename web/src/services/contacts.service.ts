@@ -40,3 +40,11 @@ export async function updateContact(id: string, payload: CreateContactRequest): 
   })
   return GetContactResponseSchema.parse(data).contact
 }
+
+// DELETE /api/v1/contacts/:id — soft-deletes the contact (the row is kept but
+// hidden everywhere). Returns 204 with no body. The backend refuses with a 409
+// if the contact is still in use (e.g. referenced by a project); that surfaces
+// as an ApiError for the caller to show. Mirrors deleteExpense.
+export async function deleteContact(id: string): Promise<void> {
+  await apiFetch<unknown>(`/contacts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}

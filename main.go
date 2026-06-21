@@ -33,14 +33,16 @@ import (
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	expenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
-	projects "github.com/operationfb/accounting-saas/db/projects"
+	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
+	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	"github.com/operationfb/accounting-saas/token"
 )
@@ -118,19 +120,24 @@ func main() {
 	authQueries := auth.New(pool)
 	service := NewExpenseService(pool, queries, authQueries)
 
-	// Contacts: its own sqlc package + internal/contacts service. The service +
-	// Handler self-register routes after NewServer (per-domain pattern).
+	// Contacts + Projects each have their own sqlc package + internal service and
+	// self-register routes after NewServer (per-domain pattern). They share
+	// cross-domain queriers, so build both query sets first, then the services:
+	//   - contactSvc needs the projects querier (to refuse deleting a contact that
+	//     is still referenced by a project — the soft-delete is an UPDATE, so the
+	//     FK can't enforce this).
+	//   - projectSvc needs the contacts querier (to validate a project's contact
+	//     belongs to the same org on create/update).
 	contactQueries := dbcontacts.New(pool)
-	contactSvc := contacts.NewService(pool, contactQueries, authQueries)
+	projectQueries := dbprojects.New(pool)
 
-	// Projects: depends on contactQueries to validate contact ownership when
-	// a project is created or updated (contact_id must belong to the same org).
-	projectQueries := projects.New(pool)
-	projectService := NewProjectService(pool, projectQueries, authQueries, contactQueries)
+	contactSvc := contacts.NewService(pool, contactQueries, authQueries, projectQueries)
+	projectSvc := projects.NewService(pool, projectQueries, authQueries, contactQueries)
 
-	// Members: a thin, read-only service over the auth queries for listing an
-	// organisation's members (owner/admin only). Reuses the shared authQueries.
-	memberService := NewMemberService(authQueries)
+	// Members: a thin, read-only internal/members service over the auth queries for
+	// listing an organisation's members (owner/admin only). Reuses the shared
+	// authQueries; its Handler self-registers /api/v1/members after NewServer.
+	memberSvc := members.NewService(authQueries)
 
 	// Organisation: read/update the caller's own company details (the Company
 	// Details settings screen). Read by any active member; edit by owner/admin.
@@ -358,7 +365,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, projectService, memberService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(service, attachmentService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
 
 	// Each integration registers its OWN routes on the shared engine (the
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in
@@ -379,9 +386,11 @@ func main() {
 	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
-	// Contacts + Organisation (Company Details), each self-registering its routes
-	// on the shared engine — same per-domain pattern.
+	// Contacts + Projects + Members + Organisation (Company Details), each
+	// self-registering its routes on the shared engine — same per-domain pattern.
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
+	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
+	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
 

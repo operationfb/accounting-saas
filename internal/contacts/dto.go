@@ -118,7 +118,14 @@ type ContactResponse struct {
 	BankAccountNumber *string `json:"bank_account_number,omitempty"`
 	BankRecipientName *string `json:"bank_recipient_name,omitempty"`
 
-	IsActive  bool   `json:"is_active"`
+	IsActive bool `json:"is_active"`
+
+	// InUse is a DERIVED field (not a column): TRUE when another entity — today a
+	// project — references this contact, so it cannot be deleted. The frontend
+	// hides the Delete button when it is true. Computed only on GetContact; it is
+	// the zero-value false on create/list/update responses (which don't need it).
+	InUse bool `json:"in_use"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }

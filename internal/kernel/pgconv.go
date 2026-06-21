@@ -14,7 +14,11 @@ package kernel
 //     0 means "Due on Receipt"); only a nil pointer becomes NULL.
 // =============================================================================
 
-import "github.com/jackc/pgx/v5/pgtype"
+import (
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+)
 
 // NullText converts a *string to pgtype.Text.
 // nil pointer -> NULL in the database; non-nil pointer -> the string value.
@@ -32,6 +36,17 @@ func NullTextToPtr(t pgtype.Text) *string {
 		return nil
 	}
 	return &t.String
+}
+
+// TimestampToStringPtr renders a nullable timestamp as an RFC3339 *string; nil
+// when NULL. Shared across domains (members, expenses, attachments) for the
+// nullable timestamp columns (last_login_at, ocr_processed_at, …).
+func TimestampToStringPtr(t pgtype.Timestamptz) *string {
+	if !t.Valid {
+		return nil
+	}
+	s := t.Time.Format(time.RFC3339)
+	return &s
 }
 
 // NullInt32 wraps an int32 in pgtype.Int4, mapping 0 -> NULL.

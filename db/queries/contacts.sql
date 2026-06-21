@@ -161,6 +161,7 @@ RETURNING *;
 -- name: SoftDeleteContact :exec
 UPDATE contacts SET
     deleted_at = now(),
+    is_active  = false,   -- keep the lifecycle columns coherent: a deleted contact is not active
     updated_at = now()
 WHERE id              = $1
   AND organisation_id = $2

@@ -135,6 +135,28 @@ func createContactAs(t *testing.T, ts *testServer, userID, orgID string) string 
 	return id
 }
 
+// insertProjectForContact inserts a minimal project row that references the given
+// contact, via raw SQL (the projects domain has no create endpoint wired into
+// these tests). It registers a hard-delete cleanup — and because t.Cleanup runs
+// LIFO, this project is removed before the contact's own cleanup, so the
+// contacts FK never blocks teardown. Used to make a contact "in use" so the
+// delete-guard and in_use-flag paths can be exercised.
+func insertProjectForContact(t *testing.T, ts *testServer, orgID, contactID string) string {
+	t.Helper()
+	var projectID string
+	// Only the NOT NULL columns without a default are supplied; currency defaults
+	// to 'GBP' and status to 'active' from the schema.
+	if err := ts.pool.QueryRow(context.Background(),
+		"INSERT INTO projects (organisation_id, contact_id, name) VALUES ($1, $2, $3) RETURNING id",
+		orgID, contactID, "Test Project "+testutil.RandomString(6)).Scan(&projectID); err != nil {
+		t.Fatalf("insert project for contact: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1", projectID)
+	})
+	return projectID
+}
+
 // =============================================================================
 // CREATE
 // =============================================================================
@@ -466,14 +488,19 @@ func TestHandleDeleteContact(t *testing.T) {
 			t.Fatalf("expected 204, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 
-		// Soft delete: the row remains with deleted_at set.
+		// Soft delete: the row remains with deleted_at set AND is_active cleared
+		// (we set both so the lifecycle columns stay coherent).
 		var deletedAt *time.Time
+		var isActive bool
 		if err := ts.pool.QueryRow(context.Background(),
-			"SELECT deleted_at FROM contacts WHERE id = $1", id).Scan(&deletedAt); err != nil {
-			t.Fatalf("read deleted_at: %v", err)
+			"SELECT deleted_at, is_active FROM contacts WHERE id = $1", id).Scan(&deletedAt, &isActive); err != nil {
+			t.Fatalf("read deleted_at/is_active: %v", err)
 		}
 		if deletedAt == nil {
 			t.Error("expected deleted_at to be set after delete")
+		}
+		if isActive {
+			t.Error("expected is_active to be false after delete")
 		}
 
 		// Invisible now: GET → 404, absent from the list.
@@ -486,6 +513,21 @@ func TestHandleDeleteContact(t *testing.T) {
 		ts.server.router.ServeHTTP(listRec, listReq)
 		if contains(contactIDsFromList(t, listRec.Body.Bytes()), id) {
 			t.Error("a deleted contact must not appear in the list")
+		}
+	})
+
+	t.Run("contact in use by a project → 409, not deleted", func(t *testing.T) {
+		id := createContactAs(t, ts, devUserID, devOrgID)
+		insertProjectForContact(t, ts, devOrgID, id)
+
+		rec := deleteContactReq(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		// The blocked delete must leave the contact intact (still readable).
+		if getRec := getContactReq(t, ts, id, bearer(t, ts, devUserID, devOrgID)); getRec.Code != http.StatusOK {
+			t.Errorf("a contact whose delete was blocked should survive: GET expected 200, got %d", getRec.Code)
 		}
 	})
 
@@ -522,6 +564,39 @@ func TestHandleDeleteContact(t *testing.T) {
 			t.Errorf("cross-tenant delete: expected 404, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// =============================================================================
+// IN-USE FLAG
+// =============================================================================
+
+// TestContactInUseFlag verifies GetContact's derived in_use flag: false when no
+// entity references the contact, true once a project does. The frontend uses
+// this flag to hide the Delete button on the contact edit page.
+func TestContactInUseFlag(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	id := createContactAs(t, ts, devUserID, devOrgID)
+
+	// No references yet → in_use must be false.
+	rec := getContactReq(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if decodeContact(t, rec.Body.Bytes()).InUse {
+		t.Error("expected in_use=false for a contact with no projects")
+	}
+
+	// Once a project references it → in_use must be true.
+	insertProjectForContact(t, ts, devOrgID, id)
+	rec = getContactReq(t, ts, id, bearer(t, ts, devUserID, devOrgID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET (in use): expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	if !decodeContact(t, rec.Body.Bytes()).InUse {
+		t.Error("expected in_use=true once a project references the contact")
+	}
 }
 
 // =============================================================================

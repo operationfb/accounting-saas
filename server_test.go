@@ -55,8 +55,10 @@ import (
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
+	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	"github.com/operationfb/accounting-saas/token"
@@ -180,9 +182,9 @@ func newTestServer(t *testing.T) *testServer {
 		store = gcsStore
 	}
 	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
-	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries)
-	projectService := NewProjectService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
-	memberService := NewMemberService(authQueries)
+	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
+	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
+	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
 	userService := NewUserService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
@@ -203,7 +205,7 @@ func newTestServer(t *testing.T) *testServer {
 	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
-	server := NewServer(service, attachmentService, projectService, memberService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	server := NewServer(service, attachmentService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
@@ -212,9 +214,13 @@ func newTestServer(t *testing.T) *testServer {
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries)
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 
-	// Contacts + Organisation (Company Details): build + register like the per-domain
-	// handlers above; exposed on the harness for the direct-call tests.
+	// Contacts + Projects + Organisation (Company Details): build + register like the
+	// per-domain handlers above. Contacts + Organisation are exposed on the harness
+	// for direct-call tests; Projects has no dedicated test, so only its routes are
+	// registered (for fidelity with production).
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
+	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
+	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	return &testServer{

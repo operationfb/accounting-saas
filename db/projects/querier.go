@@ -11,6 +11,18 @@ import (
 )
 
 type Querier interface {
+	// tenant scope — guards against cross-tenant deletes
+	// -----------------------------------------------------------------------------
+	// ContactHasProjects
+	// TRUE when at least one project still references this contact. The contacts
+	// service calls this before soft-deleting a contact: a soft-delete is an UPDATE
+	// (the contacts row stays), so the projects.contact_id foreign key would NOT
+	// catch a contact that is still in use — we must check in the application layer.
+	// Org-scoped for tenant safety. Written as EXISTS so it stops at the first match
+	// and is cheap; add `OR EXISTS (...)` clauses here as more entities reference
+	// contacts (e.g. invoices).
+	// -----------------------------------------------------------------------------
+	ContactHasProjects(ctx context.Context, arg ContactHasProjectsParams) (bool, error)
 	// =============================================================================
 	// PROJECTS MODULE — SQLC QUERIES
 	// File: db/queries/projects.sql

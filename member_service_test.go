@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	members "github.com/operationfb/accounting-saas/internal/members"
 )
 
 // =============================================================================
@@ -43,10 +45,10 @@ func getMembers(t *testing.T, ts *testServer, authHeader string) *httptest.Respo
 }
 
 // membersFromList decodes { "members": [ ... ] } into a slice.
-func membersFromList(t *testing.T, body []byte) []MemberResponse {
+func membersFromList(t *testing.T, body []byte) []members.MemberResponse {
 	t.Helper()
 	var resp struct {
-		Members []MemberResponse `json:"members"`
+		Members []members.MemberResponse `json:"members"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("membersFromList: decode: %v", err)
@@ -56,7 +58,7 @@ func membersFromList(t *testing.T, body []byte) []MemberResponse {
 
 // findMember returns a pointer to the member with the given user id, or nil if
 // it is absent from the slice.
-func findMember(members []MemberResponse, userID string) *MemberResponse {
+func findMember(members []members.MemberResponse, userID string) *members.MemberResponse {
 	for i := range members {
 		if members[i].UserID == userID {
 			return &members[i]
