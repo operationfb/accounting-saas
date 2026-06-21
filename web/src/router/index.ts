@@ -25,27 +25,33 @@ const router = createRouter({
     // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
-    { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true } },
-    { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true } },
-    { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true } },
-    { path: '/projects', name: 'projects', component: ProjectListView, meta: { requiresAuth: true } },
-    { path: '/projects/new', name: 'project-new', component: ProjectEntryView, meta: { requiresAuth: true } },
-    { path: '/projects/:id/edit', name: 'project-edit', component: ProjectEntryView, meta: { requiresAuth: true } },
-    { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true } },
-    { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true } },
-    { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true } },
-    { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true } },
+    { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true, title: 'Contacts' } },
+    { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
+    { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
+    { path: '/projects', name: 'projects', component: ProjectListView, meta: { requiresAuth: true, title: 'Projects' } },
+    { path: '/projects/new', name: 'project-new', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
+    { path: '/projects/:id/edit', name: 'project-edit', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
+    { path: '/expenses', name: 'expenses', component: ExpenseListView, meta: { requiresAuth: true, title: 'Expenses' } },
+    { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
+    { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true, title: 'Expenses' } },
+    { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
     // The organisation's own "Company Details" — a singleton settings screen
     // (the org comes from the token, so there's no id in the path).
-    { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true } },
+    { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },
     // The signed-in user's own "My Details" — likewise a singleton (the user
     // comes from the token). Every user may edit their own profile.
-    { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true } },
+    { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },
     // Integration settings (FreeAgent OAuth + status). The path is fixed: the
     // backend OAuth callback redirects the browser to /settings/integrations with
     // ?freeagent=connected | ?freeagent=error&reason=… (integration_service.go).
-    { path: '/settings/integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true } },
+    { path: '/settings/integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true, title: 'Settings' } },
   ],
+})
+
+// Update the browser tab title on every navigation.
+router.afterEach((to) => {
+  const module = to.meta.title as string | undefined
+  document.title = module ? `Kontala ${module}` : 'Kontala'
 })
 
 // Auth guard:

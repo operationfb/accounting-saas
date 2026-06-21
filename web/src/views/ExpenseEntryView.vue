@@ -108,12 +108,20 @@ const discardOnLeave = ref(justCaptured)
 const categories = ref<ExpenseCategory[]>([])
 const categoriesLoading = ref(true)
 const categoriesError = ref('')
+// Maps the raw DB category_group codes to human-readable group headings.
+const GROUP_LABELS: Record<string, string> = {
+  ADMIN: 'Admin Expenses',
+  COS: 'Cost of Sales',
+  ASSETS: 'Assets and Stock',
+}
+
 // Categories grouped by their category_group; PrimeVue renders the group as a
 // non-selectable header. Backend already orders by group then nominal code.
 const categoryGroups = computed(() => {
   const groups = new Map<string, { label: string; value: string }[]>()
   for (const c of categories.value) {
-    const groupName = c.category_group ?? 'Other'
+    const code = c.category_group ?? ''
+    const groupName = GROUP_LABELS[code] ?? (code || 'Other')
     if (!groups.has(groupName)) groups.set(groupName, [])
     groups.get(groupName)!.push({ label: `${c.name} (${c.nominal_code})`, value: c.id })
   }
@@ -859,6 +867,7 @@ async function onSmartFilePicked(e: Event) {
             :invalid="!!errors.category"
             filter
             filter-placeholder="Search categories"
+            scroll-height="380px"
             class="w-full sm:w-72"
           />
           <p v-if="categoriesError" class="text-xs text-[#c0392b]">
@@ -877,6 +886,7 @@ async function onSmartFilePicked(e: Event) {
             show-icon
             :show-on-focus="false"
             :invalid="!!errors.datedOn"
+            class="w-full sm:w-72"
           />
           <p v-if="errors.datedOn" class="text-xs text-[#c0392b]">{{ errors.datedOn }}</p>
           <span v-if="ocrPolling" class="block text-xs text-fa-muted"><i class="pi pi-spin pi-spinner" /> reading…</span>
