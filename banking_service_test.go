@@ -298,4 +298,51 @@ func TestBankAccountService(t *testing.T) {
 			assertAppCode(t, err, ErrCodeNotFound)
 		}
 	})
+
+	t.Run("opening balance locks once the account has transactions", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("Lockable", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "100.00" }))
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		// No transactions yet → editable, and a change to the opening balance is allowed.
+		if !acc.OpeningBalanceEditable {
+			t.Error("a fresh account's opening balance should be editable")
+		}
+		upd, err := svc.UpdateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
+			bankReq("Lockable", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "250.00" }))
+		if err != nil {
+			t.Fatalf("update opening (no txns): %v", err)
+		}
+		if upd.OpeningBalance != "250.00" {
+			t.Errorf("opening balance change with no txns: got %q, want 250.00", upd.OpeningBalance)
+		}
+
+		// Add a transaction → the opening balance locks.
+		addTxn(t, ts, org, acc.ID, 5_000)
+		locked, err := svc.GetBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if locked.OpeningBalanceEditable {
+			t.Error("opening balance should be locked once the account has transactions")
+		}
+		// Changing it now is rejected (422)...
+		_, err = svc.UpdateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
+			bankReq("Lockable", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "999.00" }))
+		assertAppCode(t, err, ErrCodeValidation)
+		// ...but re-sending the SAME opening balance (what the disabled form does) still
+		// lets other fields update.
+		ok, err := svc.UpdateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
+			bankReq("Renamed", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "250.00" }))
+		if err != nil {
+			t.Fatalf("update with unchanged opening: %v", err)
+		}
+		if ok.Name != "Renamed" {
+			t.Errorf("name should have updated alongside an unchanged opening balance: got %q", ok.Name)
+		}
+	})
 }

@@ -255,7 +255,10 @@ func (q *Queries) CreateBankTransaction(ctx context.Context, arg CreateBankTrans
 const getBankAccount = `-- name: GetBankAccount :one
 SELECT
     a.id, a.organisation_id, a.created_by_user_id, a.name, a.currency, a.status, a.is_personal, a.is_primary, a.bank_name, a.account_number, a.sort_code, a.routing_number, a.bank_account_type, a.iban, a.bic, a.show_on_invoices, a.opening_balance_minor, a.opening_balance_date, a.guess_explanations, a.deleted_at, a.created_at, a.updated_at,
-    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor
+    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor,
+    -- Number of live transactions. Drives the "opening balance is locked once the
+    -- account has transactions" rule (count(t.id) ignores the LEFT JOIN's NULLs).
+    count(t.id) AS transaction_count
 FROM bank_accounts a
 LEFT JOIN bank_transactions t
        ON t.bank_account_id = a.id
@@ -295,6 +298,7 @@ type GetBankAccountRow struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	CurrentBalanceMinor int64              `json:"current_balance_minor"`
+	TransactionCount    int64              `json:"transaction_count"`
 }
 
 // -----------------------------------------------------------------------------
@@ -333,6 +337,7 @@ func (q *Queries) GetBankAccount(ctx context.Context, arg GetBankAccountParams) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.CurrentBalanceMinor,
+		&i.TransactionCount,
 	)
 	return i, err
 }
@@ -480,7 +485,8 @@ func (q *Queries) ListBankAccountTransactions(ctx context.Context, arg ListBankA
 const listBankAccounts = `-- name: ListBankAccounts :many
 SELECT
     a.id, a.organisation_id, a.created_by_user_id, a.name, a.currency, a.status, a.is_personal, a.is_primary, a.bank_name, a.account_number, a.sort_code, a.routing_number, a.bank_account_type, a.iban, a.bic, a.show_on_invoices, a.opening_balance_minor, a.opening_balance_date, a.guess_explanations, a.deleted_at, a.created_at, a.updated_at,
-    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor
+    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor,
+    count(t.id) AS transaction_count
 FROM bank_accounts a
 LEFT JOIN bank_transactions t
        ON t.bank_account_id = a.id
@@ -515,6 +521,7 @@ type ListBankAccountsRow struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	CurrentBalanceMinor int64              `json:"current_balance_minor"`
+	TransactionCount    int64              `json:"transaction_count"`
 }
 
 // -----------------------------------------------------------------------------
@@ -556,6 +563,7 @@ func (q *Queries) ListBankAccounts(ctx context.Context, organisationID uuid.UUID
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CurrentBalanceMinor,
+			&i.TransactionCount,
 		); err != nil {
 			return nil, err
 		}

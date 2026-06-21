@@ -29,6 +29,9 @@ export const BankAccountSchema = z.object({
   opening_balance: z.string(),
   current_balance: z.string(), // derived (opening + Σ transactions)
   opening_balance_date: z.string().nullish(),
+  // False once the account has transactions — the opening balance is the
+  // running-balance seed, so the form locks it after the first line.
+  opening_balance_editable: z.boolean(),
 
   guess_explanations: z.boolean(),
   created_at: z.string(),

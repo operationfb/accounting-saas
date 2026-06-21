@@ -90,7 +90,10 @@ RETURNING *;
 -- name: GetBankAccount :one
 SELECT
     a.*,
-    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor
+    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor,
+    -- Number of live transactions. Drives the "opening balance is locked once the
+    -- account has transactions" rule (count(t.id) ignores the LEFT JOIN's NULLs).
+    count(t.id) AS transaction_count
 FROM bank_accounts a
 LEFT JOIN bank_transactions t
        ON t.bank_account_id = a.id
@@ -110,7 +113,8 @@ GROUP BY a.id;
 -- name: ListBankAccounts :many
 SELECT
     a.*,
-    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor
+    (a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0))::bigint AS current_balance_minor,
+    count(t.id) AS transaction_count
 FROM bank_accounts a
 LEFT JOIN bank_transactions t
        ON t.bank_account_id = a.id

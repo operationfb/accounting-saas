@@ -74,6 +74,9 @@ async function loadCurrencies() {
 // --- edit-mode load state ---
 const loadingAccount = ref(isEdit) // spinner until the record is ready
 const loadError = ref('')
+// Once an account has transactions, the opening balance is locked (it is the
+// running-balance seed). The backend is the authority; this only disables the field.
+const openingBalanceLocked = ref(false)
 async function loadForEdit() {
   if (!editId) return
   loadingAccount.value = true
@@ -93,6 +96,7 @@ async function loadForEdit() {
     form.bic = a.bic ?? ''
     form.showOnInvoices = a.show_on_invoices
     form.openingBalance = a.opening_balance
+    openingBalanceLocked.value = !a.opening_balance_editable
     form.guessExplanations = a.guess_explanations
   } catch (err) {
     loadError.value = (err as ApiError)?.message ?? 'Could not load this bank account.'
@@ -299,11 +303,15 @@ function cancel() {
               v-model="form.openingBalance"
               placeholder="0.00"
               inputmode="decimal"
+              :disabled="openingBalanceLocked"
               :invalid="!!errors.openingBalance"
             />
           </InputGroup>
           <p v-if="errors.openingBalance" class="text-xs text-[#c0392b]">{{ errors.openingBalance }}</p>
-          <span class="block text-xs text-fa-muted">
+          <span v-if="openingBalanceLocked" class="block text-xs text-fa-muted">
+            Locked — the opening balance can only be set before the account has any transactions.
+          </span>
+          <span v-else class="block text-xs text-fa-muted">
             The account balance at the start of your accounting start date. For accounts opened after
             this date, enter zero.
           </span>

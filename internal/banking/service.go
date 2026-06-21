@@ -109,9 +109,14 @@ type BankAccountResponse struct {
 	OpeningBalance     string  `json:"opening_balance"` // pounds, e.g. "4109.42"
 	CurrentBalance     string  `json:"current_balance"` // pounds, derived (opening + Σ txns)
 	OpeningBalanceDate *string `json:"opening_balance_date,omitempty"`
-	GuessExplanations  bool    `json:"guess_explanations"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
+	// OpeningBalanceEditable is false once the account has any live transaction:
+	// the opening balance is the running-balance seed, so it locks after the first
+	// line (changing it would silently shift every later balance). True on create
+	// and for an account with no transactions yet.
+	OpeningBalanceEditable bool `json:"opening_balance_editable"`
+	GuessExplanations      bool `json:"guess_explanations"`
+	CreatedAt              string `json:"created_at"`
+	UpdatedAt              string `json:"updated_at"`
 }
 
 // =============================================================================
@@ -191,7 +196,7 @@ func (s *Service) CreateBankAccount(ctx context.Context, authUserID, authOrgID u
 		return nil, kernel.ErrInternal(err)
 	}
 	// A fresh account has no transactions, so its current balance IS its opening.
-	return bankAccountToResponse(created, created.OpeningBalanceMinor), nil
+	return bankAccountToResponse(created, created.OpeningBalanceMinor, true), nil
 }
 
 // =============================================================================
@@ -215,7 +220,7 @@ func (s *Service) GetBankAccount(ctx context.Context, authUserID, authOrgID uuid
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-	return bankAccountToResponse(accountFromGetRow(row), row.CurrentBalanceMinor), nil
+	return bankAccountToResponse(accountFromGetRow(row), row.CurrentBalanceMinor, row.TransactionCount == 0), nil
 }
 
 // ListBankAccounts returns every live account for the caller's org, each with its
@@ -230,7 +235,7 @@ func (s *Service) ListBankAccounts(ctx context.Context, authUserID, authOrgID uu
 	}
 	out := make([]*BankAccountResponse, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, bankAccountToResponse(accountFromListRow(r), r.CurrentBalanceMinor))
+		out = append(out, bankAccountToResponse(accountFromListRow(r), r.CurrentBalanceMinor, r.TransactionCount == 0))
 	}
 	return out, nil
 }
@@ -301,7 +306,7 @@ func (s *Service) ListTransactions(ctx context.Context, authUserID, authOrgID uu
 	}
 
 	return &BankAccountTransactionsResponse{
-		Account:      bankAccountToResponse(accountFromGetRow(acct), acct.CurrentBalanceMinor),
+		Account:      bankAccountToResponse(accountFromGetRow(acct), acct.CurrentBalanceMinor, acct.TransactionCount == 0),
 		Transactions: out,
 	}, nil
 }
@@ -348,8 +353,10 @@ func (s *Service) UpdateBankAccount(ctx context.Context, authUserID, authOrgID u
 		return nil, err
 	}
 
-	// 404 if it doesn't exist in this org (or was already deleted).
-	if _, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: authOrgID}); err != nil {
+	// 404 if it doesn't exist in this org (or was already deleted). Keep the row to
+	// enforce the opening-balance lock below.
+	existing, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: authOrgID})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, kernel.ErrNotFound("bank account", id)
 		}
@@ -359,6 +366,12 @@ func (s *Service) UpdateBankAccount(ctx context.Context, authUserID, authOrgID u
 	fields, err := s.buildAccountFields(req)
 	if err != nil {
 		return nil, err
+	}
+	// Opening balance is the running-balance seed: once the account has any
+	// transaction it is LOCKED, since changing it would silently shift every later
+	// balance. Re-sending the unchanged value (what the disabled form does) passes.
+	if existing.TransactionCount > 0 && fields.OpeningBalanceMinor != existing.OpeningBalanceMinor {
+		return nil, kernel.ErrValidation("opening balance can't be changed once the account has transactions", nil)
 	}
 	updateParams := banking.UpdateBankAccountParams{
 		ID:                  accountUUID,
@@ -403,7 +416,7 @@ func (s *Service) UpdateBankAccount(ctx context.Context, authUserID, authOrgID u
 	if err != nil {
 		return nil, kernel.ErrInternal(err)
 	}
-	return bankAccountToResponse(accountFromGetRow(row), row.CurrentBalanceMinor), nil
+	return bankAccountToResponse(accountFromGetRow(row), row.CurrentBalanceMinor, row.TransactionCount == 0), nil
 }
 
 // DeleteBankAccount soft-deletes an account (sets deleted_at). Owner/admin only.
@@ -548,7 +561,7 @@ func parseOptionalDate(s *string) (pgtype.Date, error) {
 // bankAccountToResponse maps a stored account plus its (possibly derived) current
 // balance into the API shape. Balances become pound strings (money.MinorToPounds);
 // nullable columns become *string (kernel.NullTextToPtr).
-func bankAccountToResponse(a banking.BankAccount, currentBalanceMinor int64) *BankAccountResponse {
+func bankAccountToResponse(a banking.BankAccount, currentBalanceMinor int64, openingBalanceEditable bool) *BankAccountResponse {
 	return &BankAccountResponse{
 		ID:                 a.ID.String(),
 		OrganisationID:     a.OrganisationID.String(),
@@ -568,8 +581,9 @@ func bankAccountToResponse(a banking.BankAccount, currentBalanceMinor int64) *Ba
 		ShowOnInvoices:     a.ShowOnInvoices,
 		OpeningBalance:     money.MinorToPounds(a.OpeningBalanceMinor),
 		CurrentBalance:     money.MinorToPounds(currentBalanceMinor),
-		OpeningBalanceDate: dateToPtr(a.OpeningBalanceDate),
-		GuessExplanations:  a.GuessExplanations,
+		OpeningBalanceDate:     dateToPtr(a.OpeningBalanceDate),
+		OpeningBalanceEditable: openingBalanceEditable,
+		GuessExplanations:      a.GuessExplanations,
 		CreatedAt:          a.CreatedAt.Time.Format(time.RFC3339),
 		UpdatedAt:          a.UpdatedAt.Time.Format(time.RFC3339),
 	}
