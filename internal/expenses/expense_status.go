@@ -1,4 +1,4 @@
-package main
+package expenses
 
 // expense_status.go
 // =============================================================================
@@ -37,10 +37,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
-// Status constants for the expenses.status column. These finally replace the
+// Status constants for the expensesdb.status column. These finally replace the
 // bare "DRAFT"/"REJECTED" string literals that were scattered through the
 // editability checks, so a typo is now a compile error rather than a silent bug.
 const (
@@ -82,7 +83,7 @@ var statusTransitions = map[string]transition{
 //
 //	action        — one of "submit" / "approve" / "reject" / "reopen"
 //	rejectionNote — required only when action == "reject"
-func (s *ExpenseService) ChangeExpenseStatus(
+func (s *Service) ChangeExpenseStatus(
 	ctx context.Context,
 	authUserID uuid.UUID,
 	authOrgID uuid.UUID,
@@ -92,7 +93,7 @@ func (s *ExpenseService) ChangeExpenseStatus(
 ) (*ExpenseResponse, error) {
 	expenseUUID, err := uuid.Parse(id)
 	if err != nil {
-		return nil, ErrValidation("id is not a valid UUID", err)
+		return nil, kernel.ErrValidation("id is not a valid UUID", err)
 	}
 
 	// Look the action up in the state machine. An unknown action is a validation
@@ -100,12 +101,12 @@ func (s *ExpenseService) ChangeExpenseStatus(
 	// own — it's called directly from tests and could be called elsewhere later).
 	t, ok := statusTransitions[action]
 	if !ok {
-		return nil, ErrValidation(fmt.Sprintf("unknown status action %q", action), nil)
+		return nil, kernel.ErrValidation(fmt.Sprintf("unknown status action %q", action), nil)
 	}
 
 	// A rejection must carry a reason. Trim so whitespace-only doesn't count.
 	if t.needsNote && strings.TrimSpace(rejectionNote) == "" {
-		return nil, ErrValidation("rejection_note is required when rejecting an expense", nil)
+		return nil, kernel.ErrValidation("rejection_note is required when rejecting an expense", nil)
 	}
 
 	// The caller must be an active member of the org; capture their role to gate
@@ -115,19 +116,19 @@ func (s *ExpenseService) ChangeExpenseStatus(
 		return nil, err
 	}
 
-	var updated expenses.Expense
-	err = s.withTransaction(ctx, func(qtx *expenses.Queries) error {
+	var updated expensesdb.Expense
+	err = s.withTransaction(ctx, func(qtx *expensesdb.Queries) error {
 		// Load the current row (org-scoped, so another tenant's id is simply not
 		// found → 404, never revealing its existence).
-		existing, err := qtx.GetExpense(ctx, expenses.GetExpenseParams{
+		existing, err := qtx.GetExpense(ctx, expensesdb.GetExpenseParams{
 			ID:             expenseUUID,
 			OrganisationID: authOrgID,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound("expense", id)
+				return kernel.ErrNotFound("expense", id)
 			}
-			return ErrInternal(err)
+			return kernel.ErrInternal(err)
 		}
 
 		// Authorise WHO may act (mirrors UpdateExpense ordering: who, then state).
@@ -135,18 +136,18 @@ func (s *ExpenseService) ChangeExpenseStatus(
 		// (submit/reopen) may be done by the claimant on their own expense, or by
 		// an owner/admin on anyone's.
 		if t.adminOnly {
-			if !isOrgAdmin(role) {
-				return ErrForbidden(fmt.Sprintf("only an owner or admin can %s this expense", action))
+			if !kernel.IsOrgAdmin(role) {
+				return kernel.ErrForbidden(fmt.Sprintf("only an owner or admin can %s this expense", action))
 			}
-		} else if existing.UserID != authUserID && !isOrgAdmin(role) {
-			return ErrForbidden("you do not have access to this expense")
+		} else if existing.UserID != authUserID && !kernel.IsOrgAdmin(role) {
+			return kernel.ErrForbidden("you do not have access to this expense")
 		}
 
 		// Enforce the state machine: the expense must be in the transition's
-		// required `from` status. ErrCodeConflict (409) is exactly this case —
+		// required `from` status. kernel.ErrCodeConflict (409) is exactly this case —
 		// e.g. approving something that isn't SUBMITTED.
 		if existing.Status != t.from {
-			return ErrConflict(fmt.Sprintf(
+			return kernel.ErrConflict(fmt.Sprintf(
 				"cannot %s an expense in %s status (must be %s)", action, existing.Status, t.from))
 		}
 
@@ -154,12 +155,12 @@ func (s *ExpenseService) ChangeExpenseStatus(
 		// the columns its transition owns (so, e.g., approve preserves submitted_at).
 		switch action {
 		case "submit":
-			updated, err = qtx.SubmitExpense(ctx, expenses.SubmitExpenseParams{
+			updated, err = qtx.SubmitExpense(ctx, expensesdb.SubmitExpenseParams{
 				ID:             expenseUUID,
 				OrganisationID: authOrgID,
 			})
 		case "approve":
-			updated, err = qtx.ApproveExpense(ctx, expenses.ApproveExpenseParams{
+			updated, err = qtx.ApproveExpense(ctx, expensesdb.ApproveExpenseParams{
 				ID:             expenseUUID,
 				OrganisationID: authOrgID,
 				// uuid.UUID's underlying type is [16]byte, so it assigns straight
@@ -167,19 +168,19 @@ func (s *ExpenseService) ChangeExpenseStatus(
 				ApprovedByUserID: pgtype.UUID{Bytes: authUserID, Valid: true},
 			})
 		case "reject":
-			updated, err = qtx.RejectExpense(ctx, expenses.RejectExpenseParams{
+			updated, err = qtx.RejectExpense(ctx, expensesdb.RejectExpenseParams{
 				ID:             expenseUUID,
 				OrganisationID: authOrgID,
 				RejectionNote:  pgtype.Text{String: rejectionNote, Valid: true},
 			})
 		case "reopen":
-			updated, err = qtx.ReopenExpense(ctx, expenses.ReopenExpenseParams{
+			updated, err = qtx.ReopenExpense(ctx, expensesdb.ReopenExpenseParams{
 				ID:             expenseUUID,
 				OrganisationID: authOrgID,
 			})
 		}
 		if err != nil {
-			return ErrInternal(err)
+			return kernel.ErrInternal(err)
 		}
 		return nil
 	})
@@ -198,7 +199,7 @@ func (s *ExpenseService) ChangeExpenseStatus(
 	// (A transactional outbox is the durability upgrade — see BACKLOG.)
 	if action == "approve" && s.publisher != nil {
 		ev := ExpenseApprovedEvent{
-			Event:          eventExpenseApproved,
+			Event:          EventExpenseApproved,
 			OrganisationID: authOrgID,
 			ExpenseID:      expenseUUID,
 			OccurredAt:     time.Now().UTC(),
@@ -221,7 +222,7 @@ func (s *ExpenseService) ChangeExpenseStatus(
 // Unlike the best-effort publish on the approval path, this one SURFACES a publish
 // failure to the caller (they asked for it explicitly and want to know it worked).
 // Owner/admin only; org-scoped; only APPROVED expenses are pushable.
-func (s *ExpenseService) RepublishApprovedExpense(
+func (s *Service) RepublishApprovedExpense(
 	ctx context.Context,
 	authUserID uuid.UUID,
 	authOrgID uuid.UUID,
@@ -229,43 +230,43 @@ func (s *ExpenseService) RepublishApprovedExpense(
 ) error {
 	expenseUUID, err := uuid.Parse(id)
 	if err != nil {
-		return ErrValidation("id is not a valid UUID", err)
+		return kernel.ErrValidation("id is not a valid UUID", err)
 	}
 
 	role, err := s.authorize(ctx, authUserID, authOrgID)
 	if err != nil {
 		return err
 	}
-	if !isOrgAdmin(role) {
-		return ErrForbidden("only an owner or admin can push an expense to FreeAgent")
+	if !kernel.IsOrgAdmin(role) {
+		return kernel.ErrForbidden("only an owner or admin can push an expense to FreeAgent")
 	}
 
 	// Load the expense org-scoped (a cross-tenant id is simply not found → 404).
-	existing, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{
+	existing, err := s.queries.GetExpense(ctx, expensesdb.GetExpenseParams{
 		ID:             expenseUUID,
 		OrganisationID: authOrgID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound("expense", id)
+			return kernel.ErrNotFound("expense", id)
 		}
-		return ErrInternal(err)
+		return kernel.ErrInternal(err)
 	}
 	if existing.Status != StatusApproved {
-		return ErrConflict("only approved expenses can be pushed to FreeAgent")
+		return kernel.ErrConflict("only approved expenses can be pushed to FreeAgent")
 	}
 	if s.publisher == nil {
-		return ErrConflict("event publishing is not configured")
+		return kernel.ErrConflict("event publishing is not configured")
 	}
 
 	ev := ExpenseApprovedEvent{
-		Event:          eventExpenseApproved,
+		Event:          EventExpenseApproved,
 		OrganisationID: authOrgID,
 		ExpenseID:      expenseUUID,
 		OccurredAt:     time.Now().UTC(),
 	}
 	if err := s.publisher.PublishExpenseApproved(ctx, ev); err != nil {
-		return ErrInternal(err)
+		return kernel.ErrInternal(err)
 	}
 	return nil
 }

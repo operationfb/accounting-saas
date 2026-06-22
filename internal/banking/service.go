@@ -70,14 +70,14 @@ func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Q
 // are *bool so a missing field means "checked".
 type CreateBankAccountRequest struct {
 	Name               string  `json:"name" binding:"required,max=200"`
-	Currency           string  `json:"currency" binding:"omitempty,len=3"`           // default GBP
+	Currency           string  `json:"currency" binding:"omitempty,len=3"`             // default GBP
 	Status             string  `json:"status" binding:"omitempty,oneof=active closed"` // default active
 	IsPersonal         bool    `json:"is_personal"`
 	IsPrimary          bool    `json:"is_primary"`
 	BankName           *string `json:"bank_name"`
 	AccountNumber      *string `json:"account_number"`
-	SortCode           *string `json:"sort_code"`        // UK
-	RoutingNumber      *string `json:"routing_number"`   // US ABA
+	SortCode           *string `json:"sort_code"`                                                    // UK
+	RoutingNumber      *string `json:"routing_number"`                                               // US ABA
 	BankAccountType    *string `json:"bank_account_type" binding:"omitempty,oneof=checking savings"` // US
 	IBAN               *string `json:"iban"`
 	BIC                *string `json:"bic"`
@@ -113,8 +113,8 @@ type BankAccountResponse struct {
 	// the opening balance is the running-balance seed, so it locks after the first
 	// line (changing it would silently shift every later balance). True on create
 	// and for an account with no transactions yet.
-	OpeningBalanceEditable bool `json:"opening_balance_editable"`
-	GuessExplanations      bool `json:"guess_explanations"`
+	OpeningBalanceEditable bool   `json:"opening_balance_editable"`
+	GuessExplanations      bool   `json:"guess_explanations"`
 	CreatedAt              string `json:"created_at"`
 	UpdatedAt              string `json:"updated_at"`
 }
@@ -362,7 +362,7 @@ func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64) *B
 // Amount is a POSITIVE pound string plus a direction; the service signs it into
 // amount_minor. Reused for create and update.
 type CreateBankTransactionRequest struct {
-	DatedOn     string  `json:"dated_on" binding:"required"`               // YYYY-MM-DD
+	DatedOn     string  `json:"dated_on" binding:"required"` // YYYY-MM-DD
 	Description *string `json:"description"`
 	Direction   string  `json:"direction" binding:"required,oneof=in out"` // money in / money out
 	Amount      string  `json:"amount" binding:"required"`                 // pounds, positive
@@ -751,29 +751,29 @@ func parseOptionalDate(s *string) (pgtype.Date, error) {
 // nullable columns become *string (kernel.NullTextToPtr).
 func bankAccountToResponse(a banking.BankAccount, currentBalanceMinor int64, openingBalanceEditable bool) *BankAccountResponse {
 	return &BankAccountResponse{
-		ID:                 a.ID.String(),
-		OrganisationID:     a.OrganisationID.String(),
-		CreatedByUserID:    a.CreatedByUserID.String(),
-		Name:               a.Name,
-		Currency:           a.Currency,
-		Status:             a.Status,
-		IsPersonal:         a.IsPersonal,
-		IsPrimary:          a.IsPrimary,
-		BankName:           kernel.NullTextToPtr(a.BankName),
-		AccountNumber:      kernel.NullTextToPtr(a.AccountNumber),
-		SortCode:           kernel.NullTextToPtr(a.SortCode),
-		RoutingNumber:      kernel.NullTextToPtr(a.RoutingNumber),
-		BankAccountType:    kernel.NullTextToPtr(a.BankAccountType),
-		IBAN:               kernel.NullTextToPtr(a.Iban),
-		BIC:                kernel.NullTextToPtr(a.Bic),
-		ShowOnInvoices:     a.ShowOnInvoices,
-		OpeningBalance:     money.MinorToPounds(a.OpeningBalanceMinor),
-		CurrentBalance:     money.MinorToPounds(currentBalanceMinor),
+		ID:                     a.ID.String(),
+		OrganisationID:         a.OrganisationID.String(),
+		CreatedByUserID:        a.CreatedByUserID.String(),
+		Name:                   a.Name,
+		Currency:               a.Currency,
+		Status:                 a.Status,
+		IsPersonal:             a.IsPersonal,
+		IsPrimary:              a.IsPrimary,
+		BankName:               kernel.NullTextToPtr(a.BankName),
+		AccountNumber:          kernel.NullTextToPtr(a.AccountNumber),
+		SortCode:               kernel.NullTextToPtr(a.SortCode),
+		RoutingNumber:          kernel.NullTextToPtr(a.RoutingNumber),
+		BankAccountType:        kernel.NullTextToPtr(a.BankAccountType),
+		IBAN:                   kernel.NullTextToPtr(a.Iban),
+		BIC:                    kernel.NullTextToPtr(a.Bic),
+		ShowOnInvoices:         a.ShowOnInvoices,
+		OpeningBalance:         money.MinorToPounds(a.OpeningBalanceMinor),
+		CurrentBalance:         money.MinorToPounds(currentBalanceMinor),
 		OpeningBalanceDate:     dateToPtr(a.OpeningBalanceDate),
 		OpeningBalanceEditable: openingBalanceEditable,
 		GuessExplanations:      a.GuessExplanations,
-		CreatedAt:          a.CreatedAt.Time.Format(time.RFC3339),
-		UpdatedAt:          a.UpdatedAt.Time.Format(time.RFC3339),
+		CreatedAt:              a.CreatedAt.Time.Format(time.RFC3339),
+		UpdatedAt:              a.UpdatedAt.Time.Format(time.RFC3339),
 	}
 }
 

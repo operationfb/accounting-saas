@@ -40,7 +40,8 @@ import (
 	"google.golang.org/api/iterator"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
 
@@ -116,7 +117,7 @@ func gcsObjectsUnder(t *testing.T, prefix string) []string {
 
 // uploadAs uploads one file through the service and registers cleanup that
 // removes the row and its GCS object afterwards.
-func uploadAs(t *testing.T, ts *testServer, callerID, orgID, expenseID, filename string, data []byte, desc *string) *AttachmentResponse {
+func uploadAs(t *testing.T, ts *testServer, callerID, orgID, expenseID, filename string, data []byte, desc *string) *expenses.AttachmentResponse {
 	t.Helper()
 	resp, err := ts.server.attachmentService.UploadAttachment(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID),
@@ -402,7 +403,7 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
 	// 8-byte cap, sharing the configured real storage.
-	tiny := NewAttachmentService(ts.pool, expenses.New(ts.pool), auth.New(ts.pool),
+	tiny := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
 		ts.server.attachmentService.storage, nil, 8, 0)
 
 	data := samplePDF() // comfortably larger than 8 bytes
@@ -505,7 +506,7 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 			t.Fatalf("open pool: %v", err)
 		}
 		badPool.Close() // every query now fails
-		badSvc := NewAttachmentService(badPool, expenses.New(badPool), auth.New(badPool),
+		badSvc := NewAttachmentService(badPool, dbexpenses.New(badPool), auth.New(badPool),
 			ts.server.attachmentService.storage, nil, 0, 0)
 
 		_, err = badSvc.UploadAttachment(
@@ -562,7 +563,7 @@ func TestAttachment_OrphanCleanup(t *testing.T) {
 	t.Cleanup(pool.Close) // Close is idempotent; the spy may already have closed it
 
 	spy := &poolClosingStorage{inner: ts.server.attachmentService.storage, pool: pool}
-	svc := NewAttachmentService(pool, expenses.New(pool), auth.New(pool), spy, nil, 0, 0)
+	svc := NewAttachmentService(pool, dbexpenses.New(pool), auth.New(pool), spy, nil, 0, 0)
 
 	_, err = svc.UploadAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),

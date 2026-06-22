@@ -6,7 +6,16 @@ import {
   type BankAccount,
   type BankTransaction,
   type CreateBankAccountRequest,
+  type CreateBankTransactionRequest,
 } from '@/types/bank-account'
+
+// Statement payload shared by the read + the three transaction mutations (all return
+// the refreshed { account, transactions }). An empty list may arrive as null → [].
+type Statement = { account: BankAccount; transactions: BankTransaction[] }
+function parseStatement(data: unknown): Statement {
+  const parsed = BankAccountTransactionsResponseSchema.parse(data)
+  return { account: parsed.account, transactions: parsed.transactions ?? [] }
+}
 
 // GET /api/v1/bank-accounts — every account in the caller's organisation, each
 // with its derived current balance. The bearer token is attached by apiFetch, and
@@ -44,10 +53,45 @@ export async function updateBankAccount(id: string, payload: CreateBankAccountRe
 // GET /api/v1/bank-accounts/:id/transactions — the read-only statement: the account
 // (header/sidebar/opening balance) plus its lines, oldest first, each with a running
 // balance computed server-side. The transactions list may arrive as null → default [].
-export async function getBankAccountTransactions(
-  id: string,
-): Promise<{ account: BankAccount; transactions: BankTransaction[] }> {
+export async function getBankAccountTransactions(id: string): Promise<Statement> {
   const data = await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(id)}/transactions`, { method: 'GET' })
-  const parsed = BankAccountTransactionsResponseSchema.parse(data)
-  return { account: parsed.account, transactions: parsed.transactions ?? [] }
+  return parseStatement(data)
+}
+
+// POST /api/v1/bank-accounts/:id/transactions — add a manual transaction (owner/admin).
+// Returns the refreshed statement.
+export async function createBankTransaction(accountId: string, payload: CreateBankTransactionRequest): Promise<Statement> {
+  const data = await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(accountId)}/transactions`, {
+    method: 'POST',
+    body: payload,
+  })
+  return parseStatement(data)
+}
+
+// PUT /api/v1/bank-accounts/:id/transactions/:txnId — edit a manual transaction (owner/admin).
+export async function updateBankTransaction(
+  accountId: string,
+  txnId: string,
+  payload: CreateBankTransactionRequest,
+): Promise<Statement> {
+  const data = await apiFetch<unknown>(
+    `/bank-accounts/${encodeURIComponent(accountId)}/transactions/${encodeURIComponent(txnId)}`,
+    { method: 'PUT', body: payload },
+  )
+  return parseStatement(data)
+}
+
+// DELETE /api/v1/bank-accounts/:id/transactions/:txnId — remove a manual transaction (owner/admin).
+export async function deleteBankTransaction(accountId: string, txnId: string): Promise<Statement> {
+  const data = await apiFetch<unknown>(
+    `/bank-accounts/${encodeURIComponent(accountId)}/transactions/${encodeURIComponent(txnId)}`,
+    { method: 'DELETE' },
+  )
+  return parseStatement(data)
+}
+
+// DELETE /api/v1/bank-accounts/:id — soft-delete the account (owner/admin). Returns 204
+// (no body); apiFetch tolerates the empty body, so we just await success.
+export async function deleteBankAccount(id: string): Promise<void> {
+  await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

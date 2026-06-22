@@ -32,7 +32,8 @@ import (
 	"github.com/shopspring/decimal"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	// Dot-import: these capture→OCR integration tests reference many of the ocr
 	// package's symbols (OcrService, NewOcrService, ExtractionResult,
 	// DocumentTypeReceipt, …). A dot-import in this test file keeps them unqualified
@@ -82,9 +83,9 @@ func (s *spyEnqueuer) Enqueue(attID, orgID uuid.UUID, documentType string) {
 // captureAs runs a Smart Upload through a service wired with the given OCR
 // enqueuer (usually a spy, so OCR doesn't auto-run), and registers cleanup of
 // the expense + attachment + GCS object. Returns the new draft detail response.
-func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, documentType, filename string, data []byte) *ExpenseDetailResponse {
+func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, documentType, filename string, data []byte) *expenses.ExpenseDetailResponse {
 	t.Helper()
-	svc := NewAttachmentService(ts.pool, expenses.New(ts.pool), auth.New(ts.pool),
+	svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
 		ts.server.attachmentService.storage, ocr, 0, 0)
 	resp, err := svc.CaptureFromReceipt(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID),
@@ -107,10 +108,10 @@ func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, d
 // newOCRService builds an OcrService against the test pool + real storage with
 // the given (fake) extractor.
 func newOCRService(ts *testServer, ext DocumentExtractor) *OcrService {
-	return NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
+	return NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
 }
 
-func containsExpense(list []*ExpenseResponse, id string) bool {
+func containsExpense(list []*expenses.ExpenseResponse, id string) bool {
 	for _, e := range list {
 		if e.ID == id {
 			return true
@@ -173,7 +174,7 @@ func TestSmartUploadCapture(t *testing.T) {
 	})
 
 	t.Run("invalid document_type is rejected", func(t *testing.T) {
-		svc := NewAttachmentService(ts.pool, expenses.New(ts.pool), auth.New(ts.pool),
+		svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
 			ts.server.attachmentService.storage, &spyEnqueuer{}, 0, 0)
 		_, err := svc.CaptureFromReceipt(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			"banana", "x.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()))
@@ -183,7 +184,7 @@ func TestSmartUploadCapture(t *testing.T) {
 	t.Run("Add file does NOT enqueue OCR", func(t *testing.T) {
 		// The standard attachment path must stay plain — no OCR, no needs_review.
 		spy := &spyEnqueuer{}
-		svc := NewAttachmentService(ts.pool, expenses.New(ts.pool), auth.New(ts.pool),
+		svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
 			ts.server.attachmentService.storage, spy, 0, 0)
 		expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 		resp, err := svc.UploadAttachment(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
@@ -262,7 +263,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		}
 
 		// Expense → fields filled; needs_review STILL true (OCR ≠ confirmation).
-		detail, err := ts.server.expenseService.GetExpenseDetail(context.Background(), devUser, devOrg, draft.ID)
+		detail, err := ts.expenseService.GetExpenseDetail(context.Background(), devUser, devOrg, draft.ID)
 		if err != nil {
 			t.Fatalf("GetExpenseDetail: %v", err)
 		}
@@ -367,7 +368,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
 		// maxBytes=4 (smaller than samplePDF()) so the size guard trips → SKIPPED.
-		svc := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage,
+		svc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage,
 			&fakeExtractor{result: &ExtractionResult{}}, placeholderDescription, WithMaxBytes(4))
 		if err := svc.Process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
 			t.Fatalf("process: %v", err)
@@ -420,7 +421,7 @@ func TestOCRInboxAndConfirm(t *testing.T) {
 	draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
 
 	// 1) The capture appears in this org's inbox.
-	inbox, err := ts.server.expenseService.ListInbox(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID))
+	inbox, err := ts.expenseService.ListInbox(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID))
 	if err != nil {
 		t.Fatalf("ListInbox: %v", err)
 	}
@@ -430,7 +431,7 @@ func TestOCRInboxAndConfirm(t *testing.T) {
 
 	// 2) Multi-tenant: a genuine member of another org never sees it.
 	orgB, userB := newOrgWithOwner(t, ts)
-	inboxB, err := ts.server.expenseService.ListInbox(context.Background(), mustUUID(t, userB), mustUUID(t, orgB))
+	inboxB, err := ts.expenseService.ListInbox(context.Background(), mustUUID(t, userB), mustUUID(t, orgB))
 	if err != nil {
 		t.Fatalf("ListInbox orgB: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestOCRInboxAndConfirm(t *testing.T) {
 	}
 
 	// 4) ...and it has left the inbox.
-	inboxAfter, err := ts.server.expenseService.ListInbox(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID))
+	inboxAfter, err := ts.expenseService.ListInbox(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID))
 	if err != nil {
 		t.Fatalf("ListInbox after confirm: %v", err)
 	}
@@ -488,7 +489,7 @@ func TestDocumentAILive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not build Document AI extractor: %v", err)
 	}
-	ocrSvc := NewOcrService(ts.pool, expenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
+	ocrSvc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
 	devOrg := mustUUID(t, devOrgID)
 	pdf := buildInvoicePDF() // a valid single-page PDF with real invoice text
 
@@ -522,7 +523,7 @@ func TestDocumentAILive(t *testing.T) {
 			}
 
 			// Surface what the real API actually produced (visible with -v).
-			detail, err := ts.server.expenseService.GetExpenseDetail(context.Background(), mustUUID(t, devUserID), devOrg, draft.ID)
+			detail, err := ts.expenseService.GetExpenseDetail(context.Background(), mustUUID(t, devUserID), devOrg, draft.ID)
 			if err != nil {
 				t.Fatalf("GetExpenseDetail: %v", err)
 			}

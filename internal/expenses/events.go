@@ -1,4 +1,4 @@
-package main
+package expenses
 
 // events.go
 // =============================================================================
@@ -20,16 +20,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// eventExpenseApproved is the event-type string carried in the payload and as a
+// EventExpenseApproved is the event-type string carried in the payload and as a
 // Pub/Sub message attribute (so a subscription can filter on it).
-const eventExpenseApproved = "expense.approved"
+const EventExpenseApproved = "expense.approved"
 
 // ExpenseApprovedEvent is the payload published when an expense is approved. It
 // carries IDs only (not a full snapshot): the workflow fetches the authoritative
 // current data from the internal endpoint, so the message stays small and can't go
 // stale.
 type ExpenseApprovedEvent struct {
-	Event          string    `json:"event"` // always eventExpenseApproved
+	Event          string    `json:"event"` // always EventExpenseApproved
 	OrganisationID uuid.UUID `json:"organisation_id"`
 	ExpenseID      uuid.UUID `json:"expense_id"`
 	OccurredAt     time.Time `json:"occurred_at"`

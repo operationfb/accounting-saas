@@ -28,7 +28,8 @@ import (
 
 	"github.com/google/uuid"
 
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 )
 
 func TestListVatRatesByCountry(t *testing.T) {
@@ -37,8 +38,8 @@ func TestListVatRatesByCountry(t *testing.T) {
 
 	ctx := context.Background()
 	// The query lives in the expenses package (vat_rates is defined in
-	// schema.sql). expenses.New wraps the pool so we can call it directly.
-	q := expenses.New(ts.pool)
+	// schema.sql). dbexpenses.New wraps the pool so we can call it directly.
+	q := dbexpenses.New(ts.pool)
 
 	// -------------------------------------------------------------------------
 	// Happy path: GB returns the seeded rates that are valid TODAY, with the
@@ -53,7 +54,7 @@ func TestListVatRatesByCountry(t *testing.T) {
 			t.Fatal(`no GB vat_rates found — run the seed: psql "$DATABASE_URL" -f db/seeds/vat_rates.sql`)
 		}
 
-		byName := make(map[string]expenses.ListVatRatesByCountryRow, len(rows))
+		byName := make(map[string]dbexpenses.ListVatRatesByCountryRow, len(rows))
 		for _, r := range rows {
 			// Every row the query returns must be for the requested country.
 			if r.CountryCode != "GB" {
@@ -156,7 +157,7 @@ func TestHandleListVATRates(t *testing.T) {
 		}
 
 		var resp struct {
-			VATRates []VATRateResponse `json:"vat_rates"`
+			VATRates []expenses.VATRateResponse `json:"vat_rates"`
 		}
 		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -165,7 +166,7 @@ func TestHandleListVATRates(t *testing.T) {
 			t.Fatal(`expected GB vat_rates — run the seed: psql "$DATABASE_URL" -f db/seeds/vat_rates.sql`)
 		}
 
-		byName := make(map[string]VATRateResponse, len(resp.VATRates))
+		byName := make(map[string]expenses.VATRateResponse, len(resp.VATRates))
 		for _, r := range resp.VATRates {
 			byName[r.Name] = r
 			if r.ID == "" {

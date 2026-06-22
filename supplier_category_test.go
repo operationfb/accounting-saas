@@ -28,6 +28,7 @@ import (
 	// Dot-import (test-only, this file): the auto-categorise test references the
 	// ocr package's ExtractionResult + DocumentTypeReceipt and drives OcrService;
 	// dot-importing keeps them unqualified, as before the package split.
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	. "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
@@ -260,7 +261,7 @@ func TestSupplierCategoryAutoCategorise(t *testing.T) {
 		return id
 	}
 
-	runOCR := func(t *testing.T, draft *ExpenseDetailResponse, supplier string) {
+	runOCR := func(t *testing.T, draft *expenses.ExpenseDetailResponse, supplier string) {
 		t.Helper()
 		fake := &fakeExtractor{result: &ExtractionResult{SupplierName: &supplier, Confidence: decimal.NewFromInt(1)}}
 		if err := newOCRService(ts, fake).Process(context.Background(),

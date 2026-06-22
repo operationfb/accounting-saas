@@ -31,12 +31,13 @@ import (
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
@@ -118,9 +119,9 @@ func main() {
 	//
 	//    NewServer wires the service into a Gin router — defined in server.go.
 	// -------------------------------------------------------------------------
-	queries := expenses.New(pool)
+	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
-	service := NewExpenseService(pool, queries, authQueries)
+	service := expenses.NewService(pool, queries, authQueries)
 
 	// Contacts + Projects each have their own sqlc package + internal service and
 	// self-register routes after NewServer (per-domain pattern). They share
@@ -348,11 +349,11 @@ func main() {
 	// must already exist (provisioned out-of-band — see the plan's infra section).
 	// -------------------------------------------------------------------------
 	if topicID := os.Getenv("PUBSUB_EXPENSE_APPROVED_TOPIC"); topicID != "" {
-		pub, pubErr := newPubsubPublisher(context.Background(), os.Getenv("GOOGLE_CLOUD_PROJECT"), topicID)
+		pub, pubErr := expenses.NewPubSubPublisher(context.Background(), os.Getenv("GOOGLE_CLOUD_PROJECT"), topicID)
 		if pubErr != nil {
 			log.Fatalf("could not initialise Pub/Sub publisher: %v", pubErr)
 		}
-		service.publisher = pub
+		service.SetPublisher(pub)
 		log.Printf("expense-approved events: publishing to Pub/Sub topic %q", topicID)
 	} else {
 		log.Println("expense-approved events: PUBSUB_EXPENSE_APPROVED_TOPIC not set — publishing disabled")
@@ -370,7 +371,13 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, emailInboxService, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(attachmentService, emailInboxService, tokenMaker, mailgunSigningKey, corsOrigins)
+
+	// Expenses (the core domain) self-registers its CRUD + reference-data routes
+	// on the shared engine, like every other domain. The attachment sub-resource
+	// (/expenses/:id/attachments, /capture) is still registered by NewServer until
+	// the attachments domain is extracted.
+	expenses.NewHandler(service).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Each integration registers its OWN routes on the shared engine (the
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in

@@ -17,17 +17,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 )
 
 // fakeEventPublisher records published events and can be told to return an error.
 // The publish happens synchronously inside ChangeExpenseStatus, so no locking is
 // needed for these single-threaded tests.
 type fakeEventPublisher struct {
-	events []ExpenseApprovedEvent
+	events []expenses.ExpenseApprovedEvent
 	err    error
 }
 
-func (f *fakeEventPublisher) PublishExpenseApproved(_ context.Context, e ExpenseApprovedEvent) error {
+func (f *fakeEventPublisher) PublishExpenseApproved(_ context.Context, e expenses.ExpenseApprovedEvent) error {
 	f.events = append(f.events, e)
 	return f.err
 }
@@ -40,10 +42,10 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 
 	t.Run("approve publishes one event with the right ids", func(t *testing.T) {
 		fake := &fakeEventPublisher{}
-		ts.server.expenseService.publisher = fake
+		ts.expenseService.SetPublisher(fake)
 
 		_, expenseID := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, expenseID, devAuth, ChangeExpenseStatusRequest{Action: "approve"})
+		rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -52,8 +54,8 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 			t.Fatalf("expected exactly 1 published event, got %d", len(fake.events))
 		}
 		ev := fake.events[0]
-		if ev.Event != eventExpenseApproved {
-			t.Errorf("event type: got %q, want %q", ev.Event, eventExpenseApproved)
+		if ev.Event != expenses.EventExpenseApproved {
+			t.Errorf("event type: got %q, want %q", ev.Event, expenses.EventExpenseApproved)
 		}
 		if ev.ExpenseID.String() != expenseID {
 			t.Errorf("expense id: got %s, want %s", ev.ExpenseID, expenseID)
@@ -68,12 +70,12 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 
 	t.Run("non-approve transitions publish nothing", func(t *testing.T) {
 		fake := &fakeEventPublisher{}
-		ts.server.expenseService.publisher = fake
+		ts.expenseService.SetPublisher(fake)
 
 		// submit is a transition, but only approve publishes.
 		member := newMemberUser(t, ts, devOrgID)
 		id := createExpenseAs(t, ts, member, devOrgID)
-		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("submit: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -84,16 +86,16 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 
 	t.Run("publish failure does not fail the approval (best-effort)", func(t *testing.T) {
 		fake := &fakeEventPublisher{err: errors.New("pubsub unavailable")}
-		ts.server.expenseService.publisher = fake
+		ts.expenseService.SetPublisher(fake)
 
 		_, expenseID := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, expenseID, devAuth, ChangeExpenseStatusRequest{Action: "approve"})
+		rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("approve with a failing publisher: expected 200 (best-effort), got %d — body: %s", rec.Code, rec.Body.String())
 		}
 		// The approval still committed despite the publish error.
-		if cols := readWorkflowCols(t, ts, expenseID); cols.status != StatusApproved {
-			t.Errorf("status after approve: got %q, want %q", cols.status, StatusApproved)
+		if cols := readWorkflowCols(t, ts, expenseID); cols.status != expenses.StatusApproved {
+			t.Errorf("status after approve: got %q, want %q", cols.status, expenses.StatusApproved)
 		}
 	})
 }
@@ -118,10 +120,10 @@ func TestRepushApprovedExpense(t *testing.T) {
 
 	t.Run("admin re-pushes an approved expense → 202 + one more event", func(t *testing.T) {
 		fake := &fakeEventPublisher{}
-		ts.server.expenseService.publisher = fake
+		ts.expenseService.SetPublisher(fake)
 
 		_, expenseID := submittedExpenseByMember(t, ts)
-		if rec := postStatus(t, ts, expenseID, devAuth, ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
+		if rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
 			t.Fatalf("approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 		before := len(fake.events) // 1, from the approval's auto-publish
@@ -136,7 +138,7 @@ func TestRepushApprovedExpense(t *testing.T) {
 	})
 
 	t.Run("non-approved (DRAFT) expense → 409", func(t *testing.T) {
-		ts.server.expenseService.publisher = &fakeEventPublisher{}
+		ts.expenseService.SetPublisher(&fakeEventPublisher{})
 		member := newMemberUser(t, ts, devOrgID)
 		id := createExpenseAs(t, ts, member, devOrgID) // DRAFT
 		rec := postRepush(t, ts, id, devAuth)
@@ -146,7 +148,7 @@ func TestRepushApprovedExpense(t *testing.T) {
 	})
 
 	t.Run("non-admin → 403", func(t *testing.T) {
-		ts.server.expenseService.publisher = &fakeEventPublisher{}
+		ts.expenseService.SetPublisher(&fakeEventPublisher{})
 		member := newMemberUser(t, ts, devOrgID)
 		id := createExpenseAs(t, ts, member, devOrgID)
 		rec := postRepush(t, ts, id, bearer(t, ts, member, devOrgID))

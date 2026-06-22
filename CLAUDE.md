@@ -49,8 +49,10 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 ├── server.go            # Gin engine + Server struct + route registration (incl. the public Mailgun webhook + /inbox-address) + expense & contact handlers
 │   # NOTE: auth + user profile were extracted to internal/userauth (2026-06-21):
 │   #   internal/userauth/ — AuthHandler (login + forgot/reset password; PUBLIC /api/v1/auth/* via RegisterRoutes) + the profile Service/Handler (GET/PUT /api/v1/profile) + the shared user/org DTOs (UserResponse, OrganisationResponse, NewUserResponse) + the reset-email content (email.go). EmailSender is a consumer-interface SEAM: the root smtpSender/logSender (email.go/email_smtp.go) satisfy it, injected by main.
-├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
-├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
+│   # NOTE: the EXPENSES CORE was extracted to internal/expenses (2026-06-22, Stage 1 of the expenses/attachments/email_inbox finale):
+│   #   internal/expenses/ — expenses.Service (was ExpenseService) + Handler (self-registers /api/v1/expenses* + /expense-categories + /vat-rates) + dto.go (the request/response DTOs) + expense_status.go (the approval state machine) + events.go/events_pubsub.go (EventPublisher + ExpenseApprovedEvent + the Pub/Sub impl, NewPubSubPublisher; main calls service.SetPublisher after construction). db/expenses is aliased `expensesdb` inside; `expenses` = the domain pkg.
+│   #   CYCLE RESOLUTION: AttachmentResponse + AttachmentToResponse live in internal/expenses (next to ExpenseDetailResponse + BuildExpenseDetail), because the expense detail embeds the attachment list AND attachments depends one-way on expenses. So attachments imports expenses (NOT the reverse).
+│   #   integrations still gets *expenses.Service as its ExpenseRepublisher seam; the root events_test.go uses service.SetPublisher (publisher field is now package-private).
 │   # NOTE: contacts + organisation (Company Details) were extracted to internal/ (2026-06-21):
 │   #   internal/contacts/      — contacts.Service + Handler + DTOs (CRUD over db/contacts; self-registers /api/v1/contacts*). db/contacts is aliased `contactsdb` inside.
 │   #   internal/organisation/  — organisation.Service + Handler + DTOs (Company Details; self-registers /api/v1/organisation).
@@ -60,7 +62,7 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 │   # NOTE: OCR + object storage were extracted OUT of the root into internal/ (2026-06-21):
 │   #   internal/ocr/      — OcrService + Document AI extractor (service.go + documentai.go). Exports Process / NewDocumentAIExtractor / ValidDocumentType / DocumentType*; the skeleton placeholderDescription is injected via NewOcrService (keeps attachments↔ocr decoupled).
 │   #   internal/storage/  — Storage interface + gcsStorage (storage.go + gcs.go; constructor storage.NewGCS; GCS SDK aliased `gcs`).
-│   # AttachmentService (attachment_service.go / attachment_handler.go) is NOT yet extracted — it stays in root, coupled to the expense DTO via CaptureFromReceipt (see BACKLOG.md). It already imports internal/storage + internal/ocr.
+│   # AttachmentService (attachment_service.go / attachment_handler.go) is Stage 2 of the finale — still in root for now, but it now imports internal/expenses (for AttachmentResponse / ExpenseDetailResponse / BuildExpenseDetail / PgDateFromTime), db/expenses as `expensesdb`, plus internal/storage + internal/ocr. NewServer still mounts its /capture + /:id/attachments routes until it moves.
 ├── inbound_email.go     # Email-to-expense: provider-neutral InboundEmail/InboundAttachment types + Mailgun HMAC signature check
 │   # internal/htmlrender/ — Renderer interface + gotenbergRenderer (HTML email body → PDF via Gotenberg; extracted from html_renderer.go 2026-06-21, constructor htmlrender.NewGotenberg). Used by email_inbox for the no-attachment fallback. email_inbox itself stays in root (coupled to AttachmentService.CaptureFromReceipt → expense DTO; see BACKLOG.md).
 ├── email_inbox_service.go   # EmailInboxService: Ingest (dedupe → route → sender-check → capture → HTML fallback) + GetOrCreateInboxAddress

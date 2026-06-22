@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 )
 
 // =============================================================================
@@ -71,10 +73,10 @@ func uploadRequest(t *testing.T, ts *testServer, authHeader, expenseID, filename
 }
 
 // decodeAttachment unwraps a {"attachment": {...}} envelope.
-func decodeAttachment(t *testing.T, rec *httptest.ResponseRecorder) AttachmentResponse {
+func decodeAttachment(t *testing.T, rec *httptest.ResponseRecorder) expenses.AttachmentResponse {
 	t.Helper()
 	var resp struct {
-		Attachment AttachmentResponse `json:"attachment"`
+		Attachment expenses.AttachmentResponse `json:"attachment"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode attachment: %v — body: %s", err, rec.Body.String())
@@ -94,7 +96,7 @@ func cleanupAttachment(t *testing.T, ts *testServer, expenseID, attachmentID str
 
 // uploadOK uploads as the dev owner, asserts 201, registers cleanup, and returns
 // the decoded attachment.
-func uploadOK(t *testing.T, ts *testServer, authHeader, expenseID, filename string, data []byte) AttachmentResponse {
+func uploadOK(t *testing.T, ts *testServer, authHeader, expenseID, filename string, data []byte) expenses.AttachmentResponse {
 	t.Helper()
 	rec := uploadRequest(t, ts, authHeader, expenseID, filename, data, nil)
 	if rec.Code != http.StatusCreated {
@@ -150,7 +152,7 @@ func TestAttachmentHandler_UploadAndList(t *testing.T) {
 		t.Fatalf("list: expected 200, got %d — body: %s", listRec.Code, listRec.Body.String())
 	}
 	var listResp struct {
-		Attachments []AttachmentResponse `json:"attachments"`
+		Attachments []expenses.AttachmentResponse `json:"attachments"`
 	}
 	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("decode list: %v", err)

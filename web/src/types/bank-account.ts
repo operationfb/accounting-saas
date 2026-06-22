@@ -83,11 +83,24 @@ export const BankTransactionSchema = z.object({
   bank_memo: z.string().nullish(),
   status: z.string(), // 'unexplained' | 'explained' | 'for_approval'
   source: z.string(), // 'feed' | 'manual' | 'statement'
+  is_manual: z.boolean(), // derived from source; gates the edit affordance
+  transaction_type: z.string().nullish(), // OFX type (CREDIT/DEBIT/…); reconcile UI later
   money_in: z.string().nullish(),
   money_out: z.string().nullish(),
+  unexplained_amount: z.string(), // signed; reconcile UI later
   running_balance: z.string(),
 })
 export type BankTransaction = z.infer<typeof BankTransactionSchema>
+
+// POST/PUT body for a MANUAL transaction. Amount is a positive pound string + a
+// direction (the backend signs it). Reused for create and edit.
+export interface CreateBankTransactionRequest {
+  dated_on: string // YYYY-MM-DD
+  description?: string
+  direction: 'in' | 'out'
+  amount: string // pounds, positive
+  bank_memo?: string
+}
 
 // GET /api/v1/bank-accounts/:id/transactions → { account, transactions } — the
 // account (header/sidebar/opening balance) plus its lines, oldest first.

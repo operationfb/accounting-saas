@@ -32,9 +32,9 @@ func NewService(queries currenciesdb.Querier) *Service {
 // CurrencyResponse is the JSON shape returned to clients. It mirrors the columns
 // the UI needs to render a currency picker.
 type CurrencyResponse struct {
-	Code   string  `json:"code"`            // ISO 4217 three-letter code, e.g. "GBP"
-	Name   string  `json:"name"`            // full name, e.g. "British Pound"
-	Symbol *string `json:"symbol"`          // e.g. "£"; null when no well-known symbol
+	Code   string  `json:"code"`   // ISO 4217 three-letter code, e.g. "GBP"
+	Name   string  `json:"name"`   // full name, e.g. "British Pound"
+	Symbol *string `json:"symbol"` // e.g. "£"; null when no well-known symbol
 	// MinorUnit is the number of decimal digits the currency uses (2 for most,
 	// 0 for JPY, 3 for KWD). The money kernel still assumes 2 dp today; this is
 	// exposed for the frontend and for future currency-aware conversion.

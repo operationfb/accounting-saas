@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 )
 
 // =============================================================================
@@ -32,7 +34,7 @@ import (
 
 // postStatus sends POST /api/v1/expenses/:id/status with the given auth header
 // (empty = none) and body, returning the recorder.
-func postStatus(t *testing.T, ts *testServer, id, authHeader string, body ChangeExpenseStatusRequest) *httptest.ResponseRecorder {
+func postStatus(t *testing.T, ts *testServer, id, authHeader string, body expenses.ChangeExpenseStatusRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	bodyBytes, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -85,7 +87,7 @@ func submittedExpenseByMember(t *testing.T, ts *testServer) (memberID, expenseID
 	t.Helper()
 	memberID = newMemberUser(t, ts, devOrgID)
 	expenseID = createExpenseAs(t, ts, memberID, devOrgID)
-	rec := postStatus(t, ts, expenseID, bearer(t, ts, memberID, devOrgID), ChangeExpenseStatusRequest{Action: "submit"})
+	rec := postStatus(t, ts, expenseID, bearer(t, ts, memberID, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("arrange submit: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
@@ -93,8 +95,8 @@ func submittedExpenseByMember(t *testing.T, ts *testServer) (memberID, expenseID
 }
 
 // getExpenseDetail GETs /api/v1/expenses/:id and decodes the {"expense": …}
-// detail envelope (ExpenseDetailResponse, sourced from v_expenses_full).
-func getExpenseDetail(t *testing.T, ts *testServer, id, authHeader string) ExpenseDetailResponse {
+// detail envelope (expenses.ExpenseDetailResponse, sourced from v_expenses_full).
+func getExpenseDetail(t *testing.T, ts *testServer, id, authHeader string) expenses.ExpenseDetailResponse {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "/api/v1/expenses/"+id, nil)
@@ -106,7 +108,7 @@ func getExpenseDetail(t *testing.T, ts *testServer, id, authHeader string) Expen
 		t.Fatalf("get detail: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Expense ExpenseDetailResponse `json:"expense"`
+		Expense expenses.ExpenseDetailResponse `json:"expense"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode detail: %v — body: %s", err, rec.Body.String())
@@ -134,16 +136,16 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 		member := newMemberUser(t, ts, devOrgID)
 		id := createExpenseAs(t, ts, member, devOrgID)
 
-		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
-		if got := decodeExpense(t, rec).Status; got != StatusSubmitted {
-			t.Errorf("response status: got %q, want %q", got, StatusSubmitted)
+		if got := decodeExpense(t, rec).Status; got != expenses.StatusSubmitted {
+			t.Errorf("response status: got %q, want %q", got, expenses.StatusSubmitted)
 		}
 		cols := readWorkflowCols(t, ts, id)
-		if cols.status != StatusSubmitted {
-			t.Errorf("db status: got %q, want %q", cols.status, StatusSubmitted)
+		if cols.status != expenses.StatusSubmitted {
+			t.Errorf("db status: got %q, want %q", cols.status, expenses.StatusSubmitted)
 		}
 		if cols.submittedAt == nil {
 			t.Error("submitted_at should be set after submit")
@@ -157,17 +159,17 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 			t.Fatal("precondition: submitted_at should be set after submit")
 		}
 
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "approve"})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
-		if got := decodeExpense(t, rec).Status; got != StatusApproved {
-			t.Errorf("response status: got %q, want %q", got, StatusApproved)
+		if got := decodeExpense(t, rec).Status; got != expenses.StatusApproved {
+			t.Errorf("response status: got %q, want %q", got, expenses.StatusApproved)
 		}
 
 		after := readWorkflowCols(t, ts, id)
-		if after.status != StatusApproved {
-			t.Errorf("db status: got %q, want %q", after.status, StatusApproved)
+		if after.status != expenses.StatusApproved {
+			t.Errorf("db status: got %q, want %q", after.status, expenses.StatusApproved)
 		}
 		if after.approvedAt == nil {
 			t.Error("approved_at should be set after approve")
@@ -189,17 +191,17 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 		before := readWorkflowCols(t, ts, id)
 
 		const note = "Missing VAT receipt — please attach and resubmit."
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
-		if got := decodeExpense(t, rec).Status; got != StatusRejected {
-			t.Errorf("response status: got %q, want %q", got, StatusRejected)
+		if got := decodeExpense(t, rec).Status; got != expenses.StatusRejected {
+			t.Errorf("response status: got %q, want %q", got, expenses.StatusRejected)
 		}
 
 		after := readWorkflowCols(t, ts, id)
-		if after.status != StatusRejected {
-			t.Errorf("db status: got %q, want %q", after.status, StatusRejected)
+		if after.status != expenses.StatusRejected {
+			t.Errorf("db status: got %q, want %q", after.status, expenses.StatusRejected)
 		}
 		if after.rejectionNote == nil || *after.rejectionNote != note {
 			t.Errorf("rejection_note: got %v, want %q", after.rejectionNote, note)
@@ -212,20 +214,20 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	t.Run("reopen: rejected → DRAFT, workflow metadata cleared", func(t *testing.T) {
 		member, id := submittedExpenseByMember(t, ts)
 		// Walk to REJECTED first (admin rejects).
-		if rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "fix it"}); rec.Code != http.StatusOK {
+		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "fix it"}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange reject: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 		// The claimant reopens their own rejected expense.
-		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "reopen"})
+		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "reopen"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
-		if got := decodeExpense(t, rec).Status; got != StatusDraft {
-			t.Errorf("response status: got %q, want %q", got, StatusDraft)
+		if got := decodeExpense(t, rec).Status; got != expenses.StatusDraft {
+			t.Errorf("response status: got %q, want %q", got, expenses.StatusDraft)
 		}
 		cols := readWorkflowCols(t, ts, id)
-		if cols.status != StatusDraft {
-			t.Errorf("db status: got %q, want %q", cols.status, StatusDraft)
+		if cols.status != expenses.StatusDraft {
+			t.Errorf("db status: got %q, want %q", cols.status, expenses.StatusDraft)
 		}
 		if cols.submittedAt != nil || cols.approvedAt != nil || cols.approvedBy != nil || cols.rejectionNote != nil {
 			t.Errorf("reopen must clear submitted_at/approved_at/approved_by/rejection_note, got %+v", cols)
@@ -243,11 +245,11 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 			{"approve a DRAFT", "", "approve"},
 			{"reject a DRAFT", "", "reject"},
 			{"reopen a DRAFT", "", "reopen"},
-			{"submit a SUBMITTED", StatusSubmitted, "submit"},
-			{"reopen a SUBMITTED", StatusSubmitted, "reopen"},
-			{"submit an APPROVED", StatusApproved, "submit"},
-			{"approve an APPROVED", StatusApproved, "approve"},
-			{"reopen an APPROVED", StatusApproved, "reopen"},
+			{"submit a SUBMITTED", expenses.StatusSubmitted, "submit"},
+			{"reopen a SUBMITTED", expenses.StatusSubmitted, "reopen"},
+			{"submit an APPROVED", expenses.StatusApproved, "submit"},
+			{"approve an APPROVED", expenses.StatusApproved, "approve"},
+			{"reopen an APPROVED", expenses.StatusApproved, "reopen"},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -255,7 +257,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 				if tc.setup != "" {
 					setExpenseStatus(t, ts, id, tc.setup)
 				}
-				body := ChangeExpenseStatusRequest{Action: tc.action}
+				body := expenses.ChangeExpenseStatusRequest{Action: tc.action}
 				if tc.action == "reject" {
 					body.RejectionNote = "n/a" // satisfy binding so we reach the state check
 				}
@@ -271,7 +273,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 
 	t.Run("non-admin claimant cannot approve own submitted → 403", func(t *testing.T) {
 		member, id := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "approve"})
+		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -279,7 +281,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 
 	t.Run("non-admin claimant cannot reject own submitted → 403", func(t *testing.T) {
 		member, id := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "self-reject?"})
+		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "self-reject?"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -288,7 +290,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	t.Run("member cannot submit another user's draft → 403", func(t *testing.T) {
 		ownerDraft := createExpenseAs(t, ts, devUserID, devOrgID)
 		member := newMemberUser(t, ts, devOrgID)
-		rec := postStatus(t, ts, ownerDraft, bearer(t, ts, member, devOrgID), ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, ownerDraft, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -296,7 +298,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 
 	t.Run("owner/admin can approve a member's submitted expense → 200", func(t *testing.T) {
 		_, id := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "approve"})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -306,7 +308,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 
 	t.Run("reject without note → 400 (binding)", func(t *testing.T) {
 		_, id := submittedExpenseByMember(t, ts)
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject"})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -317,7 +319,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 		// A single space passes the `required_if` binding (it's non-empty) but the
 		// service trims it and rejects → 422, exercising the service-layer guard
 		// that exists independently of the HTTP binding.
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "   "})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "   "})
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -325,7 +327,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 
 	t.Run("unknown action → 400 (binding)", func(t *testing.T) {
 		id := createExpenseAs(t, ts, devUserID, devOrgID)
-		rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "frobnicate"})
+		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "frobnicate"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -334,7 +336,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	// ---- Auth required → 401 ----------------------------------------------
 
 	t.Run("requires auth → 401", func(t *testing.T) {
-		rec := postStatus(t, ts, uuid.NewString(), "", ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, uuid.NewString(), "", expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -347,14 +349,14 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 		orgB, userB := newOrgWithOwner(t, ts)
 		// Org B's owner is an active admin in their own org (so authorize passes),
 		// but the expense isn't in org B's scope → 404 (existence not revealed).
-		rec := postStatus(t, ts, expenseA, bearer(t, ts, userB, orgB), ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, expenseA, bearer(t, ts, userB, orgB), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("cross-tenant: expected 404, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("unknown id → 404", func(t *testing.T) {
-		rec := postStatus(t, ts, uuid.NewString(), devAuth, ChangeExpenseStatusRequest{Action: "submit"})
+		rec := postStatus(t, ts, uuid.NewString(), devAuth, expenses.ChangeExpenseStatusRequest{Action: "submit"})
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -374,17 +376,17 @@ func TestChangeExpenseStatusServiceGuards(t *testing.T) {
 	caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 
 	t.Run("bad UUID → validation error", func(t *testing.T) {
-		_, err := ts.server.expenseService.ChangeExpenseStatus(ctx, caller, org, "not-a-uuid", "submit", "")
+		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, "not-a-uuid", "submit", "")
 		assertAppCode(t, err, ErrCodeValidation)
 	})
 
 	t.Run("unknown action → validation error", func(t *testing.T) {
-		_, err := ts.server.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "frobnicate", "")
+		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "frobnicate", "")
 		assertAppCode(t, err, ErrCodeValidation)
 	})
 
 	t.Run("reject with empty note → validation error", func(t *testing.T) {
-		_, err := ts.server.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "reject", "")
+		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "reject", "")
 		assertAppCode(t, err, ErrCodeValidation)
 	})
 }
@@ -402,13 +404,13 @@ func TestExpenseDetailExposesApprovalFields(t *testing.T) {
 	t.Run("rejected: rejection_note set, approved_by_user_id nil", func(t *testing.T) {
 		_, id := submittedExpenseByMember(t, ts)
 		const note = "Receipt is illegible — please re-upload."
-		if rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note}); rec.Code != http.StatusOK {
+		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange reject: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 
 		d := getExpenseDetail(t, ts, id, devAuth)
-		if d.Status != StatusRejected {
-			t.Fatalf("status: got %q, want %q", d.Status, StatusRejected)
+		if d.Status != expenses.StatusRejected {
+			t.Fatalf("status: got %q, want %q", d.Status, expenses.StatusRejected)
 		}
 		if d.RejectionNote == nil || *d.RejectionNote != note {
 			t.Errorf("rejection_note: got %v, want %q", d.RejectionNote, note)
@@ -420,13 +422,13 @@ func TestExpenseDetailExposesApprovalFields(t *testing.T) {
 
 	t.Run("approved: approved_by_user_id set to approver, rejection_note nil", func(t *testing.T) {
 		_, id := submittedExpenseByMember(t, ts)
-		if rec := postStatus(t, ts, id, devAuth, ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
+		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 
 		d := getExpenseDetail(t, ts, id, devAuth)
-		if d.Status != StatusApproved {
-			t.Fatalf("status: got %q, want %q", d.Status, StatusApproved)
+		if d.Status != expenses.StatusApproved {
+			t.Fatalf("status: got %q, want %q", d.Status, expenses.StatusApproved)
 		}
 		if d.ApprovedByUserID == nil || *d.ApprovedByUserID != devUserID {
 			t.Errorf("approved_by_user_id: got %v, want approver %q", d.ApprovedByUserID, devUserID)

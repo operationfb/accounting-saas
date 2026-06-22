@@ -1,4 +1,4 @@
-package main
+package expenses
 
 // events_pubsub.go
 // =============================================================================
@@ -25,11 +25,11 @@ type pubsubPublisher struct {
 	publisher *pubsub.Publisher
 }
 
-// newPubsubPublisher builds a publisher for topicID in projectID. An empty
+// NewPubSubPublisher builds a publisher for topicID in projectID. An empty
 // projectID is auto-detected from ADC (so callers can pass GOOGLE_CLOUD_PROJECT
 // verbatim). The topic must already exist (created out-of-band — see the plan's
 // infra section).
-func newPubsubPublisher(ctx context.Context, projectID, topicID string) (*pubsubPublisher, error) {
+func NewPubSubPublisher(ctx context.Context, projectID, topicID string) (*pubsubPublisher, error) {
 	if projectID == "" {
 		projectID = pubsub.DetectProjectID
 	}

@@ -11,15 +11,19 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Menu from 'primevue/menu'
+import type { MenuItem } from 'primevue/menuitem'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
-import { getBankAccountTransactions } from '@/services/bank-accounts.service'
+import { getBankAccountTransactions, deleteBankAccount } from '@/services/bank-accounts.service'
 import { formatMoney, formatDate } from '@/lib/format'
+import { useAuthStore } from '@/stores/auth'
 import type { BankAccount, BankTransaction } from '@/types/bank-account'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
 const id = String(route.params.id)
 
 const account = ref<BankAccount | null>(null)
@@ -44,6 +48,30 @@ onMounted(load)
 
 function editDetails() {
   router.push(`/bank-accounts/${id}/edit`)
+}
+
+// --- "More ▾" menu (owner/admin only; the backend enforces it) ---
+const moreMenu = ref()
+const moreItems = computed<MenuItem[]>(() => [
+  { label: 'Add transaction', icon: 'pi pi-plus', command: () => router.push(`/bank-accounts/${id}/transactions/new`) },
+  { label: 'Delete account', icon: 'pi pi-trash', command: () => confirmDeleteAccount() },
+])
+function toggleMore(event: Event) {
+  moreMenu.value?.toggle(event)
+}
+async function confirmDeleteAccount() {
+  if (!window.confirm('Delete this bank account? Its transactions are kept for audit, but the account is hidden.')) return
+  try {
+    await deleteBankAccount(id)
+    router.push('/bank-accounts')
+  } catch (err) {
+    window.alert((err as ApiError)?.message ?? 'Could not delete the account.')
+  }
+}
+
+// Per-row Edit (manual lines only) → the transaction entry view.
+function editTransaction(t: BankTransaction) {
+  router.push(`/bank-accounts/${id}/transactions/${t.id}/edit`)
 }
 
 // --- tabs (client-side filters over the loaded list) ---
@@ -116,14 +144,19 @@ function amount(pounds: string | null | undefined): string {
         <div class="flex gap-2.5">
           <Button label="Upload statement" severity="secondary" outlined disabled />
           <Button label="Edit details" severity="secondary" outlined @click="editDetails" />
-          <Button
-            label="More"
-            icon="pi pi-angle-down"
-            icon-pos="right"
-            severity="secondary"
-            outlined
-            disabled
-          />
+          <!-- "More" hosts Add transaction + Delete account — owner/admin only. -->
+          <template v-if="auth.isOrgAdmin">
+            <Button
+              label="More"
+              icon="pi pi-angle-down"
+              icon-pos="right"
+              severity="secondary"
+              outlined
+              aria-haspopup="true"
+              @click="toggleMore"
+            />
+            <Menu ref="moreMenu" :model="moreItems" :popup="true" />
+          </template>
         </div>
       </div>
 
@@ -161,6 +194,7 @@ function amount(pounds: string | null | undefined): string {
                   <th class="border-b border-fa-border px-4 py-3 text-right text-[13px] font-semibold text-fa-muted">Money in</th>
                   <th class="border-b border-fa-border px-4 py-3 text-right text-[13px] font-semibold text-fa-muted">Money out</th>
                   <th class="border-b border-fa-border px-4 py-3 text-right text-[13px] font-semibold text-fa-muted">Balance</th>
+                  <th class="border-b border-fa-border px-4 py-3" />
                 </tr>
               </thead>
               <tbody>
@@ -173,9 +207,10 @@ function amount(pounds: string | null | undefined): string {
                   <td class="border-b border-[#eef1f4] px-4 py-3 text-right font-semibold tabular-nums">
                     {{ amount(account.opening_balance) }}
                   </td>
+                  <td class="border-b border-[#eef1f4] px-4 py-3" />
                 </tr>
 
-                <tr v-for="t in visible" :key="t.id" class="hover:bg-[#f7fafc]">
+                <tr v-for="t in visible" :key="t.id" class="group hover:bg-[#f7fafc]">
                   <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3 align-top">
                     <div class="flex items-center gap-2">
                       <i
@@ -193,10 +228,20 @@ function amount(pounds: string | null | undefined): string {
                   <td class="border-b border-[#eef1f4] px-4 py-3 text-right align-top tabular-nums">{{ amount(t.money_in) }}</td>
                   <td class="border-b border-[#eef1f4] px-4 py-3 text-right align-top tabular-nums">{{ amount(t.money_out) }}</td>
                   <td class="border-b border-[#eef1f4] px-4 py-3 text-right align-top tabular-nums">{{ amount(t.running_balance) }}</td>
+                  <td class="whitespace-nowrap border-b border-[#eef1f4] px-4 py-3 text-right align-top">
+                    <button
+                      v-if="t.is_manual && auth.isOrgAdmin"
+                      type="button"
+                      class="invisible text-fa-blue hover:underline group-hover:visible"
+                      @click="editTransaction(t)"
+                    >
+                      Edit
+                    </button>
+                  </td>
                 </tr>
 
                 <tr v-if="visible.length === 0">
-                  <td colspan="5" class="px-4 py-12 text-center text-fa-muted">No transactions in this view.</td>
+                  <td colspan="6" class="px-4 py-12 text-center text-fa-muted">No transactions in this view.</td>
                 </tr>
               </tbody>
             </table>

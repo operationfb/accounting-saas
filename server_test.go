@@ -48,11 +48,12 @@ import (
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	members "github.com/operationfb/accounting-saas/internal/members"
@@ -77,6 +78,7 @@ type testServer struct {
 	pool              *pgxpool.Pool
 	tokenMaker        token.Maker
 	emailSender       *fakeEmailSender
+	expenseService    *expenses.Service
 	emailInboxService *EmailInboxService
 
 	// integrationService is the freeagent integration service the harness wires; its
@@ -155,9 +157,9 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatalf("database ping failed: %v", err)
 	}
 
-	queries := expenses.New(pool)
+	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
-	service := NewExpenseService(pool, queries, authQueries)
+	service := expenses.NewService(pool, queries, authQueries)
 
 	// Build a real auth handler so the /auth/* routes work, and pass the token
 	// maker to the server so the expense routes' auth middleware can verify
@@ -206,7 +208,10 @@ func newTestServer(t *testing.T) *testServer {
 	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
-	server := NewServer(service, attachmentService, emailInboxService, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	server := NewServer(attachmentService, emailInboxService, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	// Expenses self-registers its CRUD + reference-data routes (like production); the
+	// attachment sub-routes are still mounted by NewServer until Stage 2.
+	expenses.NewHandler(service).RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
@@ -229,6 +234,7 @@ func newTestServer(t *testing.T) *testServer {
 	return &testServer{
 		server:              server,
 		pool:                pool,
+		expenseService:      service,
 		tokenMaker:          tokenMaker,
 		emailSender:         emailSender,
 		emailInboxService:   emailInboxService,
@@ -321,7 +327,7 @@ func bearer(t *testing.T, ts *testServer, userID, orgID string) string {
 func createExpenseAs(t *testing.T, ts *testServer, userID, orgID string) string {
 	t.Helper()
 	categoryID := randomCategoryUUID(t, ts.pool)
-	reqBody := CreateExpenseRequest{
+	reqBody := expenses.CreateExpenseRequest{
 		CategoryID:       categoryID,
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
@@ -337,7 +343,7 @@ func createExpenseAs(t *testing.T, ts *testServer, userID, orgID string) string 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("createExpenseAs: expected 201, got %d — body: %s", recorder.Code, recorder.Body.String())
 	}
-	var resp map[string]ExpenseResponse
+	var resp map[string]expenses.ExpenseResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("createExpenseAs: decode: %v", err)
 	}
@@ -374,7 +380,7 @@ func newMemberUser(t *testing.T, ts *testServer, orgID string) string {
 func expenseIDsFromList(t *testing.T, body []byte) []string {
 	t.Helper()
 	var resp struct {
-		Expenses []ExpenseResponse `json:"expenses"`
+		Expenses []expenses.ExpenseResponse `json:"expenses"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("expenseIDsFromList: decode: %v", err)
@@ -423,7 +429,7 @@ func TestHandleCreateExpense(t *testing.T) {
 	supplierName := testutil.RandomSupplierName()
 	receiptRef := testutil.RandomReceiptReference()
 
-	reqBody := CreateExpenseRequest{
+	reqBody := expenses.CreateExpenseRequest{
 		CategoryID:       categoryID,
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      description,
@@ -495,7 +501,7 @@ func TestHandleCreateExpense(t *testing.T) {
 	}
 
 	// Decode the expense object itself into our response struct
-	var got ExpenseResponse
+	var got expenses.ExpenseResponse
 	if err := json.Unmarshal(expenseJSON, &got); err != nil {
 		t.Fatalf("failed to unmarshal expense from response: %v", err)
 	}
@@ -599,7 +605,7 @@ func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
 
 	categoryID := randomCategoryUUID(t, ts.pool)
 
-	body := CreateExpenseRequest{
+	body := expenses.CreateExpenseRequest{
 		CategoryID:       categoryID,
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
@@ -948,9 +954,9 @@ func createdByUserID(t *testing.T, ts *testServer, expenseID string) string {
 }
 
 // onBehalfBody builds a minimal valid create body that claims for claimantID.
-func onBehalfBody(t *testing.T, ts *testServer, claimantID string) CreateExpenseRequest {
+func onBehalfBody(t *testing.T, ts *testServer, claimantID string) expenses.CreateExpenseRequest {
 	t.Helper()
-	return CreateExpenseRequest{
+	return expenses.CreateExpenseRequest{
 		CategoryID:       randomCategoryUUID(t, ts.pool),
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
@@ -1061,7 +1067,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 			t.Fatalf("get detail: expected 200, got %d — body: %s", getRec.Code, getRec.Body.String())
 		}
 		var resp struct {
-			Expense ExpenseDetailResponse `json:"expense"`
+			Expense expenses.ExpenseDetailResponse `json:"expense"`
 		}
 		if err := json.Unmarshal(getRec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode detail: %v — body: %s", err, getRec.Body.String())
@@ -1166,7 +1172,7 @@ func TestHandleListExpenseCategories(t *testing.T) {
 		}
 
 		var resp struct {
-			ExpenseCategories []ExpenseCategoryResponse `json:"expense_categories"`
+			ExpenseCategories []expenses.ExpenseCategoryResponse `json:"expense_categories"`
 		}
 		if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -1176,7 +1182,7 @@ func TestHandleListExpenseCategories(t *testing.T) {
 		}
 
 		// Index by name; every active category must be grouped and identified.
-		byName := make(map[string]ExpenseCategoryResponse, len(resp.ExpenseCategories))
+		byName := make(map[string]expenses.ExpenseCategoryResponse, len(resp.ExpenseCategories))
 		for _, c := range resp.ExpenseCategories {
 			byName[c.Name] = c
 			if c.CategoryGroup == nil || *c.CategoryGroup == "" {
@@ -1233,9 +1239,9 @@ func TestHandleListExpenseCategories(t *testing.T) {
 
 // validUpdateBody builds a complete, valid PUT body (fresh random category +
 // fields); individual subtests tweak what they care about.
-func validUpdateBody(t *testing.T, ts *testServer) UpdateExpenseRequest {
+func validUpdateBody(t *testing.T, ts *testServer) expenses.UpdateExpenseRequest {
 	t.Helper()
-	return UpdateExpenseRequest{
+	return expenses.UpdateExpenseRequest{
 		CategoryID:       randomCategoryUUID(t, ts.pool),
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
@@ -1246,7 +1252,7 @@ func validUpdateBody(t *testing.T, ts *testServer) UpdateExpenseRequest {
 
 // putExpense sends PUT /api/v1/expenses/:id with the given auth header (empty =
 // none) and JSON body, returning the recorder.
-func putExpense(t *testing.T, ts *testServer, id, authHeader string, body UpdateExpenseRequest) *httptest.ResponseRecorder {
+func putExpense(t *testing.T, ts *testServer, id, authHeader string, body expenses.UpdateExpenseRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	bodyBytes, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -1280,7 +1286,7 @@ func TestHandleUpdateExpense(t *testing.T) {
 		}
 
 		var resp struct {
-			Expense ExpenseResponse `json:"expense"`
+			Expense expenses.ExpenseResponse `json:"expense"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode: %v", err)
@@ -1486,7 +1492,7 @@ func TestHandleDeleteExpense(t *testing.T) {
 
 		// It starts in the inbox.
 		caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
-		inbox, err := ts.server.expenseService.ListInbox(context.Background(), caller, org)
+		inbox, err := ts.expenseService.ListInbox(context.Background(), caller, org)
 		if err != nil {
 			t.Fatalf("ListInbox: %v", err)
 		}
@@ -1501,7 +1507,7 @@ func TestHandleDeleteExpense(t *testing.T) {
 		}
 
 		// ...and it has left the inbox.
-		inboxAfter, err := ts.server.expenseService.ListInbox(context.Background(), caller, org)
+		inboxAfter, err := ts.expenseService.ListInbox(context.Background(), caller, org)
 		if err != nil {
 			t.Fatalf("ListInbox after delete: %v", err)
 		}
@@ -1516,7 +1522,7 @@ func TestHandleDeleteExpense(t *testing.T) {
 // =============================================================================
 
 // postExpense sends POST /api/v1/expenses with the given auth header and body.
-func postExpense(t *testing.T, ts *testServer, authHeader string, body CreateExpenseRequest) *httptest.ResponseRecorder {
+func postExpense(t *testing.T, ts *testServer, authHeader string, body expenses.CreateExpenseRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	bodyBytes, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -1529,11 +1535,11 @@ func postExpense(t *testing.T, ts *testServer, authHeader string, body CreateExp
 	return rec
 }
 
-// decodeExpense decodes a {"expense": {...}} envelope into an ExpenseResponse.
-func decodeExpense(t *testing.T, rec *httptest.ResponseRecorder) ExpenseResponse {
+// decodeExpense decodes a {"expense": {...}} envelope into an expenses.ExpenseResponse.
+func decodeExpense(t *testing.T, rec *httptest.ResponseRecorder) expenses.ExpenseResponse {
 	t.Helper()
 	var resp struct {
-		Expense ExpenseResponse `json:"expense"`
+		Expense expenses.ExpenseResponse `json:"expense"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode expense: %v — body: %s", err, rec.Body.String())
@@ -1568,8 +1574,8 @@ func TestExpenseVAT(t *testing.T) {
 	fixedRateID := gbVatRateID(t, ts, true, 2000)     // Standard Rate 20%
 	nonFixedRateID := gbVatRateID(t, ts, false, 2000) // Standard Rate (manual) 20%
 
-	baseBody := func() CreateExpenseRequest {
-		return CreateExpenseRequest{
+	baseBody := func() expenses.CreateExpenseRequest {
+		return expenses.CreateExpenseRequest{
 			CategoryID:       randomCategoryUUID(t, ts.pool),
 			DatedOn:          testutil.RandomDatedOn(),
 			Description:      testutil.RandomExpenseDescription(),
@@ -1825,7 +1831,7 @@ func TestPasswordReset(t *testing.T) {
 // EXPENSE CSV EXPORT — GET /api/v1/expenses/export
 // =============================================================================
 
-// Column positions of the export CSV (must match expenseExportHeader in
+// Column positions of the export CSV (must match expenses.ExpenseExportHeader in
 // expense_service.go). Named so the assertions read clearly.
 const (
 	colClaimantEmail = 0
@@ -1848,7 +1854,7 @@ const (
 // VAT rate) so the export's cells can be asserted exactly. datedOn is YYYY-MM-DD.
 func createExpenseWith(t *testing.T, ts *testServer, userID, orgID, categoryID, datedOn, description, gross, vatRateID string) string {
 	t.Helper()
-	reqBody := CreateExpenseRequest{
+	reqBody := expenses.CreateExpenseRequest{
 		CategoryID:       categoryID,
 		DatedOn:          datedOn,
 		Description:      description,
@@ -1867,7 +1873,7 @@ func createExpenseWith(t *testing.T, ts *testServer, userID, orgID, categoryID, 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("createExpenseWith: expected 201, got %d — body: %s", recorder.Code, recorder.Body.String())
 	}
-	var resp map[string]ExpenseResponse
+	var resp map[string]expenses.ExpenseResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("createExpenseWith: decode: %v", err)
 	}
@@ -1921,14 +1927,14 @@ func parseExportCSV(t *testing.T, recorder *httptest.ResponseRecorder) [][]strin
 	return records
 }
 
-// assertHeader checks the first record is exactly expenseExportHeader.
+// assertHeader checks the first record is exactly expenses.ExpenseExportHeader.
 func assertHeader(t *testing.T, records [][]string) {
 	t.Helper()
 	got := records[0]
-	if len(got) != len(expenseExportHeader) {
-		t.Fatalf("header has %d columns, want %d: %v", len(got), len(expenseExportHeader), got)
+	if len(got) != len(expenses.ExpenseExportHeader) {
+		t.Fatalf("header has %d columns, want %d: %v", len(got), len(expenses.ExpenseExportHeader), got)
 	}
-	for i, h := range expenseExportHeader {
+	for i, h := range expenses.ExpenseExportHeader {
 		if got[i] != h {
 			t.Errorf("header[%d] = %q, want %q", i, got[i], h)
 		}

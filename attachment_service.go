@@ -28,7 +28,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,7 +41,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
-	expenses "github.com/operationfb/accounting-saas/db/expenses"
+	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
+	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
@@ -89,7 +89,7 @@ const (
 // AttachmentService orchestrates storage + database for receipt files.
 type AttachmentService struct {
 	pool        *pgxpool.Pool
-	queries     *expenses.Queries
+	queries     *expensesdb.Queries
 	authQueries auth.Querier
 	storage     storage.Storage
 	ocr         ocrEnqueuer // nil when OCR isn't configured
@@ -103,7 +103,7 @@ type AttachmentService struct {
 // GCS configured (GCS_BUCKET unset); in that case the upload/download paths
 // return a clear internal error rather than panicking. ocr may be nil when
 // Document AI isn't configured; Smart Upload then creates drafts without OCR.
-func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQueries auth.Querier, store storage.Storage, ocr ocrEnqueuer, maxBytes int64, urlTTL time.Duration) *AttachmentService {
+func NewAttachmentService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, store storage.Storage, ocr ocrEnqueuer, maxBytes int64, urlTTL time.Duration) *AttachmentService {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxUploadBytes
 	}
@@ -118,58 +118,6 @@ func NewAttachmentService(pool *pgxpool.Pool, queries *expenses.Queries, authQue
 		ocr:         ocr,
 		maxBytes:    maxBytes,
 		urlTTL:      urlTTL,
-	}
-}
-
-// =============================================================================
-// RESPONSE DTO
-//
-// Kept here (not in server.go with the expense DTOs) to keep the attachments
-// feature self-contained. It never carries the file bytes (fetched separately
-// via a signed download URL) nor the internal storage bucket/key. It DOES carry
-// the OCR status + structured data (but not the bulky ocr_raw_text): the Smart
-// Upload frontend polls ocr_status to know when extraction is done and reads
-// ocr_extracted_data for the "OCR found…" badges.
-// =============================================================================
-
-// AttachmentResponse is the API shape for one attachment's metadata.
-type AttachmentResponse struct {
-	ID               string  `json:"id"`
-	ExpenseID        string  `json:"expense_id"`
-	FileName         string  `json:"file_name"`
-	ContentType      string  `json:"content_type"`
-	FileSizeBytes    int32   `json:"file_size_bytes"`
-	IsPrimary        bool    `json:"is_primary"`
-	Description      *string `json:"description,omitempty"`
-	UploadedByUserID string  `json:"uploaded_by_user_id"`
-	CreatedAt        string  `json:"created_at"`
-
-	// OCR (Smart Upload). OCRStatus is the polled signal: PENDING|PROCESSING are
-	// non-terminal; COMPLETE|FAILED|SKIPPED are terminal. OCRExtractedData is the
-	// raw JSONB ("what OCR saw") passed straight through as JSON.
-	OCRStatus        string          `json:"ocr_status"`
-	OCRExtractedData json.RawMessage `json:"ocr_extracted_data,omitempty"`
-	OCRProcessedAt   *string         `json:"ocr_processed_at,omitempty"`
-}
-
-// attachmentToResponse maps a generated row to the API shape. It reuses the
-// nullable-text/timestamp helpers from expense_service.go (same package).
-func attachmentToResponse(a expenses.ExpenseAttachment) *AttachmentResponse {
-	return &AttachmentResponse{
-		ID:               a.ID.String(),
-		ExpenseID:        a.ExpenseID.String(),
-		FileName:         a.FileName,
-		ContentType:      a.ContentType,
-		FileSizeBytes:    a.FileSizeBytes,
-		IsPrimary:        a.IsPrimary,
-		Description:      nullTextToPtr(a.Description),
-		UploadedByUserID: a.UploadedByUserID.String(),
-		CreatedAt:        a.CreatedAt.Time.Format(time.RFC3339),
-		OCRStatus:        a.OcrStatus,
-		// JSONB comes back as []byte; json.RawMessage passes it through verbatim.
-		// nil (no OCR yet) is omitted by the ,omitempty tag.
-		OCRExtractedData: json.RawMessage(a.OcrExtractedData),
-		OCRProcessedAt:   timestampToStringPtr(a.OcrProcessedAt),
 	}
 }
 
@@ -189,23 +137,23 @@ func (s *AttachmentService) authorize(ctx context.Context, userID, orgID uuid.UU
 // enforcing the same access rule as reading an expense: the claimant, or an
 // owner/admin of the organisation. Returns ErrNotFound when the expense does not
 // exist in this org, ErrForbidden when the caller may not touch it.
-func (s *AttachmentService) loadAuthorisedExpense(ctx context.Context, callerID, orgID, expenseID uuid.UUID) (expenses.Expense, error) {
+func (s *AttachmentService) loadAuthorisedExpense(ctx context.Context, callerID, orgID, expenseID uuid.UUID) (expensesdb.Expense, error) {
 	role, err := s.authorize(ctx, callerID, orgID)
 	if err != nil {
-		return expenses.Expense{}, err
+		return expensesdb.Expense{}, err
 	}
-	exp, err := s.queries.GetExpense(ctx, expenses.GetExpenseParams{
+	exp, err := s.queries.GetExpense(ctx, expensesdb.GetExpenseParams{
 		ID:             expenseID,
 		OrganisationID: orgID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return expenses.Expense{}, ErrNotFound("expense", expenseID.String())
+			return expensesdb.Expense{}, ErrNotFound("expense", expenseID.String())
 		}
-		return expenses.Expense{}, ErrInternal(err)
+		return expensesdb.Expense{}, ErrInternal(err)
 	}
 	if exp.UserID != callerID && !isOrgAdmin(role) {
-		return expenses.Expense{}, ErrForbidden("you do not have access to this expense")
+		return expensesdb.Expense{}, ErrForbidden("you do not have access to this expense")
 	}
 	return exp, nil
 }
@@ -213,32 +161,32 @@ func (s *AttachmentService) loadAuthorisedExpense(ctx context.Context, callerID,
 // loadAuthorisedAttachment authorises the caller against the parent expense and
 // returns the attachment, ensuring it both exists in this org AND belongs to the
 // expense named in the URL (defence in depth against id-swapping).
-func (s *AttachmentService) loadAuthorisedAttachment(ctx context.Context, callerID, orgID uuid.UUID, expenseID, attachmentID string) (expenses.ExpenseAttachment, error) {
+func (s *AttachmentService) loadAuthorisedAttachment(ctx context.Context, callerID, orgID uuid.UUID, expenseID, attachmentID string) (expensesdb.ExpenseAttachment, error) {
 	eid, err := parseResourceUUID(expenseID, "expense")
 	if err != nil {
-		return expenses.ExpenseAttachment{}, err
+		return expensesdb.ExpenseAttachment{}, err
 	}
 	aid, err := parseResourceUUID(attachmentID, "attachment")
 	if err != nil {
-		return expenses.ExpenseAttachment{}, err
+		return expensesdb.ExpenseAttachment{}, err
 	}
 	if _, err := s.loadAuthorisedExpense(ctx, callerID, orgID, eid); err != nil {
-		return expenses.ExpenseAttachment{}, err
+		return expensesdb.ExpenseAttachment{}, err
 	}
-	att, err := s.queries.GetExpenseAttachment(ctx, expenses.GetExpenseAttachmentParams{
+	att, err := s.queries.GetExpenseAttachment(ctx, expensesdb.GetExpenseAttachmentParams{
 		ID:             aid,
 		OrganisationID: orgID,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return expenses.ExpenseAttachment{}, ErrNotFound("attachment", attachmentID)
+			return expensesdb.ExpenseAttachment{}, ErrNotFound("attachment", attachmentID)
 		}
-		return expenses.ExpenseAttachment{}, ErrInternal(err)
+		return expensesdb.ExpenseAttachment{}, ErrInternal(err)
 	}
 	if att.ExpenseID != eid {
 		// Exists in the org but under a DIFFERENT expense than the URL claims —
 		// treat as not found rather than confirming its existence.
-		return expenses.ExpenseAttachment{}, ErrNotFound("attachment", attachmentID)
+		return expensesdb.ExpenseAttachment{}, ErrNotFound("attachment", attachmentID)
 	}
 	return att, nil
 }
@@ -259,7 +207,7 @@ func (s *AttachmentService) UploadAttachment(
 	size int64,
 	content io.ReadSeeker,
 	description *string,
-) (*AttachmentResponse, error) {
+) (*expenses.AttachmentResponse, error) {
 	if s.storage == nil {
 		return nil, ErrInternal(errors.New("file storage is not configured (GCS_BUCKET unset)"))
 	}
@@ -295,13 +243,13 @@ func (s *AttachmentService) UploadAttachment(
 	contentHash := hex.EncodeToString(hasher.Sum(nil))
 
 	// ---- 2) Record metadata; the first file becomes primary -----------------
-	var created expenses.ExpenseAttachment
-	dbErr := s.withTx(ctx, func(qtx *expenses.Queries) error {
+	var created expensesdb.ExpenseAttachment
+	dbErr := s.withTx(ctx, func(qtx *expensesdb.Queries) error {
 		count, err := qtx.CountExpenseAttachments(ctx, eid)
 		if err != nil {
 			return err
 		}
-		row, err := qtx.CreateExpenseAttachment(ctx, expenses.CreateExpenseAttachmentParams{
+		row, err := qtx.CreateExpenseAttachment(ctx, expensesdb.CreateExpenseAttachmentParams{
 			ExpenseID:        eid,
 			OrganisationID:   orgID,
 			FileName:         sanitiseFilename(filename),
@@ -329,7 +277,7 @@ func (s *AttachmentService) UploadAttachment(
 		return nil, ErrInternal(fmt.Errorf("record attachment metadata: %w", dbErr))
 	}
 
-	return attachmentToResponse(created), nil
+	return expenses.AttachmentToResponse(created), nil
 }
 
 // =============================================================================
@@ -352,7 +300,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 	filename string,
 	size int64,
 	content io.ReadSeeker,
-) (*ExpenseDetailResponse, error) {
+) (*expenses.ExpenseDetailResponse, error) {
 	if s.storage == nil {
 		return nil, ErrInternal(errors.New("file storage is not configured (GCS_BUCKET unset)"))
 	}
@@ -372,7 +320,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 	}
 
 	// Resolve the org's placeholder category ('Sundries') for the skeleton.
-	cat, err := s.queries.GetExpenseCategoryByNominalCode(ctx, expenses.GetExpenseCategoryByNominalCodeParams{
+	cat, err := s.queries.GetExpenseCategoryByNominalCode(ctx, expensesdb.GetExpenseCategoryByNominalCodeParams{
 		OrganisationID: orgID,
 		NominalCode:    placeholderCategoryNominal,
 	})
@@ -401,21 +349,21 @@ func (s *AttachmentService) CaptureFromReceipt(
 
 	// 2) One transaction: the skeleton expense + its (primary) attachment.
 	var expID, attID uuid.UUID
-	dbErr := s.withTx(ctx, func(qtx *expenses.Queries) error {
-		exp, err := qtx.CreateSkeletonExpense(ctx, expenses.CreateSkeletonExpenseParams{
+	dbErr := s.withTx(ctx, func(qtx *expensesdb.Queries) error {
+		exp, err := qtx.CreateSkeletonExpense(ctx, expensesdb.CreateSkeletonExpenseParams{
 			OrganisationID:        orgID,
 			UserID:                callerID,
 			CreatedByUserID:       callerID,
 			CategoryID:            cat.ID,
-			DatedOn:               pgDateFromTime(time.Now()), // placeholder; OCR overwrites
-			Description:           placeholderDescription,     // placeholder
-			GrossValueMinor:       0,                          // placeholder; OCR fills
+			DatedOn:               expenses.PgDateFromTime(time.Now()), // placeholder; OCR overwrites
+			Description:           placeholderDescription,              // placeholder
+			GrossValueMinor:       0,                                   // placeholder; OCR fills
 			NativeGrossValueMinor: 0,
 		})
 		if err != nil {
 			return err
 		}
-		att, err := qtx.CreateExpenseAttachment(ctx, expenses.CreateExpenseAttachmentParams{
+		att, err := qtx.CreateExpenseAttachment(ctx, expensesdb.CreateExpenseAttachmentParams{
 			ExpenseID:        exp.ID,
 			OrganisationID:   orgID,
 			FileName:         sanitiseFilename(filename),
@@ -447,7 +395,7 @@ func (s *AttachmentService) CaptureFromReceipt(
 
 	// 4) Return the new draft (with its PENDING attachment) so the frontend can
 	//    open the form and poll GET /expenses/:id until OCR completes.
-	return buildExpenseDetail(ctx, s.queries, orgID, expID)
+	return expenses.BuildExpenseDetail(ctx, s.queries, orgID, expID)
 }
 
 // FindDuplicateReceipt reports whether the given claimant already has a
@@ -460,7 +408,7 @@ func (s *AttachmentService) FindDuplicateReceipt(ctx context.Context, orgID, cla
 	if contentHash == "" {
 		return uuid.Nil, false, nil
 	}
-	existingID, err := s.queries.FindDuplicateReceipt(ctx, expenses.FindDuplicateReceiptParams{
+	existingID, err := s.queries.FindDuplicateReceipt(ctx, expensesdb.FindDuplicateReceiptParams{
 		OrganisationID: orgID,
 		UserID:         claimantID,
 		ContentHash:    pgNullText(&contentHash),
@@ -481,7 +429,7 @@ func (s *AttachmentService) FindDuplicateReceipt(ctx context.Context, orgID, cla
 // ListAttachments returns the metadata for every file on an expense (primary
 // first). Valid (and empty) when the expense has no attachments — receipts are
 // optional. No bytes and no URLs are returned.
-func (s *AttachmentService) ListAttachments(ctx context.Context, callerID, orgID uuid.UUID, expenseID string) ([]*AttachmentResponse, error) {
+func (s *AttachmentService) ListAttachments(ctx context.Context, callerID, orgID uuid.UUID, expenseID string) ([]*expenses.AttachmentResponse, error) {
 	eid, err := parseResourceUUID(expenseID, "expense")
 	if err != nil {
 		return nil, err
@@ -493,9 +441,9 @@ func (s *AttachmentService) ListAttachments(ctx context.Context, callerID, orgID
 	if err != nil {
 		return nil, ErrInternal(err)
 	}
-	out := make([]*AttachmentResponse, 0, len(rows))
+	out := make([]*expenses.AttachmentResponse, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, attachmentToResponse(r))
+		out = append(out, expenses.AttachmentToResponse(r))
 	}
 	return out, nil
 }
@@ -529,7 +477,7 @@ func (s *AttachmentService) GetDownloadURL(ctx context.Context, callerID, orgID 
 // caller (integrations.Service) owns the HTTP-status mapping. This satisfies the
 // integrations.AttachmentFetcher interface.
 func (s *AttachmentService) PrimaryAttachmentForPush(ctx context.Context, orgID, expenseID uuid.UUID, maxBytes int64) (data []byte, fileName, contentType string, found bool, err error) {
-	row, err := s.queries.GetPrimaryAttachmentForPush(ctx, expenses.GetPrimaryAttachmentForPushParams{
+	row, err := s.queries.GetPrimaryAttachmentForPush(ctx, expensesdb.GetPrimaryAttachmentForPushParams{
 		ExpenseID:      expenseID,
 		OrganisationID: orgID,
 	})
@@ -565,19 +513,19 @@ func (s *AttachmentService) PrimaryAttachmentForPush(ctx context.Context, orgID,
 
 // SetPrimary marks one attachment as the primary (default) file for its expense,
 // clearing the flag on the others in the same transaction so exactly one remains.
-func (s *AttachmentService) SetPrimary(ctx context.Context, callerID, orgID uuid.UUID, expenseID, attachmentID string) (*AttachmentResponse, error) {
+func (s *AttachmentService) SetPrimary(ctx context.Context, callerID, orgID uuid.UUID, expenseID, attachmentID string) (*expenses.AttachmentResponse, error) {
 	att, err := s.loadAuthorisedAttachment(ctx, callerID, orgID, expenseID, attachmentID)
 	if err != nil {
 		return nil, err
 	}
-	txErr := s.withTx(ctx, func(qtx *expenses.Queries) error {
-		if err := qtx.UnsetExpensePrimary(ctx, expenses.UnsetExpensePrimaryParams{
+	txErr := s.withTx(ctx, func(qtx *expensesdb.Queries) error {
+		if err := qtx.UnsetExpensePrimary(ctx, expensesdb.UnsetExpensePrimaryParams{
 			ExpenseID:      att.ExpenseID,
 			OrganisationID: orgID,
 		}); err != nil {
 			return err
 		}
-		return qtx.SetAttachmentPrimary(ctx, expenses.SetAttachmentPrimaryParams{
+		return qtx.SetAttachmentPrimary(ctx, expensesdb.SetAttachmentPrimaryParams{
 			ID:             att.ID,
 			OrganisationID: orgID,
 		})
@@ -586,7 +534,7 @@ func (s *AttachmentService) SetPrimary(ctx context.Context, callerID, orgID uuid
 		return nil, ErrInternal(fmt.Errorf("set primary attachment: %w", txErr))
 	}
 	att.IsPrimary = true
-	return attachmentToResponse(att), nil
+	return expenses.AttachmentToResponse(att), nil
 }
 
 // DeleteAttachment removes an attachment's metadata row and its stored file. If
@@ -600,8 +548,8 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, callerID, orgI
 
 	// Do the DB work first: if it fails we have NOT yet deleted the file, so
 	// nothing is lost.
-	txErr := s.withTx(ctx, func(qtx *expenses.Queries) error {
-		if err := qtx.DeleteExpenseAttachment(ctx, expenses.DeleteExpenseAttachmentParams{
+	txErr := s.withTx(ctx, func(qtx *expensesdb.Queries) error {
+		if err := qtx.DeleteExpenseAttachment(ctx, expensesdb.DeleteExpenseAttachmentParams{
 			ID:             att.ID,
 			OrganisationID: orgID,
 		}); err != nil {
@@ -616,7 +564,7 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, callerID, orgI
 				return err
 			}
 			if len(remaining) > 0 {
-				if err := qtx.SetAttachmentPrimary(ctx, expenses.SetAttachmentPrimaryParams{
+				if err := qtx.SetAttachmentPrimary(ctx, expensesdb.SetAttachmentPrimaryParams{
 					ID:             remaining[0].ID,
 					OrganisationID: orgID,
 				}); err != nil {
@@ -678,12 +626,12 @@ func (s *AttachmentService) validateUpload(size int64, content io.ReadSeeker) (c
 
 // withTx runs fn inside a transaction, mirroring ExpenseService.withTransaction
 // (kept local so the attachments feature owns its own transactions).
-func (s *AttachmentService) withTx(ctx context.Context, fn func(*expenses.Queries) error) error {
+func (s *AttachmentService) withTx(ctx context.Context, fn func(*expensesdb.Queries) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	qtx := expenses.New(tx)
+	qtx := expensesdb.New(tx)
 	if err := fn(qtx); err != nil {
 		_ = tx.Rollback(ctx)
 		return err
