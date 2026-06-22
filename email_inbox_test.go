@@ -31,6 +31,7 @@ import (
 	"github.com/google/uuid"
 
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
 // =============================================================================
@@ -296,7 +297,7 @@ func TestEmailInboxRouting(t *testing.T) {
 			Recipient: "alpha@" + testInboxDomain,
 			From:      "x@example.com",
 		})
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 }
 

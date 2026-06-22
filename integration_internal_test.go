@@ -21,6 +21,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
 // =============================================================================
@@ -79,7 +81,7 @@ func TestIntegrationInternal_ExpenseForPush(t *testing.T) {
 	t.Run("wrong org → 404 (tenant isolation)", func(t *testing.T) {
 		otherOrg, _ := newOrgWithOwner(t, ts)
 		_, err := svc.ExpenseForPush(ctx, mustUUID(t, otherOrg), mustUUID(t, expenseID))
-		assertAppCode(t, err, ErrCodeNotFound)
+		assertAppCode(t, err, kernel.ErrCodeNotFound)
 	})
 }
 
@@ -184,7 +186,7 @@ func TestIntegrationInternal_TokenForOrg(t *testing.T) {
 	t.Run("not connected → 409", func(t *testing.T) {
 		org, _ := newOrgWithOwner(t, ts)
 		_, err := svc.TokenForOrg(ctx, mustUUID(t, org))
-		assertAppCode(t, err, ErrCodeConflict)
+		assertAppCode(t, err, kernel.ErrCodeConflict)
 	})
 
 	t.Run("connected → token + base url", func(t *testing.T) {

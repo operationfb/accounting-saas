@@ -2,22 +2,16 @@ package main
 
 // server.go
 // =============================================================================
-// HTTP server: Gin engine setup, route registration, and handler methods.
+// The thin HTTP shell. Post-migration this file owns NO domain logic and NO
+// domain routes — every API route is registered by its internal/<domain> Handler
+// on Router() from main. What remains here is the engine itself:
+//   - Create + configure the Gin engine (global CORS, multipart limit)
+//   - The /health liveness probe
+//   - The static-SPA fallback (enableStaticSPA)
+//   - Router() — the per-domain RegisterRoutes seam
 //
-// Responsibilities of this file:
-//   - Create and configure the Gin engine
-//   - Register all routes and map them to handler methods
-//   - Define handler methods (the HTTP boundary — parse request, call service,
-//     write response)
-//
-// What does NOT belong here:
-//   - Business logic (that lives in expense_service.go)
-//   - Database queries (that lives in db/expenses/query.sql.go)
-//
-// The handler's job is narrow:
-//   1. Parse and validate the HTTP request
-//   2. Call the service
-//   3. Write the HTTP response
+// All business logic lives in internal/<domain>; shared HTTP/error helpers in
+// internal/kernel. Handlers and DTOs no longer live here.
 // =============================================================================
 
 import (
@@ -29,6 +23,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
 // Server is now a thin shell: it owns the Gin engine + the global middleware
@@ -60,7 +56,7 @@ func NewServer(corsOrigins []string) *Server {
 	// CORS must be registered globally and BEFORE the routes/auth middleware.
 	// A browser sends a preflight OPTIONS request (with no Authorization header)
 	// before any cross-origin call that carries the bearer token; CORS has to
-	// answer that preflight (204) before authMiddleware can reject it for the
+	// answer that preflight (204) before kernel.AuthMiddleware can reject it for the
 	// missing token. Registering here (before registerRoutes) also puts CORS in
 	// Gin's NoRoute/NoMethod chains so bare OPTIONS preflights are handled.
 	s.router.Use(cors.New(cors.Config{
@@ -110,13 +106,13 @@ func (s *Server) enableStaticSPA(distDir string) {
 		// Never let the SPA shadow the API: an unknown /api/ path must stay a JSON
 		// 404 in the standard envelope, not get the HTML index served back.
 		if strings.HasPrefix(p, "/api/") {
-			respondError(c, &AppError{Code: ErrCodeNotFound, Message: "resource not found"})
+			kernel.RespondError(c, &kernel.AppError{Code: kernel.ErrCodeNotFound, Message: "resource not found"})
 			return
 		}
 
 		// The SPA is a GET/HEAD surface; any other method on an unknown path is a 404.
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
-			respondError(c, &AppError{Code: ErrCodeNotFound, Message: "resource not found"})
+			kernel.RespondError(c, &kernel.AppError{Code: kernel.ErrCodeNotFound, Message: "resource not found"})
 			return
 		}
 

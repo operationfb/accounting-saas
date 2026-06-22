@@ -32,22 +32,21 @@ import (
 	"testing"
 )
 
-// rootAllowlist is the set of .go files permitted in the repo-root package main:
-// wiring (main.go, server.go, aliases.go, this file) plus the domain code not yet
-// migrated to internal/. Shrinks as domains move out. Before adding a name here,
-// be sure the file truly belongs in root wiring — almost everything belongs in
-// internal/<domain> or internal/kernel instead.
+// rootAllowlist is the set of .go files permitted in the repo-root package main.
+// The modular-monolith migration is COMPLETE: all domains live in internal/<domain>
+// and all shared infrastructure in internal/kernel, so the only non-test root files
+// are the wiring (main.go, server.go) + this guardrail. The rest of the list is the
+// integration test files, which stay in root (package main) because they drive the
+// assembled server via the newTestServer harness. New code belongs in
+// internal/<domain> or internal/kernel — never the repo root.
 var rootAllowlist = map[string]bool{
-	"aliases.go":                   true,
 	"arch_test.go":                 true,
 	"attachment_handler_test.go":   true,
 	"attachment_service_test.go":   true,
 	"banking_service_test.go":      true,
 	"banking_test.go":              true,
 	"contact_service_test.go":      true,
-	"email.go":                     true,
 	"email_inbox_test.go":          true,
-	"email_smtp.go":                true,
 	"events_test.go":               true,
 	"expense_status_test.go":       true,
 	"inbound_email.go":             true,

@@ -7,7 +7,7 @@ package main
 // attachment_service_test.go covers the SERVICE directly; this file drives the
 // real Gin router (ts.server.router.ServeHTTP) so the HTTP plumbing is exercised
 // too: multipart parsing, the request-body size cap (http.MaxBytesReader), route
-// wiring, response envelopes, and AppError → HTTP status mapping.
+// wiring, response envelopes, and kernel.AppError → HTTP status mapping.
 //
 // Like the service tests these need the real GCS dev bucket (requireGCS) and the
 // shared dev DB (newTestServer); they skip cleanly when GCS_BUCKET is unset and

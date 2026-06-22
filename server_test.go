@@ -311,7 +311,7 @@ const (
 )
 
 // bearer builds an "Authorization: Bearer <token>" header value for the given
-// user and organisation. Handlers behind authMiddleware require this header.
+// user and organisation. Handlers behind kernel.AuthMiddleware require this header.
 func bearer(t *testing.T, ts *testServer, userID, orgID string) string {
 	t.Helper()
 	uid, err := uuid.Parse(userID)
@@ -629,7 +629,7 @@ func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
 	ts.server.router.ServeHTTP(recorder, req)
 
 	// gross_value "not-a-number" fails decimal parsing in the service, which
-	// returns ErrValidation → 422 Unprocessable Entity.
+	// returns kernel.ErrValidation → 422 Unprocessable Entity.
 	if recorder.Code != http.StatusUnprocessableEntity {
 		t.Errorf("expected status 422, got %d — body: %s", recorder.Code, recorder.Body.String())
 	}
@@ -1114,7 +1114,7 @@ func TestCORS(t *testing.T) {
 		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
 		ts.server.router.ServeHTTP(recorder, req)
 
-		// 204 from the CORS middleware — NOT 401 from authMiddleware. This proves
+		// 204 from the CORS middleware — NOT 401 from kernel.AuthMiddleware. This proves
 		// CORS runs before auth, so preflight (which carries no token) succeeds.
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("preflight: expected 204, got %d — body: %s", recorder.Code, recorder.Body.String())

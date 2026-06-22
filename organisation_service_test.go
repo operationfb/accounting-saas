@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 )
 
@@ -242,7 +243,7 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ts.organisationService.UpdateOrganisation(
 				context.Background(), mustUUID(t, ownerB), mustUUID(t, orgB), tc.req)
-			assertAppCode(t, err, ErrCodeValidation)
+			assertAppCode(t, err, kernel.ErrCodeValidation)
 		})
 	}
 }

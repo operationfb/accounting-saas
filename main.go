@@ -2,15 +2,17 @@ package main
 
 // main.go
 // =============================================================================
-// Entry point for the expense service.
+// Entry point + COMPOSITION ROOT for the accounting service.
 //
-// This file's only job is to:
-//   1. Read configuration (database URL, port) from environment variables
-//   2. Open the database connection pool
-//   3. Build the Server and start listening
+// This file:
+//   1. Reads configuration (database URL, port, …) from environment variables
+//   2. Opens the database connection pool
+//   3. Builds every domain's Service + Handler and registers their routes on the
+//      shared Gin engine (the per-domain RegisterRoutes pattern)
+//   4. Starts listening
 //
-// Keeping main.go minimal means it's easy to understand at a glance what the
-// programme does when it starts. All the real wiring lives in server.go.
+// Post-migration, main.go is where the whole dependency graph is wired together;
+// server.go is just the thin HTTP shell (engine + CORS + /health + static SPA).
 // =============================================================================
 
 import (
@@ -38,6 +40,7 @@ import (
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
+	email "github.com/operationfb/accounting-saas/internal/email"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
@@ -57,7 +60,7 @@ func main() {
 
 	// Structured JSON logs to stdout: on Cloud Run these are ingested into Cloud
 	// Logging as structured entries. The handler layer logs request-level internal
-	// (500) errors through slog (see logInternalError in handler_helpers.go); the
+	// (500) errors through slog (see kernel.LogInternalError in internal/kernel); the
 	// startup messages below still use the std logger.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -112,14 +115,15 @@ func main() {
 	// -------------------------------------------------------------------------
 	// 3. Build the application layer.
 	//
-	//    expenses.New(pool) is the sqlc-generated constructor. It returns a
-	//    *Queries struct that wraps the pool and knows how to run every query
-	//    in query.sql.go.
+	//    dbexpenses.New(pool) is the sqlc-generated constructor (db/expenses). It
+	//    returns a *Queries struct that wraps the pool and knows how to run every
+	//    query in query.sql.go.
 	//
-	//    NewExpenseService wraps *Queries with business logic (validation,
-	//    transactions, etc.) — defined in expense_service.go.
+	//    expenses.NewService wraps *Queries with business logic (validation,
+	//    transactions, etc.) — defined in internal/expenses.
 	//
-	//    NewServer wires the service into a Gin router — defined in server.go.
+	//    Each domain's Handler then self-registers its routes on server.Router()
+	//    below, after NewServer has built the engine + global middleware.
 	// -------------------------------------------------------------------------
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
@@ -190,9 +194,9 @@ func main() {
 	// a sender that just LOGS the message, so local dev and tests work without a
 	// mail server (the reset link appears in the logs).
 	// -------------------------------------------------------------------------
-	var emailSender EmailSender
+	var emailSender email.Sender
 	if smtpHost := os.Getenv("SMTP_HOST"); smtpHost != "" {
-		emailSender = newSMTPSender(smtpConfig{
+		emailSender = email.NewSMTPSender(email.Config{
 			Host:     smtpHost,
 			Port:     envOr("SMTP_PORT", "587"),
 			Username: os.Getenv("SMTP_USERNAME"),
@@ -201,7 +205,7 @@ func main() {
 		})
 		log.Printf("email: sending via SMTP host %s", smtpHost)
 	} else {
-		emailSender = newLogSender()
+		emailSender = email.NewLogSender()
 		log.Println("email: SMTP_HOST not set — emails are logged, not sent")
 	}
 

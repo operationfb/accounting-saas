@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
 // =============================================================================
@@ -377,17 +378,17 @@ func TestChangeExpenseStatusServiceGuards(t *testing.T) {
 
 	t.Run("bad UUID → validation error", func(t *testing.T) {
 		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, "not-a-uuid", "submit", "")
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
 	t.Run("unknown action → validation error", func(t *testing.T) {
 		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "frobnicate", "")
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
 	t.Run("reject with empty note → validation error", func(t *testing.T) {
 		_, err := ts.expenseService.ChangeExpenseStatus(ctx, caller, org, uuid.NewString(), "reject", "")
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 }
 

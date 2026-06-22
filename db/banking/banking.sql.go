@@ -587,6 +587,39 @@ func (q *Queries) ListBankAccounts(ctx context.Context, organisationID uuid.UUID
 	return items, nil
 }
 
+const listBankTransactionExternalIDs = `-- name: ListBankTransactionExternalIDs :many
+SELECT external_id FROM bank_transactions
+WHERE bank_account_id = $1
+  AND external_id IS NOT NULL
+  AND deleted_at IS NULL
+`
+
+// -----------------------------------------------------------------------------
+// ListBankTransactionExternalIDs  (statement-import dedupe set)
+// All non-null external_ids currently on an account's live lines. Statement
+// import fetches this once into a set to skip lines it has already imported
+// (each imported line's external_id is a stable per-line hash). :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListBankTransactionExternalIDs(ctx context.Context, bankAccountID uuid.UUID) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, listBankTransactionExternalIDs, bankAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.Text
+	for rows.Next() {
+		var external_id pgtype.Text
+		if err := rows.Scan(&external_id); err != nil {
+			return nil, err
+		}
+		items = append(items, external_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBankTransactions = `-- name: ListBankTransactions :many
 SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
 WHERE organisation_id = $1   -- tenant scope

@@ -1,0 +1,6 @@
+date,description,money_in,money_out,bank_memo
+22/06/2026,Client Payment - Acme Ltd,2500.00,,FPS CREDIT ACME LTD REF INV-2041
+23/06/2026,Tesco Stores 4821,,54.20,DEBIT CARD PURCHASE
+24/06/2026,AWS Cloud Services,,128.75,DD AMAZON WEB SERVICES
+25/06/2026,Refund - Returned Goods,19.99,,CARD REFUND
+26/06/2026,Office Rent,,1200.00,STANDING ORDER LANDLORD

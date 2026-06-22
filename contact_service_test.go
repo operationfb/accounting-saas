@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 )
 
@@ -342,7 +343,7 @@ func TestContactService_InvalidChargeVAT_Direct(t *testing.T) {
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 		contacts.CreateContactRequest{OrganisationName: &orgName, ChargeVAT: "MAYBE"},
 	)
-	assertAppCode(t, err, ErrCodeValidation)
+	assertAppCode(t, err, kernel.ErrCodeValidation)
 }
 
 // =============================================================================

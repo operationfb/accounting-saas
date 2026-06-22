@@ -16,11 +16,13 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
 	banking "github.com/operationfb/accounting-saas/internal/banking"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 )
 
 // bankReq builds a minimal valid create request (override via mutate).
@@ -204,7 +206,7 @@ func TestBankAccountService(t *testing.T) {
 		if _, err := svc.GetBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), a.ID); err == nil {
 			t.Error("expected an error getting a soft-deleted account")
 		} else {
-			assertAppCode(t, err, ErrCodeNotFound)
+			assertAppCode(t, err, kernel.ErrCodeNotFound)
 		}
 		if list, _ := svc.ListBankAccounts(ctx, mustUUID(t, user), mustUUID(t, org)); len(list) != 0 {
 			t.Errorf("list after delete: want 0, got %d", len(list))
@@ -215,7 +217,7 @@ func TestBankAccountService(t *testing.T) {
 		org, _ := newOrgWithOwner(t, ts)
 		member := addMember(t, ts, org, "member")
 		_, err := svc.CreateBankAccount(ctx, mustUUID(t, member), mustUUID(t, org), bankReq("Nope", nil))
-		assertAppCode(t, err, ErrCodeForbidden)
+		assertAppCode(t, err, kernel.ErrCodeForbidden)
 	})
 
 	t.Run("cannot read another org's account (404)", func(t *testing.T) {
@@ -228,14 +230,14 @@ func TestBankAccountService(t *testing.T) {
 		orgB, userB := newOrgWithOwner(t, ts)
 		// userB asks, scoped to their own org, for org A's id → org-scoped query misses → 404.
 		_, err = svc.GetBankAccount(ctx, mustUUID(t, userB), mustUUID(t, orgB), a.ID)
-		assertAppCode(t, err, ErrCodeNotFound)
+		assertAppCode(t, err, kernel.ErrCodeNotFound)
 	})
 
 	t.Run("an invalid opening_balance is a 422", func(t *testing.T) {
 		org, user := newOrgWithOwner(t, ts)
 		_, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Bad", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "not-a-number" }))
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
 	t.Run("ListTransactions returns the statement with a running balance", func(t *testing.T) {
@@ -290,12 +292,12 @@ func TestBankAccountService(t *testing.T) {
 		if _, err := svc.ListTransactions(ctx, mustUUID(t, otherUser), mustUUID(t, org), acc.ID); err == nil {
 			t.Error("expected an error for a non-member caller")
 		} else {
-			assertAppCode(t, err, ErrCodeForbidden)
+			assertAppCode(t, err, kernel.ErrCodeForbidden)
 		}
 		if _, err := svc.ListTransactions(ctx, mustUUID(t, otherUser), mustUUID(t, otherOrg), acc.ID); err == nil {
 			t.Error("expected 404 reading another org's account")
 		} else {
-			assertAppCode(t, err, ErrCodeNotFound)
+			assertAppCode(t, err, kernel.ErrCodeNotFound)
 		}
 	})
 
@@ -333,7 +335,7 @@ func TestBankAccountService(t *testing.T) {
 		// Changing it now is rejected (422)...
 		_, err = svc.UpdateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
 			bankReq("Lockable", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "999.00" }))
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 		// ...but re-sending the SAME opening balance (what the disabled form does) still
 		// lets other fields update.
 		ok, err := svc.UpdateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
@@ -421,12 +423,12 @@ func TestBankAccountService(t *testing.T) {
 		if _, err := svc.UpdateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, feedID, req); err == nil {
 			t.Error("editing a feed line should be rejected")
 		} else {
-			assertAppCode(t, err, ErrCodeValidation)
+			assertAppCode(t, err, kernel.ErrCodeValidation)
 		}
 		if _, err := svc.DeleteTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, feedID); err == nil {
 			t.Error("deleting a feed line should be rejected")
 		} else {
-			assertAppCode(t, err, ErrCodeValidation)
+			assertAppCode(t, err, kernel.ErrCodeValidation)
 		}
 
 		// The feed line reports is_manual=false and its passed-through transaction_type.
@@ -456,7 +458,7 @@ func TestBankAccountService(t *testing.T) {
 		if _, err := svc.CreateTransaction(ctx, mustUUID(t, member), mustUUID(t, org), acc.ID, good); err == nil {
 			t.Error("a non-admin member should not be able to add a transaction")
 		} else {
-			assertAppCode(t, err, ErrCodeForbidden)
+			assertAppCode(t, err, kernel.ErrCodeForbidden)
 		}
 		// Validation: amount ≤ 0, bad direction, bad date → 422.
 		for _, bad := range []banking.CreateBankTransactionRequest{
@@ -467,8 +469,125 @@ func TestBankAccountService(t *testing.T) {
 			if _, err := svc.CreateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, bad); err == nil {
 				t.Errorf("expected 422 for %+v", bad)
 			} else {
-				assertAppCode(t, err, ErrCodeValidation)
+				assertAppCode(t, err, kernel.ErrCodeValidation)
 			}
+		}
+	})
+
+	importCSV := func(t *testing.T, userID, orgID, accID, csv string) (*banking.StatementImportResponse, error) {
+		t.Helper()
+		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(csv))
+	}
+
+	t.Run("statement import: valid CSV creates statement lines + is idempotent", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("Import", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		csv := "date,description,money_in,money_out\n" +
+			"11/06/2026,Salary,16413.59,\n" +
+			"12/06/2026,Coffee,,10.08\n"
+		res, err := importCSV(t, user, org, acc.ID, csv)
+		if err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		if res.Imported != 2 || res.SkippedDuplicates != 0 || res.Total != 2 {
+			t.Errorf("summary: got imported=%d skipped=%d total=%d, want 2/0/2", res.Imported, res.SkippedDuplicates, res.Total)
+		}
+		if len(res.Transactions) != 2 {
+			t.Fatalf("transactions: got %d, want 2", len(res.Transactions))
+		}
+		salary, coffee := res.Transactions[0], res.Transactions[1] // chronological
+		if salary.Source != "statement" || salary.Status != "unexplained" {
+			t.Errorf("imported classification: source=%q status=%q, want statement/unexplained", salary.Source, salary.Status)
+		}
+		if salary.MoneyIn == nil || *salary.MoneyIn != "16413.59" || salary.TransactionType == nil || *salary.TransactionType != "CREDIT" {
+			t.Errorf("salary line: in=%v type=%v", salary.MoneyIn, salary.TransactionType)
+		}
+		if coffee.MoneyOut == nil || *coffee.MoneyOut != "10.08" || coffee.TransactionType == nil || *coffee.TransactionType != "DEBIT" {
+			t.Errorf("coffee line: out=%v type=%v", coffee.MoneyOut, coffee.TransactionType)
+		}
+		if res.Account.CurrentBalance != "17403.51" { // 1000 + 16413.59 - 10.08
+			t.Errorf("current balance: got %q, want 17403.51", res.Account.CurrentBalance)
+		}
+
+		// Re-importing the same bytes is a no-op (dedupe via external_id).
+		res2, err := importCSV(t, user, org, acc.ID, csv)
+		if err != nil {
+			t.Fatalf("re-import: %v", err)
+		}
+		if res2.Imported != 0 || res2.SkippedDuplicates != 2 || len(res2.Transactions) != 2 {
+			t.Errorf("re-import: got imported=%d skipped=%d txns=%d, want 0/2/2", res2.Imported, res2.SkippedDuplicates, len(res2.Transactions))
+		}
+	})
+
+	t.Run("statement import: within-file identical lines both import", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("Dup", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		csv := "date,description,money_in,money_out\n" +
+			"11/06/2026,Coffee,,5.00\n" +
+			"11/06/2026,Coffee,,5.00\n" // byte-identical line
+		res, err := importCSV(t, user, org, acc.ID, csv)
+		if err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		if res.Imported != 2 {
+			t.Errorf("identical within-file lines should both import: got imported=%d, want 2", res.Imported)
+		}
+	})
+
+	t.Run("statement import: an invalid CSV is a 422 and imports nothing", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("BadCSV", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		for _, bad := range []string{
+			"description,money_in,money_out\nSalary,10.00,\n",                   // missing date column
+			"date,description,money_in,money_out\n11/06/2026,Both,10.00,5.00\n", // both money columns
+			"date,description,money_in,money_out\n11/06/2026,Neither,,\n",       // neither money column
+			"date,description,money_in,money_out\n2026-06-11,BadDate,10.00,\n",  // wrong date format
+		} {
+			if _, err := importCSV(t, user, org, acc.ID, bad); err == nil {
+				t.Errorf("expected 422 for invalid CSV: %q", bad)
+			} else {
+				assertAppCode(t, err, kernel.ErrCodeValidation)
+			}
+		}
+		if st, _ := svc.ListTransactions(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID); len(st.Transactions) != 0 {
+			t.Errorf("a rejected import must insert nothing: got %d transactions", len(st.Transactions))
+		}
+	})
+
+	t.Run("statement import authz: non-admin 403, other org 404", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("ImportAuthz", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		csv := "date,description,money_in,money_out\n11/06/2026,X,1.00,\n"
+
+		member := addMember(t, ts, org, "member")
+		if _, err := importCSV(t, member, org, acc.ID, csv); err == nil {
+			t.Error("a non-admin import should be 403")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeForbidden)
+		}
+		otherOrg, otherUser := newOrgWithOwner(t, ts)
+		if _, err := importCSV(t, otherUser, otherOrg, acc.ID, csv); err == nil {
+			t.Error("importing into another org's account should be 404")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeNotFound)
 		}
 	})
 }

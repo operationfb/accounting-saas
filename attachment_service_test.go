@@ -43,6 +43,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
 
@@ -166,13 +167,13 @@ func newOrgWithOwner(t *testing.T, ts *testServer) (orgID, userID string) {
 	return orgID, userID
 }
 
-// assertAppCode fails unless err is an *AppError with the wanted code.
-func assertAppCode(t *testing.T, err error, want ErrorCode) {
+// assertAppCode fails unless err is an *kernel.AppError with the wanted code.
+func assertAppCode(t *testing.T, err error, want kernel.ErrorCode) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("expected an error with code %q, got nil", want)
 	}
-	if got := AsAppError(err).Code; got != want {
+	if got := kernel.AsAppError(err).Code; got != want {
 		t.Fatalf("error code: got %q, want %q (err: %v)", got, want, err)
 	}
 }
@@ -381,13 +382,13 @@ func TestAttachmentUpload_RejectsBadType(t *testing.T) {
 	_, err := ts.attachmentService.UploadAttachment(
 		context.Background(), caller, org, expenseID, "notes.txt",
 		int64(len(sampleText())), bytes.NewReader(sampleText()), nil)
-	assertAppCode(t, err, ErrCodeUnsupportedMediaType)
+	assertAppCode(t, err, kernel.ErrCodeUnsupportedMediaType)
 
 	// A spoofed extension (text bytes named .pdf) is caught by the sniff.
 	_, err = ts.attachmentService.UploadAttachment(
 		context.Background(), caller, org, expenseID, "evil.pdf",
 		int64(len(sampleText())), bytes.NewReader(sampleText()), nil)
-	assertAppCode(t, err, ErrCodeUnsupportedMediaType)
+	assertAppCode(t, err, kernel.ErrCodeUnsupportedMediaType)
 
 	if keys := gcsObjectsUnder(t, expensePrefix(devOrgID, expenseID)); len(keys) != 0 {
 		t.Errorf("rejected uploads must not write to GCS, found %v", keys)
@@ -411,7 +412,7 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 	_, err := tiny.UploadAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 		expenseID, "big.pdf", int64(len(data)), bytes.NewReader(data), nil)
-	assertAppCode(t, err, ErrCodePayloadTooLarge)
+	assertAppCode(t, err, kernel.ErrCodePayloadTooLarge)
 
 	if keys := gcsObjectsUnder(t, expensePrefix(devOrgID, expenseID)); len(keys) != 0 {
 		t.Errorf("an oversized upload must not write to GCS, found %v", keys)
@@ -437,13 +438,13 @@ func TestAttachment_MultiTenantScoping(t *testing.T) {
 
 	// The parent expense isn't in org B, so every access is a 404 for them.
 	_, err := ts.attachmentService.ListAttachments(context.Background(), callerB, tenantB, expenseA)
-	assertAppCode(t, err, ErrCodeNotFound)
+	assertAppCode(t, err, kernel.ErrCodeNotFound)
 
 	_, err = ts.attachmentService.GetDownloadURL(context.Background(), callerB, tenantB, expenseA, att.ID)
-	assertAppCode(t, err, ErrCodeNotFound)
+	assertAppCode(t, err, kernel.ErrCodeNotFound)
 
 	err = ts.attachmentService.DeleteAttachment(context.Background(), callerB, tenantB, expenseA, att.ID)
-	assertAppCode(t, err, ErrCodeNotFound)
+	assertAppCode(t, err, kernel.ErrCodeNotFound)
 
 	// ...and it survives for the real owner.
 	assertPrimary(t, ts, devUserID, devOrgID, expenseA, att.ID)
@@ -463,15 +464,15 @@ func TestAttachment_Authorization(t *testing.T) {
 	member, org := mustUUID(t, memberID), mustUUID(t, devOrgID)
 
 	_, err := ts.attachmentService.ListAttachments(context.Background(), member, org, expenseID)
-	assertAppCode(t, err, ErrCodeForbidden)
+	assertAppCode(t, err, kernel.ErrCodeForbidden)
 
 	_, err = ts.attachmentService.UploadAttachment(
 		context.Background(), member, org, expenseID, "sneaky.pdf",
 		int64(len(samplePDF())), bytes.NewReader(samplePDF()), nil)
-	assertAppCode(t, err, ErrCodeForbidden)
+	assertAppCode(t, err, kernel.ErrCodeForbidden)
 
 	_, err = ts.attachmentService.GetDownloadURL(context.Background(), member, org, expenseID, att.ID)
-	assertAppCode(t, err, ErrCodeForbidden)
+	assertAppCode(t, err, kernel.ErrCodeForbidden)
 }
 
 // =============================================================================
@@ -620,5 +621,5 @@ func TestAttachment_DownloadURL(t *testing.T) {
 	// Unknown attachment id → 404.
 	_, err = ts.attachmentService.GetDownloadURL(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, uuid.NewString())
-	assertAppCode(t, err, ErrCodeNotFound)
+	assertAppCode(t, err, kernel.ErrCodeNotFound)
 }

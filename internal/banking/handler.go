@@ -44,6 +44,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.GET("/:id", h.Get)
 		g.GET("/:id/transactions", h.ListTransactions)
 		g.POST("/:id/transactions", h.CreateTransaction)
+		g.POST("/:id/transactions/import", h.ImportTransactions)
 		g.PUT("/:id/transactions/:txnId", h.UpdateTransaction)
 		g.DELETE("/:id/transactions/:txnId", h.DeleteTransaction)
 		g.PUT("/:id", h.Update)
@@ -108,6 +109,30 @@ func (h *Handler) CreateTransaction(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, resp)
+}
+
+// ImportTransactions handles POST /api/v1/bank-accounts/:id/transactions/import — a
+// multipart CSV statement upload (field "file"). Mirrors the attachment upload: cap
+// the body before parsing, then stream the file to the import service.
+func (h *Handler) ImportTransactions(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxStatementUploadBytes)
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		kernel.RespondError(c, kernel.ErrValidation("a multipart 'file' field is required (or the upload was too large)", err))
+		return
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		kernel.RespondError(c, kernel.ErrValidation("could not read the uploaded file", err))
+		return
+	}
+	defer f.Close()
+	resp, err := h.svc.ImportStatement(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), f)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // UpdateTransaction handles PUT /api/v1/bank-accounts/:id/transactions/:txnId — edit a manual line.

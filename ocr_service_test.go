@@ -35,6 +35,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	// Dot-import: these capture→OCR integration tests reference many of the ocr
 	// package's symbols (OcrService, NewOcrService, ExtractionResult,
 	// DocumentTypeReceipt, …). A dot-import in this test file keeps them unqualified
@@ -179,7 +180,7 @@ func TestSmartUploadCapture(t *testing.T) {
 			ts.storage, &spyEnqueuer{}, 0, 0)
 		_, err := svc.CaptureFromReceipt(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			"banana", "x.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()))
-		assertAppCode(t, err, ErrCodeValidation)
+		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
 	t.Run("Add file does NOT enqueue OCR", func(t *testing.T) {

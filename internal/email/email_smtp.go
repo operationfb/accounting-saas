@@ -1,8 +1,8 @@
-package main
+package email
 
 // email_smtp.go
 // =============================================================================
-// smtpSender — the real EmailSender, using the standard library net/smtp.
+// smtpSender — the real Sender, using the standard library net/smtp.
 //
 // No third-party dependency. Works with:
 //   - a local catch-all mailbox (Mailpit/MailHog) — no auth, plain connection;
@@ -19,8 +19,8 @@ import (
 	"strings"
 )
 
-// smtpConfig holds the SMTP connection + sender details (read from env in main).
-type smtpConfig struct {
+// Config holds the SMTP connection + sender details (read from env in main).
+type Config struct {
 	Host     string // e.g. "smtp.eu.mailgun.org" or "localhost"
 	Port     string // e.g. "587" (STARTTLS) or "1025" (Mailpit)
 	Username string // empty → connect without auth (e.g. local Mailpit)
@@ -29,10 +29,10 @@ type smtpConfig struct {
 }
 
 type smtpSender struct {
-	cfg smtpConfig
+	cfg Config
 }
 
-func newSMTPSender(cfg smtpConfig) *smtpSender { return &smtpSender{cfg: cfg} }
+func NewSMTPSender(cfg Config) *smtpSender { return &smtpSender{cfg: cfg} }
 
 // Send builds a minimal RFC-5322 plain-text message and delivers it. PlainAuth
 // is used only when a username is configured (net/smtp refuses PLAIN over an

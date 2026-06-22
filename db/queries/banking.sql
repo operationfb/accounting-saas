@@ -312,6 +312,19 @@ WHERE bank_account_id = $1   -- the account
 
 
 -- -----------------------------------------------------------------------------
+-- ListBankTransactionExternalIDs  (statement-import dedupe set)
+-- All non-null external_ids currently on an account's live lines. Statement
+-- import fetches this once into a set to skip lines it has already imported
+-- (each imported line's external_id is a stable per-line hash). :many.
+-- -----------------------------------------------------------------------------
+-- name: ListBankTransactionExternalIDs :many
+SELECT external_id FROM bank_transactions
+WHERE bank_account_id = $1
+  AND external_id IS NOT NULL
+  AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
 -- SoftDeleteBankTransaction  (the "delete")
 -- Marks a line deleted (e.g. removing a manually-added transaction). Org-scoped.
 -- :exec. Idempotent — an already-deleted line matches nothing and is a no-op.

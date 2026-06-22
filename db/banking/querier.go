@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -98,6 +99,13 @@ type Querier interface {
 	// at the top of Banking lists and dropdowns"), then by name.
 	// -----------------------------------------------------------------------------
 	ListBankAccounts(ctx context.Context, organisationID uuid.UUID) ([]ListBankAccountsRow, error)
+	// -----------------------------------------------------------------------------
+	// ListBankTransactionExternalIDs  (statement-import dedupe set)
+	// All non-null external_ids currently on an account's live lines. Statement
+	// import fetches this once into a set to skip lines it has already imported
+	// (each imported line's external_id is a stable per-line hash). :many.
+	// -----------------------------------------------------------------------------
+	ListBankTransactionExternalIDs(ctx context.Context, bankAccountID uuid.UUID) ([]pgtype.Text, error)
 	// -----------------------------------------------------------------------------
 	// ListBankTransactions  (the "list", paginated)
 	// The statement lines for ONE account, newest first, for the transactions page.
