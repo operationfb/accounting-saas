@@ -61,6 +61,7 @@ import (
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
+	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -168,7 +169,7 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatalf("failed to create token maker: %v", err)
 	}
 	emailSender := &fakeEmailSender{}
-	authHandler := NewAuthHandler(authQueries, tokenMaker, time.Minute, emailSender, testAppBaseURL, 15*time.Minute)
+	authHandler := userauth.NewAuthHandler(authQueries, tokenMaker, time.Minute, emailSender, testAppBaseURL, 15*time.Minute)
 
 	// Attachment storage: when GCS_BUCKET is set the tests exercise the real GCS
 	// code path against that bucket; otherwise storage is nil and the attachment
@@ -186,7 +187,7 @@ func newTestServer(t *testing.T) *testServer {
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
-	userService := NewUserService(authQueries)
+	userSvc := userauth.NewService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
 	// tests can compute a valid HMAC). Capture still flows through the real
@@ -205,7 +206,7 @@ func newTestServer(t *testing.T) *testServer {
 	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
-	server := NewServer(service, attachmentService, userService, emailInboxService, authHandler, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
+	server := NewServer(service, attachmentService, emailInboxService, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
@@ -218,6 +219,8 @@ func newTestServer(t *testing.T) *testServer {
 	// per-domain handlers above. Contacts + Organisation are exposed on the harness
 	// for direct-call tests; Projects has no dedicated test, so only its routes are
 	// registered (for fidelity with production).
+	authHandler.RegisterRoutes(server.Router())
+	userauth.NewHandler(userSvc).RegisterRoutes(server.Router(), tokenMaker)
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
@@ -666,7 +669,7 @@ func TestHandleLoginUser(t *testing.T) {
 	}
 
 	// Decode the typed response.
-	var got loginUserResponse
+	var got userauth.LoginUserResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("failed to decode login response: %v", err)
 	}

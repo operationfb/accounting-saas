@@ -1,19 +1,30 @@
-package main
+package userauth
 
-// email_content.go
+// email.go
 // =============================================================================
-// Email content / templating — kept SEPARATE from transport (EmailSender).
+// Email content / templating + the EmailSender transport seam.
 //
 // Each email type is a subject + a text/template body. A handler gathers the
 // data, calls the builder here to render (subject, body), then hands those to
-// emailSender.Send(). Plain text for now; an HTML/multipart version can be
+// EmailSender.Send(). Plain text for now; an HTML/multipart version can be
 // added later without touching the handlers or the transport.
+//
+// EmailSender is a CONSUMER interface (the seam): the concrete transport
+// (smtpSender/logSender) lives in the root and is injected by main, so this
+// package depends only on the Send method — not on the transport implementation.
 // =============================================================================
 
 import (
 	"bytes"
+	"context"
 	"text/template"
 )
+
+// EmailSender delivers a plain-text email to a single recipient — pure transport.
+// Satisfied by the root smtpSender/logSender, injected into NewAuthHandler.
+type EmailSender interface {
+	Send(ctx context.Context, to, subject, body string) error
+}
 
 // render executes tmpl with data and returns the produced string.
 func render(tmpl *template.Template, data any) (string, error) {

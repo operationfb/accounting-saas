@@ -1,20 +1,17 @@
-package main
+package userauth
 
-// auth_handler.go
+// auth.go
 // =============================================================================
-// Authentication HTTP handlers.
+// Authentication HTTP handlers (login + password reset).
 //
-// This file is the HTTP boundary for auth — it parses the request, talks to the
-// sqlc-generated `auth` queries directly (there is no auth service layer yet),
+// This is the HTTP boundary for auth — it parses the request, talks to the
+// sqlc-generated `auth` queries directly (there is no auth service layer),
 // verifies the password, mints a PASETO token, and writes a sanitised response.
 //
-// NOTE: this handler is intentionally NOT wired into the router yet. Construct
-// an *AuthHandler in main.go (it needs the auth queries, a token.Maker, and an
-// access-token TTL) and register LoginUser on a route, e.g.:
-//
-//	authQueries := auth.New(pool)
-//	authHandler := NewAuthHandler(authQueries, tokenMaker, 15*time.Minute)
-//	v1.POST("/auth/login", authHandler.LoginUser)
+// AuthHandler.RegisterRoutes mounts the PUBLIC /api/v1/auth/* routes (login is how
+// a client obtains its token, so these are deliberately NOT behind auth
+// middleware). main builds the handler (auth queries + token.Maker + EmailSender +
+// TTLs) and calls RegisterRoutes on the shared engine — the per-domain pattern.
 // =============================================================================
 
 import (
@@ -35,6 +32,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/operationfb/accounting-saas/db/auth"
+	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -76,27 +74,40 @@ func NewAuthHandler(
 	}
 }
 
+// RegisterRoutes mounts the PUBLIC auth endpoints on the shared engine. They are
+// deliberately NOT behind auth middleware — login is how a client obtains its
+// token, and the password-reset flow must work for a logged-out user. Called from
+// main on server.Router(), the per-domain registration pattern.
+func (h *AuthHandler) RegisterRoutes(r *gin.Engine) {
+	g := r.Group("/api/v1/auth")
+	{
+		g.POST("/login", h.LoginUser)
+		g.POST("/forgot-password", h.ForgotPassword)
+		g.POST("/reset-password/:token", h.ResetPassword)
+	}
+}
+
 // =============================================================================
 // REQUEST / RESPONSE TYPES
 // Kept separate from the sqlc auth.User model so we never leak sensitive
 // columns (password_hash, reset tokens, failed_login_count, timestamps, ...).
 // =============================================================================
 
-// loginUserRequest is the JSON body for POST /auth/login.
+// LoginUserRequest is the JSON body for POST /auth/login.
 //
 // The login identifier is the user's email — that is the only credential the
 // schema supports (the users table has no separate username column, and the
 // lookup is GetUserByEmail). `binding:"email"` rejects malformed addresses with
 // a 400 before we touch the database.
-type loginUserRequest struct {
+type LoginUserRequest struct {
 	Email    string `json:"email"    binding:"required,email"`
 	Password string `json:"password" binding:"required,min=1"`
 }
 
-// userResponse is the safe, public view of a user. It deliberately omits the
+// UserResponse is the safe, public view of a user. It deliberately omits the
 // password hash, verification/reset tokens, security counters, the last-login
 // IP, and the created_at/updated_at/deleted_at timestamps.
-type userResponse struct {
+type UserResponse struct {
 	ID            string  `json:"id"`
 	Email         string  `json:"email"`
 	FirstName     string  `json:"first_name"`
@@ -106,12 +117,12 @@ type userResponse struct {
 	EmailVerified bool    `json:"email_verified"`
 }
 
-// organisationResponse is the safe public view of the organisation the session
+// OrganisationResponse is the safe public view of the organisation the session
 // is scoped to. Neither the org NAME nor its COUNTRY is inside the (encrypted)
 // PASETO token — the token only carries the org id — so we surface them here for
 // the client. The name is for display (e.g. the top bar); country_code drives
 // country-scoped features such as which VAT rates apply, so it is mandatory.
-type organisationResponse struct {
+type OrganisationResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	CountryCode string `json:"country_code"` // ISO 3166-1 alpha-2, e.g. 'GB'
@@ -124,37 +135,27 @@ type organisationResponse struct {
 	Role string `json:"role"`
 }
 
-// loginUserResponse is the JSON returned on a successful login: the PASETO
+// LoginUserResponse is the JSON returned on a successful login: the PASETO
 // access token, the sanitised user, and the organisation the session is scoped
 // to. organisation is always present on success — login fails if no organisation
 // (and therefore no country_code) can be resolved for the user.
-type loginUserResponse struct {
+type LoginUserResponse struct {
 	AccessToken  string                `json:"access_token"`
-	User         userResponse          `json:"user"`
-	Organisation *organisationResponse `json:"organisation,omitempty"`
+	User         UserResponse          `json:"user"`
+	Organisation *OrganisationResponse `json:"organisation,omitempty"`
 }
 
-// newUserResponse projects a generated auth.User onto the safe userResponse.
-func newUserResponse(u auth.User) userResponse {
-	return userResponse{
+// NewUserResponse projects a generated auth.User onto the safe UserResponse.
+func NewUserResponse(u auth.User) UserResponse {
+	return UserResponse{
 		ID:            u.ID.String(),
 		Email:         u.Email,
 		FirstName:     u.FirstName,
 		LastName:      u.LastName,
-		Phone:         textOrNil(u.Phone),
-		AvatarURL:     textOrNil(u.AvatarUrl),
+		Phone:         kernel.NullTextToPtr(u.Phone),
+		AvatarURL:     kernel.NullTextToPtr(u.AvatarUrl),
 		EmailVerified: u.EmailVerifiedAt.Valid, // verified iff the timestamp is set
 	}
-}
-
-// textOrNil converts a nullable pgtype.Text into a *string (nil when NULL) so
-// absent optional fields are omitted from the JSON instead of serialised as "".
-func textOrNil(t pgtype.Text) *string {
-	if !t.Valid {
-		return nil
-	}
-	s := t.String
-	return &s
 }
 
 // =============================================================================
@@ -176,8 +177,8 @@ func textOrNil(t pgtype.Text) *string {
 func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// Step 1: parse and validate the body. A bad body is a 400 (same pattern as
 	// the expense handlers).
-	var req loginUserRequest
-	if !bindJSON(c, &req) {
+	var req LoginUserRequest
+	if !kernel.BindJSON(c, &req) {
 		return
 	}
 
@@ -196,7 +197,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 			return
 		}
 		// Anything else is an unexpected server/database error.
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -238,7 +239,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// organisation's country_code.
 	orgs, err := h.queries.ListOrganisationsForUser(ctx, user.ID)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -248,7 +249,7 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// can't do anything anyway (authorize() refuses them) — so we fail the login
 	// rather than mint a token with no country_code.
 	if len(orgs) == 0 {
-		respondError(c, fmt.Errorf("login: user %s belongs to no organisation; cannot resolve country_code", user.ID))
+		kernel.RespondError(c, fmt.Errorf("login: user %s belongs to no organisation; cannot resolve country_code", user.ID))
 		return
 	}
 	defaultOrg := orgs[0] // default to the first active membership
@@ -257,14 +258,14 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// defensively so a blank/corrupt value fails the login loudly instead of
 	// silently issuing a session with no country.
 	if strings.TrimSpace(defaultOrg.CountryCode) == "" {
-		respondError(c, fmt.Errorf("login: organisation %s has an empty country_code", defaultOrg.ID))
+		kernel.RespondError(c, fmt.Errorf("login: organisation %s has an empty country_code", defaultOrg.ID))
 		return
 	}
 	orgID := defaultOrg.ID
 
 	// The org name + country are already loaded here, so include them in the
 	// response — the client can't read them from the encrypted token.
-	org := &organisationResponse{
+	org := &OrganisationResponse{
 		ID:          defaultOrg.ID.String(),
 		Name:        defaultOrg.Name,
 		CountryCode: defaultOrg.CountryCode,
@@ -276,13 +277,13 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// Step 6: mint the PASETO token and return it with the safe user view.
 	accessToken, err := h.tokenMaker.CreateToken(user.ID, orgID, h.accessTokenDuration)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, loginUserResponse{
+	c.JSON(http.StatusOK, LoginUserResponse{
 		AccessToken:  accessToken,
-		User:         newUserResponse(user),
+		User:         NewUserResponse(user),
 		Organisation: org,
 	})
 }
@@ -310,14 +311,14 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// forgotPasswordRequest is the JSON body for POST /auth/forgot-password.
-type forgotPasswordRequest struct {
+// ForgotPasswordRequest is the JSON body for POST /auth/forgot-password.
+type ForgotPasswordRequest struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
-// resetPasswordRequest is the JSON body for POST /auth/reset-password/:token.
+// ResetPasswordRequest is the JSON body for POST /auth/reset-password/:token.
 // The token itself comes from the URL path, not the body.
-type resetPasswordRequest struct {
+type ResetPasswordRequest struct {
 	Password string `json:"password" binding:"required,min=8"`
 }
 
@@ -327,8 +328,8 @@ type resetPasswordRequest struct {
 // raw token, and ALWAYS returns 200 with a generic message — it never reveals
 // whether the email is registered (no account enumeration).
 func (h *AuthHandler) ForgotPassword(c *gin.Context) {
-	var req forgotPasswordRequest
-	if !bindJSON(c, &req) {
+	var req ForgotPasswordRequest
+	if !kernel.BindJSON(c, &req) {
 		return
 	}
 
@@ -343,7 +344,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 
 	rawToken, err := generateToken()
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -359,7 +360,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 			respondGeneric()
 			return
 		}
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -375,7 +376,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	resetLink := strings.TrimRight(h.appBaseURL, "/") + "/reset-password/" + rawToken
 	subject, body, err := buildPasswordResetEmail(user.FirstName, resetLink, int(h.passwordResetTTL.Minutes()))
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	if sendErr := h.emailSender.Send(ctx, user.Email, subject, body); sendErr != nil {
@@ -397,8 +398,8 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 func (h *AuthHandler) ResetPassword(c *gin.Context) {
 	rawToken := c.Param("token")
 
-	var req resetPasswordRequest
-	if !bindJSON(c, &req) {
+	var req ResetPasswordRequest
+	if !kernel.BindJSON(c, &req) {
 		return
 	}
 
@@ -411,7 +412,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": invalidMsg})
 			return
 		}
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -424,7 +425,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 
@@ -433,7 +434,7 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		ID:           user.ID,
 		PasswordHash: pgtype.Text{String: string(hash), Valid: true},
 	}); err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 

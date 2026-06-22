@@ -27,6 +27,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 )
 
 // =============================================================================
@@ -35,7 +37,7 @@ import (
 
 // putProfile sends PUT /api/v1/profile with the given auth header (empty = none)
 // and JSON body, returning the recorder.
-func putProfile(t *testing.T, ts *testServer, authHeader string, body UpdateProfileRequest) *httptest.ResponseRecorder {
+func putProfile(t *testing.T, ts *testServer, authHeader string, body userauth.UpdateProfileRequest) *httptest.ResponseRecorder {
 	t.Helper()
 	bodyBytes, _ := json.Marshal(body)
 	rec := httptest.NewRecorder()
@@ -60,11 +62,11 @@ func getProfileReq(t *testing.T, ts *testServer, authHeader string) *httptest.Re
 	return rec
 }
 
-// decodeProfile pulls the { "user": {...} } envelope into a userResponse.
-func decodeProfile(t *testing.T, body []byte) userResponse {
+// decodeProfile pulls the { "user": {...} } envelope into a userauth.UserResponse.
+func decodeProfile(t *testing.T, body []byte) userauth.UserResponse {
 	t.Helper()
 	var resp struct {
-		User userResponse `json:"user"`
+		User userauth.UserResponse `json:"user"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode profile: %v — body: %s", err, string(body))
@@ -126,7 +128,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 		authHeader := bearer(t, ts, ownerB, orgB)
 
-		rec := putProfile(t, ts, authHeader, UpdateProfileRequest{
+		rec := putProfile(t, ts, authHeader, userauth.UpdateProfileRequest{
 			FirstName: "Aydin",
 			LastName:  "Gunal",
 		})
@@ -165,7 +167,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 	t.Run("update trims surrounding whitespace", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
 
-		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), UpdateProfileRequest{
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
 			FirstName: "  Jo  ",
 			LastName:  "  Bloggs ",
 		})
@@ -191,7 +193,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 			t.Fatalf("seed phone/avatar: %v", err)
 		}
 
-		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), UpdateProfileRequest{
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
 			FirstName: "Renamed",
 			LastName:  "Person",
 		})
@@ -219,7 +221,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 
 	t.Run("missing first_name → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
-		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), UpdateProfileRequest{LastName: "OnlyLast"})
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{LastName: "OnlyLast"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -227,7 +229,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 
 	t.Run("missing last_name → 400 binding", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
-		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), UpdateProfileRequest{FirstName: "OnlyFirst"})
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{FirstName: "OnlyFirst"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -237,7 +239,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 	// string is non-zero) but is rejected by the service after trimming → 422.
 	t.Run("whitespace-only first_name → 422 service validation", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
-		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), UpdateProfileRequest{
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
 			FirstName: "   ",
 			LastName:  "Bloggs",
 		})
@@ -247,7 +249,7 @@ func TestHandleUpdateProfile(t *testing.T) {
 	})
 
 	t.Run("unauthenticated → 401", func(t *testing.T) {
-		rec := putProfile(t, ts, "", UpdateProfileRequest{FirstName: "A", LastName: "B"})
+		rec := putProfile(t, ts, "", userauth.UpdateProfileRequest{FirstName: "A", LastName: "B"})
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
 		}

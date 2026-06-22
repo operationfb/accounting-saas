@@ -47,14 +47,14 @@ Single Go module (`github.com/operationfb/accounting-saas`) — a monolith organ
 .
 ├── main.go              # Entry point: load .env/config, open pgx pool, build deps, start server
 ├── server.go            # Gin engine + Server struct + route registration (incl. the public Mailgun webhook + /inbox-address) + expense & contact handlers
-├── auth_handler.go      # AuthHandler: POST /api/v1/auth/login → PASETO token + sanitised user
+│   # NOTE: auth + user profile were extracted to internal/userauth (2026-06-21):
+│   #   internal/userauth/ — AuthHandler (login + forgot/reset password; PUBLIC /api/v1/auth/* via RegisterRoutes) + the profile Service/Handler (GET/PUT /api/v1/profile) + the shared user/org DTOs (UserResponse, OrganisationResponse, NewUserResponse) + the reset-email content (email.go). EmailSender is a consumer-interface SEAM: the root smtpSender/logSender (email.go/email_smtp.go) satisfy it, injected by main.
 ├── expense_service.go   # Expense business logic (validation, money conversion, DB orchestration)
 ├── expense_status.go    # Approval-workflow state machine: status constants, the transition table, and ChangeExpenseStatus (submit/approve/reject/reopen)
 │   # NOTE: contacts + organisation (Company Details) were extracted to internal/ (2026-06-21):
 │   #   internal/contacts/      — contacts.Service + Handler + DTOs (CRUD over db/contacts; self-registers /api/v1/contacts*). db/contacts is aliased `contactsdb` inside.
 │   #   internal/organisation/  — organisation.Service + Handler + DTOs (Company Details; self-registers /api/v1/organisation).
 │   #   normaliseCountryCode (shared by both) moved to internal/kernel (kernel.NormaliseCountryCode, in validate.go).
-├── user_service.go      # UserService: read/update the caller's own "My Details" (GET/PUT /api/v1/profile; first/last name — always self-scoped from the token, no role check)
 ├── attachment_service.go    # Receipt-attachment logic: authorise, validate, store bytes in GCS, metadata in DB, primary-file rule; plus CaptureFromReceipt ("Smart Upload")
 ├── attachment_handler.go    # HTTP handlers for attachment endpoints (multipart upload, list, download URL, set-primary, delete) + Smart Upload capture
 │   # NOTE: OCR + object storage were extracted OUT of the root into internal/ (2026-06-21):
@@ -199,12 +199,12 @@ The **Company Details** screen (modelled on FreeAgent's) lives entirely on the e
 
 The **My Details** screen (modelled on FreeAgent's) is the per-user counterpart to Company Details: the signed-in user edits their **own** profile (`first_name` / `last_name`), with a read-only **login email** and a display of their **Mailgun receipt-inbox address**. Like the organisation, it lives entirely on an existing table (`users`) — **no schema change, no new sqlc** (the `GetUser` / `UpdateUser` queries already existed).
 
-`UserService` (`user_service.go`) is a thin layer over the existing `auth` queries (like `OrganisationService` / `MemberService`), with handlers/DTOs/routes in `server.go` under **`/api/v1/profile`** — a singleton resource (the user comes from the token, so there is no id in the path):
+`userauth.Service` (**`internal/userauth`**, alongside the login/password-reset `AuthHandler`) is a thin layer over the existing `auth` queries (like `OrganisationService` / `MemberService`), with its `Handler` self-registering **`/api/v1/profile`** — a singleton resource (the user comes from the token, so there is no id in the path):
 
 - **`GET`** returns the caller's own profile. **`PUT`** updates `first_name` / `last_name`.
 - **No role check — and that's the point.** Unlike Company Details (owner/admin to edit), there is no membership/authorize step: the target is always `authUserID` from the token, so a caller can only ever read/edit **themselves**. Multi-tenant isolation is inherent (there is no id to pass).
 - **Read-modify-write.** `PUT` fetches the row first and passes through the columns this form doesn't own (`phone`, `avatar_url`) so a save can't wipe them — the same preservation pattern as the org PUT (`slug`/`vrn`/…). The login `email` is not editable here at all.
-- **Reuse.** The GET/PUT responses reuse the login `userResponse` + `newUserResponse` projector (`auth_handler.go`) — the same safe shape login returns.
+- **Reuse.** The GET/PUT responses reuse the login `UserResponse` + `NewUserResponse` projector (same `internal/userauth` package as the login handler, `auth.go`) — the same safe shape login returns. (Keeping login + profile in one package is *why* they were extracted together.)
 - **Validation.** `first_name` / `last_name` are checked two ways: `required,max=100` binding (400) and a service trim-and-reject guard (422, e.g. a whitespace-only name). The Mailgun address shown on the page comes from the existing `GET /api/v1/inbox-address`. Tested in `user_service_test.go`. Frontend: `MyDetailsView.vue` (mirrors `CompanyDetailsView.vue`), reached from the account dropdown's **My Details** item (directly under **Company Details**); a save also calls the auth store's `patchUser` so the top-bar name updates immediately.
 
 ### Email-to-expense (Mailgun inbound)

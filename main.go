@@ -44,6 +44,7 @@ import (
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
+	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -144,10 +145,11 @@ func main() {
 	// Reuses the shared authQueries. Self-registers its routes after NewServer.
 	organisationSvc := organisation.NewService(authQueries)
 
-	// User: read/update the caller's own profile (the "My Details" screen —
-	// first/last name; the login email is read-only). Always self-scoped via the
-	// token, so no role check. Reuses the shared authQueries.
-	userService := NewUserService(authQueries)
+	// User profile: read/update the caller's own "My Details" (first/last name; the
+	// login email is read-only). Always self-scoped via the token, so no role check.
+	// Part of internal/userauth (alongside login + password reset); self-registers
+	// /api/v1/profile after NewServer.
+	userSvc := userauth.NewService(authQueries)
 
 	// -------------------------------------------------------------------------
 	// Auth wiring.
@@ -216,7 +218,9 @@ func main() {
 		passwordResetTTL = parsed
 	}
 
-	authHandler := NewAuthHandler(authQueries, tokenMaker, accessTokenDuration, emailSender, appBaseURL, passwordResetTTL)
+	// Login + password reset (internal/userauth). emailSender is the root concrete
+	// transport (smtpSender/logSender); it satisfies the userauth.EmailSender seam.
+	authHandler := userauth.NewAuthHandler(authQueries, tokenMaker, accessTokenDuration, emailSender, appBaseURL, passwordResetTTL)
 
 	// -------------------------------------------------------------------------
 	// Attachment storage (Google Cloud Storage).
@@ -365,7 +369,7 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(service, attachmentService, userService, emailInboxService, authHandler, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(service, attachmentService, emailInboxService, tokenMaker, mailgunSigningKey, corsOrigins)
 
 	// Each integration registers its OWN routes on the shared engine (the
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in
@@ -386,8 +390,10 @@ func main() {
 	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
-	// Contacts + Projects + Members + Organisation (Company Details), each
-	// self-registering its routes on the shared engine — same per-domain pattern.
+	// Auth (login + password reset, PUBLIC routes) + the user profile, plus Contacts
+	// + Projects + Members + Organisation — each self-registering on the shared engine.
+	authHandler.RegisterRoutes(server.Router())
+	userauth.NewHandler(userSvc).RegisterRoutes(server.Router(), tokenMaker)
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)

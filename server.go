@@ -43,9 +43,7 @@ type Server struct {
 	router            *gin.Engine
 	expenseService    *ExpenseService
 	attachmentService *AttachmentService
-	userService       *UserService
 	emailInboxService *EmailInboxService
-	authHandler       *AuthHandler
 	tokenMaker        token.Maker
 
 	// mailgunSigningKey authenticates the inbound-email webhook (HMAC). Empty
@@ -55,13 +53,11 @@ type Server struct {
 
 // NewServer constructs the Server, registers all routes, and returns it.
 // main.go calls this once at startup.
-func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, userService *UserService, emailInboxService *EmailInboxService, authHandler *AuthHandler, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
+func NewServer(expenseService *ExpenseService, attachmentService *AttachmentService, emailInboxService *EmailInboxService, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
 	s := &Server{
 		expenseService:    expenseService,
 		attachmentService: attachmentService,
-		userService:       userService,
 		emailInboxService: emailInboxService,
-		authHandler:       authHandler,
 		tokenMaker:        tokenMaker,
 		mailgunSigningKey: mailgunSigningKey,
 	}
@@ -181,18 +177,6 @@ func (s *Server) registerRoutes() {
 
 	v1 := s.router.Group("/api/v1")
 	{
-		// Authentication routes. These are deliberately NOT behind auth
-		// middleware — login is how a client obtains its token in the first place.
-		authRoutes := v1.Group("/auth")
-		{
-			// POST /api/v1/auth/login → verify credentials, return a PASETO token
-			authRoutes.POST("/login", s.authHandler.LoginUser)
-			// POST /api/v1/auth/forgot-password → email a reset link (always 200, no enumeration)
-			authRoutes.POST("/forgot-password", s.authHandler.ForgotPassword)
-			// POST /api/v1/auth/reset-password/:token → set a new password via the emailed code
-			authRoutes.POST("/reset-password/:token", s.authHandler.ResetPassword)
-		}
-
 		// Expense routes require a valid login. authMiddleware verifies the
 		// bearer token and puts the user id + organisation id in the context.
 		expenses := v1.Group("/expenses")
@@ -250,19 +234,6 @@ func (s *Server) registerRoutes() {
 		{
 			// GET /api/v1/vat-rates → VAT rates valid today for the caller's org country
 			vatRates.GET("", s.handleListVATRates)
-		}
-
-		// Profile routes — the caller's own "My Details" (first/last name + the
-		// read-only login email). Like organisation, this is a singleton resource:
-		// the user is taken from the bearer token, so there's no id in the path and
-		// a caller can only ever read/edit themselves.
-		profile := v1.Group("/profile")
-		profile.Use(authMiddleware(s.tokenMaker))
-		{
-			// GET /api/v1/profile → the caller's own profile
-			// PUT /api/v1/profile → update the caller's first/last name
-			profile.GET("", s.handleGetProfile)
-			profile.PUT("", s.handleUpdateProfile)
 		}
 
 		// NOTE: the integration routes (/api/v1/integrations/{provider},
@@ -502,18 +473,6 @@ type VATRateResponse struct {
 	RateBps      int32  `json:"rate_bps"`       // basis points: 2000 = 20.00%
 	Rate         string `json:"rate"`           // display form, e.g. "20%"
 	IsFixedRatio bool   `json:"is_fixed_ratio"` // true = amount locked to gross × rate
-}
-
-// UpdateProfileRequest is the JSON body accepted by PUT /api/v1/profile (the
-// "My Details" screen). It carries only the editable profile fields. The login
-// email is deliberately absent (changing it is a separate, security-sensitive
-// flow), as are phone/avatar_url — the service preserves those. Both names are
-// required (they are NOT NULL on the users table and starred on the form); `max`
-// matches the VARCHAR(100) columns. The user is taken from the token, so there
-// is no id here. The GET/PUT responses reuse the login userResponse shape.
-type UpdateProfileRequest struct {
-	FirstName string `json:"first_name" binding:"required,max=100"`
-	LastName  string `json:"last_name" binding:"required,max=100"`
 }
 
 // =============================================================================
@@ -789,30 +748,3 @@ func (s *Server) handleListVATRates(c *gin.Context) {
 // =============================================================================
 // MEMBER HANDLERS
 // =============================================================================
-
-// handleGetProfile handles GET /api/v1/profile — the caller's own "My Details".
-// The user is taken from the token, so a caller can only ever read themselves.
-func (s *Server) handleGetProfile(c *gin.Context) {
-	profile, err := s.userService.GetProfile(c.Request.Context(), getAuthUserID(c))
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"user": profile})
-}
-
-// handleUpdateProfile handles PUT /api/v1/profile — update the caller's first/
-// last name. The user is taken from the token, so it always targets themselves.
-func (s *Server) handleUpdateProfile(c *gin.Context) {
-	var req UpdateProfileRequest
-	if !bindJSON(c, &req) {
-		return
-	}
-
-	profile, err := s.userService.UpdateProfile(c.Request.Context(), getAuthUserID(c), req)
-	if err != nil {
-		respondError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"user": profile})
-}
