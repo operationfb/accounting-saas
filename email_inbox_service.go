@@ -46,6 +46,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
@@ -70,8 +71,8 @@ type EmailInboxService struct {
 	authQueries  auth.Querier
 	eventQueries *emailinbox.Queries
 	attachments  *AttachmentService
-	renderer     HTMLRenderer // nil when GOTENBERG_URL is unset → HTML-body capture is skipped
-	inboxDomain  string       // e.g. "receipts.example.com" (lower-cased)
+	renderer     htmlrender.Renderer // nil when GOTENBERG_URL is unset → HTML-body capture is skipped
+	inboxDomain  string              // e.g. "receipts.example.com" (lower-cased)
 
 	// runInBackground runs the post-claim processing off the request path so the
 	// webhook can ack Mailgun fast (see Accept). Defaults to spawning a goroutine;
@@ -83,7 +84,7 @@ type EmailInboxService struct {
 
 // NewEmailInboxService constructs the service. renderer may be nil (HTML-body
 // capture then disabled). inboxDomain is required for the channel to do anything.
-func NewEmailInboxService(authQueries auth.Querier, eventQueries *emailinbox.Queries, attachments *AttachmentService, renderer HTMLRenderer, inboxDomain string) *EmailInboxService {
+func NewEmailInboxService(authQueries auth.Querier, eventQueries *emailinbox.Queries, attachments *AttachmentService, renderer htmlrender.Renderer, inboxDomain string) *EmailInboxService {
 	return &EmailInboxService{
 		authQueries:     authQueries,
 		eventQueries:    eventQueries,

@@ -137,6 +137,14 @@ type Querier interface {
 	// (UnsetPrimaryBankAccounts), inside one transaction.
 	// -----------------------------------------------------------------------------
 	UpdateBankAccount(ctx context.Context, arg UpdateBankAccountParams) (BankAccount, error)
+	// -----------------------------------------------------------------------------
+	// UpdateBankTransaction  (the "update", manual lines only)
+	// Updates a transaction's user-editable fields. The service restricts this to
+	// source='manual' lines (a feed/statement line is the bank's truth and immutable);
+	// status / source / external_id / transaction_type are NOT changed on edit.
+	// updated_at is set explicitly in addition to the trigger. RETURNING * echoes the row.
+	// -----------------------------------------------------------------------------
+	UpdateBankTransaction(ctx context.Context, arg UpdateBankTransactionParams) (BankTransaction, error)
 }
 
 var _ Querier = (*Queries)(nil)

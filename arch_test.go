@@ -58,7 +58,6 @@ var rootAllowlist = map[string]bool{
 	"expense_service.go":           true,
 	"expense_status.go":            true,
 	"expense_status_test.go":       true,
-	"html_renderer.go":             true,
 	"inbound_email.go":             true,
 	"integration_internal_test.go": true,
 	"integration_service_test.go":  true,

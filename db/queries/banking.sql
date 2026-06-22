@@ -214,7 +214,8 @@ INSERT INTO bank_transactions (
     balance_minor,
     status,
     source,
-    external_id
+    external_id,
+    transaction_type
 ) VALUES (
     $1,   -- organisation_id     UUID (tenant; denormalised from the account)
     $2,   -- bank_account_id     UUID (the account this line belongs to)
@@ -226,8 +227,29 @@ INSERT INTO bank_transactions (
     $8,   -- balance_minor       BIGINT (nullable; running statement balance)
     $9,   -- status              VARCHAR 'unexplained'|'explained'|'for_approval'
     $10,  -- source              VARCHAR 'feed'|'manual'|'statement'
-    $11   -- external_id         VARCHAR (nullable; provider txn id for dedupe)
+    $11,  -- external_id         VARCHAR (nullable; provider txn id for dedupe)
+    $12   -- transaction_type    VARCHAR (nullable; OFX type, e.g. CREDIT/DEBIT)
 )
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- UpdateBankTransaction  (the "update", manual lines only)
+-- Updates a transaction's user-editable fields. The service restricts this to
+-- source='manual' lines (a feed/statement line is the bank's truth and immutable);
+-- status / source / external_id / transaction_type are NOT changed on edit.
+-- updated_at is set explicitly in addition to the trigger. RETURNING * echoes the row.
+-- -----------------------------------------------------------------------------
+-- name: UpdateBankTransaction :one
+UPDATE bank_transactions SET
+    dated_on     = $3,
+    amount_minor = $4,
+    description  = $5,
+    bank_memo    = $6,
+    updated_at   = now()
+WHERE id              = $1   -- transaction UUID
+  AND organisation_id = $2   -- tenant scope
+  AND deleted_at IS NULL
 RETURNING *;
 
 

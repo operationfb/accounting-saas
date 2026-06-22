@@ -345,4 +345,130 @@ func TestBankAccountService(t *testing.T) {
 			t.Errorf("name should have updated alongside an unchanged opening balance: got %q", ok.Name)
 		}
 	})
+
+	t.Run("manual transaction add / edit / delete + new fields", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("Txns", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		desc := "Stationery"
+		st, err := svc.CreateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID,
+			banking.CreateBankTransactionRequest{DatedOn: "2026-06-10", Description: &desc, Direction: "out", Amount: "30.00"})
+		if err != nil {
+			t.Fatalf("create txn: %v", err)
+		}
+		if len(st.Transactions) != 1 {
+			t.Fatalf("want 1 transaction, got %d", len(st.Transactions))
+		}
+		line := st.Transactions[0]
+		if line.Source != "manual" || line.Status != "unexplained" || !line.IsManual {
+			t.Errorf("manual line: source=%q status=%q is_manual=%v", line.Source, line.Status, line.IsManual)
+		}
+		if line.TransactionType == nil || *line.TransactionType != "DEBIT" {
+			t.Errorf("transaction_type: got %v, want DEBIT (money out)", line.TransactionType)
+		}
+		if line.MoneyOut == nil || *line.MoneyOut != "30.00" || line.MoneyIn != nil {
+			t.Errorf("money split: in=%v out=%v", line.MoneyIn, line.MoneyOut)
+		}
+		if line.UnexplainedAmount != "-30.00" { // signed like amount (FreeAgent convention); = amount until reconciled
+			t.Errorf("unexplained_amount: got %q, want -30.00", line.UnexplainedAmount)
+		}
+		if line.RunningBalance != "970.00" || st.Account.CurrentBalance != "970.00" { // 1000 - 30
+			t.Errorf("balances: running=%q current=%q, want 970.00", line.RunningBalance, st.Account.CurrentBalance)
+		}
+
+		// Edit → £45 out; statement + current balance reflect it.
+		st, err = svc.UpdateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, line.ID,
+			banking.CreateBankTransactionRequest{DatedOn: "2026-06-10", Description: &desc, Direction: "out", Amount: "45.00"})
+		if err != nil {
+			t.Fatalf("update txn: %v", err)
+		}
+		if st.Transactions[0].MoneyOut == nil || *st.Transactions[0].MoneyOut != "45.00" || st.Account.CurrentBalance != "955.00" {
+			t.Errorf("after edit: out=%v current=%q, want 45.00 / 955.00", st.Transactions[0].MoneyOut, st.Account.CurrentBalance)
+		}
+
+		// Delete → gone, balance reverts to the opening.
+		st, err = svc.DeleteTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, line.ID)
+		if err != nil {
+			t.Fatalf("delete txn: %v", err)
+		}
+		if len(st.Transactions) != 0 || st.Account.CurrentBalance != "1000.00" {
+			t.Errorf("after delete: %d txns, current=%q, want 0 / 1000.00", len(st.Transactions), st.Account.CurrentBalance)
+		}
+	})
+
+	t.Run("only manual lines can be edited or deleted (source guard)", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("Guard", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		// A FEED line (the bank's truth) — inserted directly with source='feed'.
+		var feedID string
+		if err := ts.pool.QueryRow(ctx, `
+			INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source, transaction_type)
+			VALUES ($1, $2, CURRENT_DATE, -5000, 'unexplained', 'feed', 'POS') RETURNING id::text`,
+			org, acc.ID).Scan(&feedID); err != nil {
+			t.Fatalf("insert feed txn: %v", err)
+		}
+
+		req := banking.CreateBankTransactionRequest{DatedOn: "2026-06-10", Direction: "out", Amount: "10.00"}
+		if _, err := svc.UpdateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, feedID, req); err == nil {
+			t.Error("editing a feed line should be rejected")
+		} else {
+			assertAppCode(t, err, ErrCodeValidation)
+		}
+		if _, err := svc.DeleteTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, feedID); err == nil {
+			t.Error("deleting a feed line should be rejected")
+		} else {
+			assertAppCode(t, err, ErrCodeValidation)
+		}
+
+		// The feed line reports is_manual=false and its passed-through transaction_type.
+		st, err := svc.ListTransactions(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(st.Transactions) != 1 || st.Transactions[0].IsManual {
+			t.Errorf("a feed line should be is_manual=false")
+		}
+		if st.Transactions[0].TransactionType == nil || *st.Transactions[0].TransactionType != "POS" {
+			t.Errorf("feed transaction_type: got %v, want POS", st.Transactions[0].TransactionType)
+		}
+	})
+
+	t.Run("manual transaction authz + validation", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("AV", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		good := banking.CreateBankTransactionRequest{DatedOn: "2026-06-10", Direction: "in", Amount: "10.00"}
+		// A non-admin member cannot add a transaction.
+		member := addMember(t, ts, org, "member")
+		if _, err := svc.CreateTransaction(ctx, mustUUID(t, member), mustUUID(t, org), acc.ID, good); err == nil {
+			t.Error("a non-admin member should not be able to add a transaction")
+		} else {
+			assertAppCode(t, err, ErrCodeForbidden)
+		}
+		// Validation: amount ≤ 0, bad direction, bad date → 422.
+		for _, bad := range []banking.CreateBankTransactionRequest{
+			{DatedOn: "2026-06-10", Direction: "in", Amount: "0"},
+			{DatedOn: "2026-06-10", Direction: "sideways", Amount: "10.00"},
+			{DatedOn: "10/06/2026", Direction: "in", Amount: "10.00"},
+		} {
+			if _, err := svc.CreateTransaction(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, bad); err == nil {
+				t.Errorf("expected 422 for %+v", bad)
+			} else {
+				assertAppCode(t, err, ErrCodeValidation)
+			}
+		}
+	})
 }

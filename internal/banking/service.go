@@ -248,15 +248,22 @@ func (s *Service) ListBankAccounts(ctx context.Context, authUserID, authOrgID uu
 // into money_in / money_out (one set, pound strings) by the sign of amount_minor,
 // and running_balance is the derived balance AFTER this line.
 type BankTransactionResponse struct {
-	ID             string  `json:"id"`
-	DatedOn        string  `json:"dated_on"` // YYYY-MM-DD
-	Description    *string `json:"description,omitempty"`
-	BankMemo       *string `json:"bank_memo,omitempty"`
-	Status         string  `json:"status"`              // unexplained | explained | for_approval
-	Source         string  `json:"source"`              // feed | manual | statement
-	MoneyIn        *string `json:"money_in,omitempty"`  // pounds, set when amount_minor > 0
-	MoneyOut       *string `json:"money_out,omitempty"` // pounds, set when amount_minor < 0
-	RunningBalance string  `json:"running_balance"`     // pounds, opening + Σ up to this line
+	ID          string  `json:"id"`
+	DatedOn     string  `json:"dated_on"` // YYYY-MM-DD
+	Description *string `json:"description,omitempty"`
+	BankMemo    *string `json:"bank_memo,omitempty"`
+	Status      string  `json:"status"` // unexplained | explained | for_approval
+	Source      string  `json:"source"` // feed | manual | statement
+	// IsManual mirrors FreeAgent's is_manual, derived from source (no separate column).
+	IsManual bool `json:"is_manual"`
+	// TransactionType is the OFX/bank type code (CREDIT/DEBIT/…); nullable.
+	TransactionType *string `json:"transaction_type,omitempty"`
+	MoneyIn         *string `json:"money_in,omitempty"`  // pounds, set when amount_minor > 0
+	MoneyOut        *string `json:"money_out,omitempty"` // pounds, set when amount_minor < 0
+	// UnexplainedAmount (FreeAgent's unexplained_amount): the still-unexplained portion as
+	// pounds; equals the full amount until the reconcile flow decrements it.
+	UnexplainedAmount string `json:"unexplained_amount"`
+	RunningBalance    string `json:"running_balance"` // pounds, opening + Σ up to this line
 }
 
 // BankAccountTransactionsResponse is the combined statement-page payload: the
@@ -278,25 +285,28 @@ func (s *Service) ListTransactions(ctx context.Context, authUserID, authOrgID uu
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
 	}
+	return s.buildStatement(ctx, authOrgID, accountUUID)
+}
 
-	// The account supplies the opening balance (the running-balance seed + the
-	// brought-forward row) and the header/sidebar fields. 404 if missing/other org.
-	acct, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: authOrgID})
+// buildStatement assembles the statement payload — the account (with its derived current
+// balance) plus its live lines oldest-first, each with a server-computed running balance
+// (opening + Σ). Shared by ListTransactions and the create/update/delete mutations, which
+// return the freshly-recomputed statement. 404 if the account is missing / in another org.
+func (s *Service) buildStatement(ctx context.Context, orgID, accountUUID uuid.UUID) (*BankAccountTransactionsResponse, error) {
+	acct, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: orgID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("bank account", id)
+			return nil, kernel.ErrNotFound("bank account", accountUUID.String())
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-
 	rows, err := s.queries.ListBankAccountTransactions(ctx, banking.ListBankAccountTransactionsParams{
-		OrganisationID: authOrgID,
+		OrganisationID: orgID,
 		BankAccountID:  accountUUID,
 	})
 	if err != nil {
 		return nil, kernel.ErrInternal(err)
 	}
-
 	// Fold a running balance over the chronological lines: opening + cumulative sum.
 	running := acct.OpeningBalanceMinor
 	out := make([]*BankTransactionResponse, 0, len(rows))
@@ -304,7 +314,6 @@ func (s *Service) ListTransactions(ctx context.Context, authUserID, authOrgID uu
 		running += t.AmountMinor
 		out = append(out, bankTransactionToResponse(t, running))
 	}
-
 	return &BankAccountTransactionsResponse{
 		Account:      bankAccountToResponse(accountFromGetRow(acct), acct.CurrentBalanceMinor, acct.TransactionCount == 0),
 		Transactions: out,
@@ -323,17 +332,196 @@ func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64) *B
 		s := money.MinorToPounds(-t.AmountMinor)
 		moneyOut = &s
 	}
-	return &BankTransactionResponse{
-		ID:             t.ID.String(),
-		DatedOn:        t.DatedOn.Time.Format("2006-01-02"),
-		Description:    kernel.NullTextToPtr(t.Description),
-		BankMemo:       kernel.NullTextToPtr(t.BankMemo),
-		Status:         t.Status,
-		Source:         t.Source,
-		MoneyIn:        moneyIn,
-		MoneyOut:       moneyOut,
-		RunningBalance: money.MinorToPounds(runningMinor),
+	// unexplained_amount: the explicit value if reconcile has set one, else the full
+	// amount (a line is fully unexplained until the reconcile flow decrements it).
+	unexplainedMinor := t.AmountMinor
+	if t.UnexplainedAmountMinor.Valid {
+		unexplainedMinor = t.UnexplainedAmountMinor.Int64
 	}
+	return &BankTransactionResponse{
+		ID:                t.ID.String(),
+		DatedOn:           t.DatedOn.Time.Format("2006-01-02"),
+		Description:       kernel.NullTextToPtr(t.Description),
+		BankMemo:          kernel.NullTextToPtr(t.BankMemo),
+		Status:            t.Status,
+		Source:            t.Source,
+		IsManual:          t.Source == "manual",
+		TransactionType:   kernel.NullTextToPtr(t.TransactionType),
+		MoneyIn:           moneyIn,
+		MoneyOut:          moneyOut,
+		UnexplainedAmount: money.MinorToPounds(unexplainedMinor),
+		RunningBalance:    money.MinorToPounds(runningMinor),
+	}
+}
+
+// =============================================================================
+// TRANSACTION MUTATIONS (manual add / edit / delete)
+// =============================================================================
+
+// CreateBankTransactionRequest is the body for adding/editing a MANUAL transaction.
+// Amount is a POSITIVE pound string plus a direction; the service signs it into
+// amount_minor. Reused for create and update.
+type CreateBankTransactionRequest struct {
+	DatedOn     string  `json:"dated_on" binding:"required"`               // YYYY-MM-DD
+	Description *string `json:"description"`
+	Direction   string  `json:"direction" binding:"required,oneof=in out"` // money in / money out
+	Amount      string  `json:"amount" binding:"required"`                 // pounds, positive
+	BankMemo    *string `json:"bank_memo"`
+}
+
+// CreateTransaction adds a manual line to an account and returns the refreshed statement.
+// Owner/admin only. The line is source='manual', status='unexplained', with transaction_type
+// defaulted from the sign (CREDIT in / DEBIT out) and the caller recorded as created_by.
+func (s *Service) CreateTransaction(ctx context.Context, authUserID, authOrgID uuid.UUID, accountID string, req CreateBankTransactionRequest) (*BankAccountTransactionsResponse, error) {
+	accountUUID, err := uuid.Parse(accountID)
+	if err != nil {
+		return nil, kernel.ErrValidation("id is not a valid UUID", err)
+	}
+	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	// 404 if the account isn't in this org.
+	if _, err := s.queries.GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountUUID, OrganisationID: authOrgID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("bank account", accountID)
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+
+	dated, amountMinor, err := parseTransactionFields(req)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.queries.CreateBankTransaction(ctx, banking.CreateBankTransactionParams{
+		OrganisationID:  authOrgID,
+		BankAccountID:   accountUUID,
+		CreatedByUserID: pgtype.UUID{Bytes: authUserID, Valid: true},
+		DatedOn:         dated,
+		AmountMinor:     amountMinor,
+		Description:     kernel.NullText(req.Description),
+		BankMemo:        kernel.NullText(req.BankMemo),
+		Status:          "unexplained",
+		Source:          "manual",
+		TransactionType: pgtype.Text{String: transactionTypeForSign(amountMinor), Valid: true},
+		// balance_minor, external_id, unexplained_amount_minor all default NULL.
+	}); err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	return s.buildStatement(ctx, authOrgID, accountUUID)
+}
+
+// UpdateTransaction edits a MANUAL line's date/description/amount/memo (owner/admin).
+func (s *Service) UpdateTransaction(ctx context.Context, authUserID, authOrgID uuid.UUID, accountID, txnID string, req CreateBankTransactionRequest) (*BankAccountTransactionsResponse, error) {
+	accountUUID, txnUUID, err := parseAccountAndTxn(accountID, txnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	if _, err := s.loadManualTransaction(ctx, authOrgID, accountUUID, txnUUID); err != nil {
+		return nil, err
+	}
+	dated, amountMinor, err := parseTransactionFields(req)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.queries.UpdateBankTransaction(ctx, banking.UpdateBankTransactionParams{
+		ID:             txnUUID,
+		OrganisationID: authOrgID,
+		DatedOn:        dated,
+		AmountMinor:    amountMinor,
+		Description:    kernel.NullText(req.Description),
+		BankMemo:       kernel.NullText(req.BankMemo),
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("bank transaction", txnID)
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+	return s.buildStatement(ctx, authOrgID, accountUUID)
+}
+
+// DeleteTransaction soft-deletes a MANUAL line and returns the refreshed statement (owner/admin).
+func (s *Service) DeleteTransaction(ctx context.Context, authUserID, authOrgID uuid.UUID, accountID, txnID string) (*BankAccountTransactionsResponse, error) {
+	accountUUID, txnUUID, err := parseAccountAndTxn(accountID, txnID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	if _, err := s.loadManualTransaction(ctx, authOrgID, accountUUID, txnUUID); err != nil {
+		return nil, err
+	}
+	if err := s.queries.SoftDeleteBankTransaction(ctx, banking.SoftDeleteBankTransactionParams{ID: txnUUID, OrganisationID: authOrgID}); err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	return s.buildStatement(ctx, authOrgID, accountUUID)
+}
+
+// loadManualTransaction fetches a transaction org-scoped (404), and enforces that it belongs
+// to the given account (404) AND is manually-added (422 — feed/statement lines are the bank's
+// truth and immutable).
+func (s *Service) loadManualTransaction(ctx context.Context, orgID, accountUUID, txnUUID uuid.UUID) (banking.BankTransaction, error) {
+	t, err := s.queries.GetBankTransaction(ctx, banking.GetBankTransactionParams{ID: txnUUID, OrganisationID: orgID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return banking.BankTransaction{}, kernel.ErrNotFound("bank transaction", txnUUID.String())
+		}
+		return banking.BankTransaction{}, kernel.ErrInternal(err)
+	}
+	if t.BankAccountID != accountUUID {
+		return banking.BankTransaction{}, kernel.ErrNotFound("bank transaction", txnUUID.String())
+	}
+	if t.Source != "manual" {
+		return banking.BankTransaction{}, kernel.ErrValidation("only manually-added transactions can be edited or deleted", nil)
+	}
+	return t, nil
+}
+
+// parseAccountAndTxn parses both path UUIDs with a clear 422 on either.
+func parseAccountAndTxn(accountID, txnID string) (uuid.UUID, uuid.UUID, error) {
+	accountUUID, err := uuid.Parse(accountID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, kernel.ErrValidation("id is not a valid UUID", err)
+	}
+	txnUUID, err := uuid.Parse(txnID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, kernel.ErrValidation("transaction id is not a valid UUID", err)
+	}
+	return accountUUID, txnUUID, nil
+}
+
+// parseTransactionFields validates the date + amount and returns dated_on and the SIGNED
+// amount_minor (+ money in, − money out). Amount must be > 0; direction must be in/out.
+func parseTransactionFields(req CreateBankTransactionRequest) (pgtype.Date, int64, error) {
+	if req.Direction != "in" && req.Direction != "out" {
+		return pgtype.Date{}, 0, kernel.ErrValidation("direction must be 'in' or 'out'", nil)
+	}
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(req.DatedOn))
+	if err != nil {
+		return pgtype.Date{}, 0, kernel.ErrValidation("dated_on must be in YYYY-MM-DD format", err)
+	}
+	minor, err := money.PoundsToMinor(strings.TrimSpace(req.Amount))
+	if err != nil {
+		return pgtype.Date{}, 0, kernel.ErrValidation("amount must be a valid amount", err)
+	}
+	if minor <= 0 {
+		return pgtype.Date{}, 0, kernel.ErrValidation("amount must be greater than zero", nil)
+	}
+	if req.Direction == "out" {
+		minor = -minor
+	}
+	return pgtype.Date{Time: t, Valid: true}, minor, nil
+}
+
+// transactionTypeForSign defaults a manual line's OFX type from the amount sign.
+func transactionTypeForSign(amountMinor int64) string {
+	if amountMinor < 0 {
+		return "DEBIT"
+	}
+	return "CREDIT"
 }
 
 // =============================================================================

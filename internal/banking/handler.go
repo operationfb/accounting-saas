@@ -43,6 +43,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.POST("", h.Create)
 		g.GET("/:id", h.Get)
 		g.GET("/:id/transactions", h.ListTransactions)
+		g.POST("/:id/transactions", h.CreateTransaction)
+		g.PUT("/:id/transactions/:txnId", h.UpdateTransaction)
+		g.DELETE("/:id/transactions/:txnId", h.DeleteTransaction)
 		g.PUT("/:id", h.Update)
 		g.DELETE("/:id", h.Delete)
 	}
@@ -86,6 +89,44 @@ func (h *Handler) Get(c *gin.Context) {
 // read-only statement: the account plus its lines (oldest first) with a running balance.
 func (h *Handler) ListTransactions(c *gin.Context) {
 	resp, err := h.svc.ListTransactions(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// CreateTransaction handles POST /api/v1/bank-accounts/:id/transactions — add a manual line.
+func (h *Handler) CreateTransaction(c *gin.Context) {
+	var req CreateBankTransactionRequest
+	if !kernel.BindJSON(c, &req) {
+		return
+	}
+	resp, err := h.svc.CreateTransaction(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), req)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, resp)
+}
+
+// UpdateTransaction handles PUT /api/v1/bank-accounts/:id/transactions/:txnId — edit a manual line.
+func (h *Handler) UpdateTransaction(c *gin.Context) {
+	var req CreateBankTransactionRequest
+	if !kernel.BindJSON(c, &req) {
+		return
+	}
+	resp, err := h.svc.UpdateTransaction(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"), req)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// DeleteTransaction handles DELETE /api/v1/bank-accounts/:id/transactions/:txnId — remove a manual line.
+func (h *Handler) DeleteTransaction(c *gin.Context) {
+	resp, err := h.svc.DeleteTransaction(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

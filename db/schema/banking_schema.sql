@@ -135,6 +135,11 @@ CREATE TABLE bank_transactions (
     description         VARCHAR(500),                                -- human description, e.g. 'Uber Uk Rides'
     bank_memo           TEXT,                                        -- raw bank narrative, e.g. 'Ubr* Pending.uber.com//OTHER/£10.08'
     balance_minor       BIGINT,                                      -- running balance reported on the statement (NULL if unknown)
+    -- Reconcile-tracking (FreeAgent's `unexplained_amount`): the still-unexplained portion of
+    -- amount_minor (same SIGNED convention). NULL ⇒ fully unexplained (equals amount_minor);
+    -- the future explain/reconcile flow writes the explicit decremented value. The read path
+    -- COALESCEs to amount_minor, so existing/seed/feed rows need no backfill.
+    unexplained_amount_minor  BIGINT,
 
     -- Classification (matches the list tabs). Reconciliation/linking is deferred,
     -- so these are plain CHECK-constrained columns for now.
@@ -142,6 +147,12 @@ CREATE TABLE bank_transactions (
                         CHECK (status IN ('unexplained','explained','for_approval')),
     source              VARCHAR(20) NOT NULL DEFAULT 'manual'
                         CHECK (source IN ('feed','manual','statement')),
+    -- OFX/bank transaction type code (FreeAgent's `transaction_type`). Populated by feeds +
+    -- statement import; manual entry defaults it by sign (CREDIT in / DEBIT out). Nullable.
+    transaction_type    VARCHAR(20)
+                        CHECK (transaction_type IN ('CREDIT','DEBIT','INT','DIV','FEE','SRVCHG',
+                            'DEP','ATM','POS','XFER','CHECK','PAYMENT','CASH','DIRECTDEP',
+                            'DIRECTDEBIT','REPEATPMT','OTHER')),
 
     -- Bank-feed dedupe: the provider's own transaction id (TrueLayer, later).
     -- NULL for manual rows; unique per account when present (see index below).

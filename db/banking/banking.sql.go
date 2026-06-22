@@ -176,7 +176,8 @@ INSERT INTO bank_transactions (
     balance_minor,
     status,
     source,
-    external_id
+    external_id,
+    transaction_type
 ) VALUES (
     $1,   -- organisation_id     UUID (tenant; denormalised from the account)
     $2,   -- bank_account_id     UUID (the account this line belongs to)
@@ -188,9 +189,10 @@ INSERT INTO bank_transactions (
     $8,   -- balance_minor       BIGINT (nullable; running statement balance)
     $9,   -- status              VARCHAR 'unexplained'|'explained'|'for_approval'
     $10,  -- source              VARCHAR 'feed'|'manual'|'statement'
-    $11   -- external_id         VARCHAR (nullable; provider txn id for dedupe)
+    $11,  -- external_id         VARCHAR (nullable; provider txn id for dedupe)
+    $12   -- transaction_type    VARCHAR (nullable; OFX type, e.g. CREDIT/DEBIT)
 )
-RETURNING id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at
 `
 
 type CreateBankTransactionParams struct {
@@ -205,6 +207,7 @@ type CreateBankTransactionParams struct {
 	Status          string      `json:"status"`
 	Source          string      `json:"source"`
 	ExternalID      pgtype.Text `json:"external_id"`
+	TransactionType pgtype.Text `json:"transaction_type"`
 }
 
 // #############################################################################
@@ -230,6 +233,7 @@ func (q *Queries) CreateBankTransaction(ctx context.Context, arg CreateBankTrans
 		arg.Status,
 		arg.Source,
 		arg.ExternalID,
+		arg.TransactionType,
 	)
 	var i BankTransaction
 	err := row.Scan(
@@ -242,8 +246,10 @@ func (q *Queries) CreateBankTransaction(ctx context.Context, arg CreateBankTrans
 		&i.Description,
 		&i.BankMemo,
 		&i.BalanceMinor,
+		&i.UnexplainedAmountMinor,
 		&i.Status,
 		&i.Source,
+		&i.TransactionType,
 		&i.ExternalID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -343,7 +349,7 @@ func (q *Queries) GetBankAccount(ctx context.Context, arg GetBankAccountParams) 
 }
 
 const getBankTransaction = `-- name: GetBankTransaction :one
-SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at FROM bank_transactions
+SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
 WHERE id              = $1   -- transaction UUID
   AND organisation_id = $2   -- tenant scope — never skip this
   AND deleted_at IS NULL
@@ -372,8 +378,10 @@ func (q *Queries) GetBankTransaction(ctx context.Context, arg GetBankTransaction
 		&i.Description,
 		&i.BankMemo,
 		&i.BalanceMinor,
+		&i.UnexplainedAmountMinor,
 		&i.Status,
 		&i.Source,
+		&i.TransactionType,
 		&i.ExternalID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -383,7 +391,7 @@ func (q *Queries) GetBankTransaction(ctx context.Context, arg GetBankTransaction
 }
 
 const getBankTransactionByExternalID = `-- name: GetBankTransactionByExternalID :one
-SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at FROM bank_transactions
+SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
 WHERE bank_account_id = $1   -- the account
   AND external_id     = $2   -- the provider's transaction id
   AND deleted_at IS NULL
@@ -414,8 +422,10 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 		&i.Description,
 		&i.BankMemo,
 		&i.BalanceMinor,
+		&i.UnexplainedAmountMinor,
 		&i.Status,
 		&i.Source,
+		&i.TransactionType,
 		&i.ExternalID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -425,7 +435,7 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 }
 
 const listBankAccountTransactions = `-- name: ListBankAccountTransactions :many
-SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at FROM bank_transactions
+SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
 WHERE organisation_id = $1   -- tenant scope
   AND bank_account_id = $2   -- which account's statement
   AND deleted_at IS NULL
@@ -465,8 +475,10 @@ func (q *Queries) ListBankAccountTransactions(ctx context.Context, arg ListBankA
 			&i.Description,
 			&i.BankMemo,
 			&i.BalanceMinor,
+			&i.UnexplainedAmountMinor,
 			&i.Status,
 			&i.Source,
+			&i.TransactionType,
 			&i.ExternalID,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -576,7 +588,7 @@ func (q *Queries) ListBankAccounts(ctx context.Context, organisationID uuid.UUID
 }
 
 const listBankTransactions = `-- name: ListBankTransactions :many
-SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, status, source, external_id, deleted_at, created_at, updated_at FROM bank_transactions
+SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
 WHERE organisation_id = $1   -- tenant scope
   AND bank_account_id = $2   -- which account's statement
   AND deleted_at IS NULL
@@ -621,8 +633,10 @@ func (q *Queries) ListBankTransactions(ctx context.Context, arg ListBankTransact
 			&i.Description,
 			&i.BankMemo,
 			&i.BalanceMinor,
+			&i.UnexplainedAmountMinor,
 			&i.Status,
 			&i.Source,
+			&i.TransactionType,
 			&i.ExternalID,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -806,6 +820,67 @@ func (q *Queries) UpdateBankAccount(ctx context.Context, arg UpdateBankAccountPa
 		&i.OpeningBalanceMinor,
 		&i.OpeningBalanceDate,
 		&i.GuessExplanations,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateBankTransaction = `-- name: UpdateBankTransaction :one
+UPDATE bank_transactions SET
+    dated_on     = $3,
+    amount_minor = $4,
+    description  = $5,
+    bank_memo    = $6,
+    updated_at   = now()
+WHERE id              = $1   -- transaction UUID
+  AND organisation_id = $2   -- tenant scope
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at
+`
+
+type UpdateBankTransactionParams struct {
+	ID             uuid.UUID   `json:"id"`
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	DatedOn        pgtype.Date `json:"dated_on"`
+	AmountMinor    int64       `json:"amount_minor"`
+	Description    pgtype.Text `json:"description"`
+	BankMemo       pgtype.Text `json:"bank_memo"`
+}
+
+// -----------------------------------------------------------------------------
+// UpdateBankTransaction  (the "update", manual lines only)
+// Updates a transaction's user-editable fields. The service restricts this to
+// source='manual' lines (a feed/statement line is the bank's truth and immutable);
+// status / source / external_id / transaction_type are NOT changed on edit.
+// updated_at is set explicitly in addition to the trigger. RETURNING * echoes the row.
+// -----------------------------------------------------------------------------
+func (q *Queries) UpdateBankTransaction(ctx context.Context, arg UpdateBankTransactionParams) (BankTransaction, error) {
+	row := q.db.QueryRow(ctx, updateBankTransaction,
+		arg.ID,
+		arg.OrganisationID,
+		arg.DatedOn,
+		arg.AmountMinor,
+		arg.Description,
+		arg.BankMemo,
+	)
+	var i BankTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.BankAccountID,
+		&i.CreatedByUserID,
+		&i.DatedOn,
+		&i.AmountMinor,
+		&i.Description,
+		&i.BankMemo,
+		&i.BalanceMinor,
+		&i.UnexplainedAmountMinor,
+		&i.Status,
+		&i.Source,
+		&i.TransactionType,
+		&i.ExternalID,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

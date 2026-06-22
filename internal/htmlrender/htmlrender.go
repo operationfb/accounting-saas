@@ -1,8 +1,8 @@
-package main
+package htmlrender
 
-// html_renderer.go
+// htmlrender.go
 // =============================================================================
-// HTMLRenderer — converts an HTML email body to a PDF so it can flow through the
+// Renderer — converts an HTML email body to a PDF so it can flow through the
 // SAME receipt pipeline as a file attachment (bytes → GCS → Document AI). Many
 // receipts (Uber, Amazon, SaaS invoices) arrive as an HTML body with no file.
 //
@@ -28,8 +28,8 @@ import (
 	"google.golang.org/api/idtoken"
 )
 
-// HTMLRenderer converts a full HTML document to PDF bytes.
-type HTMLRenderer interface {
+// Renderer converts a full HTML document to PDF bytes.
+type Renderer interface {
 	RenderPDF(ctx context.Context, html string) ([]byte, error)
 }
 
@@ -40,7 +40,7 @@ type gotenbergRenderer struct {
 	client  *http.Client
 }
 
-// newGotenbergRenderer builds the renderer.
+// NewGotenberg builds the renderer.
 //
 // Auth: when Gotenberg runs behind an authenticated Cloud Run service, every
 // request must carry a Google-signed OIDC ID token whose audience is the service
@@ -53,7 +53,7 @@ type gotenbergRenderer struct {
 //
 // The 60s timeout bounds a slow render (incl. a Cloud Run cold start) so a stuck
 // Gotenberg can't hang an inbound-email request indefinitely.
-func newGotenbergRenderer(baseURL string) *gotenbergRenderer {
+func NewGotenberg(baseURL string) *gotenbergRenderer {
 	base := strings.TrimRight(baseURL, "/")
 
 	client, err := idtoken.NewClient(context.Background(), base)

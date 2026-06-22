@@ -37,6 +37,7 @@ import (
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
+	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	members "github.com/operationfb/accounting-saas/internal/members"
@@ -295,9 +296,9 @@ func main() {
 	//   - GOTENBERG_URL                enables HTML-body receipts (render → PDF).
 	// Everything captured lands in OUR Postgres + GCS via the attachment service.
 	// -------------------------------------------------------------------------
-	var htmlRenderer HTMLRenderer
+	var htmlRenderer htmlrender.Renderer
 	if gotenbergURL := os.Getenv("GOTENBERG_URL"); gotenbergURL != "" {
-		htmlRenderer = newGotenbergRenderer(gotenbergURL)
+		htmlRenderer = htmlrender.NewGotenberg(gotenbergURL)
 		log.Printf("email inbox: HTML-body rendering via Gotenberg at %s", gotenbergURL)
 	} else {
 		log.Println("email inbox: GOTENBERG_URL not set — HTML-body receipts are skipped")

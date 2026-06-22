@@ -47,12 +47,14 @@ type BankTransaction struct {
 	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
 	DatedOn         pgtype.Date `json:"dated_on"`
 	// Signed minor units (pence): POSITIVE = money in, NEGATIVE = money out. BIGINT/int64.
-	AmountMinor  int64       `json:"amount_minor"`
-	Description  pgtype.Text `json:"description"`
-	BankMemo     pgtype.Text `json:"bank_memo"`
-	BalanceMinor pgtype.Int8 `json:"balance_minor"`
-	Status       string      `json:"status"`
-	Source       string      `json:"source"`
+	AmountMinor            int64       `json:"amount_minor"`
+	Description            pgtype.Text `json:"description"`
+	BankMemo               pgtype.Text `json:"bank_memo"`
+	BalanceMinor           pgtype.Int8 `json:"balance_minor"`
+	UnexplainedAmountMinor pgtype.Int8 `json:"unexplained_amount_minor"`
+	Status                 string      `json:"status"`
+	Source                 string      `json:"source"`
+	TransactionType        pgtype.Text `json:"transaction_type"`
 	// Bank feed provider transaction id, for dedupe. NULL for manual rows; unique per account when present (idx_bank_transactions_external).
 	ExternalID pgtype.Text        `json:"external_id"`
 	DeletedAt  pgtype.Timestamptz `json:"deleted_at"`
