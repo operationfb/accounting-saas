@@ -29,33 +29,21 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-
-	"github.com/operationfb/accounting-saas/token"
 )
 
-// Server holds the Gin engine and all the services it needs to handle requests.
-// Adding a new service module (invoices, contacts, etc.) means adding a field
-// here and passing it into NewServer.
+// Server is now a thin shell: it owns the Gin engine + the global middleware
+// (CORS), exposes /health and the static SPA, and hands its Router() to each
+// domain package so they register their OWN routes from main. It holds NO domain
+// services anymore — the modular-monolith migration is complete.
 type Server struct {
-	router            *gin.Engine
-	attachmentService *AttachmentService
-	emailInboxService *EmailInboxService
-	tokenMaker        token.Maker
-
-	// mailgunSigningKey authenticates the inbound-email webhook (HMAC). Empty
-	// when the channel isn't configured, in which case the webhook isn't mounted.
-	mailgunSigningKey string
+	router *gin.Engine
 }
 
-// NewServer constructs the Server, registers all routes, and returns it.
-// main.go calls this once at startup.
-func NewServer(attachmentService *AttachmentService, emailInboxService *EmailInboxService, tokenMaker token.Maker, mailgunSigningKey string, corsOrigins []string) *Server {
-	s := &Server{
-		attachmentService: attachmentService,
-		emailInboxService: emailInboxService,
-		tokenMaker:        tokenMaker,
-		mailgunSigningKey: mailgunSigningKey,
-	}
+// NewServer builds the engine, applies global middleware, and registers the only
+// route this file still owns (/health). Domain routes are registered by their
+// packages on Router() from main; the static SPA is wired by enableStaticSPA.
+func NewServer(corsOrigins []string) *Server {
+	s := &Server{}
 
 	// gin.Default() creates a Gin engine with two built-in middleware:
 	//   - Logger: prints each request (method, path, status, latency) to stdout
@@ -150,14 +138,10 @@ func (s *Server) enableStaticSPA(distDir string) {
 	})
 }
 
-// registerRoutes declares every URL pattern and which handler method responds.
-// Keeping all routes in one place makes it easy to see the full API surface.
+// registerRoutes declares the only routes this shell still owns: the liveness
+// probe. Every API route is registered by its domain package on Router() from
+// main (expenses, attachments, emailinbox, integrations, contacts, …).
 func (s *Server) registerRoutes() {
-	// Route groups let you share a URL prefix and (later) middleware.
-	// All expense routes live under /api/v1/expenses.
-	// Versioning (/v1/) in the URL means you can introduce /v2/ later
-	// without breaking existing clients.
-
 	// Liveness probe for Cloud Run (and uptime checks). Public, no auth, and it
 	// deliberately does NOT touch the database: the startup DB ping (main.go) is the
 	// real readiness gate, and we don't want a transient DB blip to fail liveness and
@@ -169,58 +153,4 @@ func (s *Server) registerRoutes() {
 	s.router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-
-	v1 := s.router.Group("/api/v1")
-	{
-		// Smart Upload + receipt attachments still live in package main (the
-		// attachments domain hasn't been extracted yet — Stage 2). They are a
-		// sub-resource of an expense, so they share the /expenses prefix and the
-		// :id wildcard with the expense CRUD + reference-data routes, which are now
-		// registered by internal/expenses' Handler.RegisterRoutes (from main). Two
-		// groups on the same prefix is fine — Gin merges them into one route tree.
-		expenses := v1.Group("/expenses")
-		expenses.Use(authMiddleware(s.tokenMaker))
-		{
-			// POST /api/v1/expenses/capture → "Smart Upload": draft from a receipt + OCR
-			expenses.POST("/capture", s.handleSmartUpload)
-
-			// Attachments (receipt files) — a sub-resource of an expense, reusing :id.
-			// POST   /:id/attachments                         → upload a file
-			// GET    /:id/attachments                         → list metadata
-			// GET    /:id/attachments/:attachmentId/download  → signed download URL
-			// PATCH  /:id/attachments/:attachmentId/primary   → mark as primary
-			// DELETE /:id/attachments/:attachmentId           → delete a file
-			expenses.POST("/:id/attachments", s.handleUploadAttachment)
-			expenses.GET("/:id/attachments", s.handleListAttachments)
-			expenses.GET("/:id/attachments/:attachmentId/download", s.handleDownloadAttachment)
-			expenses.PATCH("/:id/attachments/:attachmentId/primary", s.handleSetPrimaryAttachment)
-			expenses.DELETE("/:id/attachments/:attachmentId", s.handleDeleteAttachment)
-		}
-
-		// NOTE: the integration routes (/api/v1/integrations/{provider},
-		// /api/v1/{provider}/{connect,callback}) and the /internal/v1 endpoints are
-		// registered by internal/integrations' Handler.RegisterRoutes /
-		// RegisterInternalRoutes, called from main on Server.Router() — so adding a
-		// provider never touches this file.
-
-		// Email-to-expense (Mailgun inbound). The webhook is PUBLIC — it carries
-		// no bearer token and is authenticated by Mailgun's HMAC signature in the
-		// handler — so it's mounted only when the channel is fully configured.
-		if s.emailInboxService != nil && s.mailgunSigningKey != "" {
-			webhooks := v1.Group("/webhooks")
-			{
-				// POST /api/v1/webhooks/mailgun/inbound → one parsed inbound email
-				webhooks.POST("/mailgun/inbound", s.handleMailgunInbound)
-			}
-		}
-
-		// The receipt-inbox address display is a normal authed route. The handler
-		// reports enabled:false when the channel is off, so it's always safe to mount.
-		inboxAddress := v1.Group("/inbox-address")
-		inboxAddress.Use(authMiddleware(s.tokenMaker))
-		{
-			// GET /api/v1/inbox-address → the caller's receipt-forwarding address
-			inboxAddress.GET("", s.handleGetInboxAddress)
-		}
-	}
 }

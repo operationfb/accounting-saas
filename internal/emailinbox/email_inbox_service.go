@@ -1,8 +1,8 @@
-package main
+package emailinbox
 
 // email_inbox_service.go
 // =============================================================================
-// EmailInboxService — the business logic for the email-to-expense channel.
+// Service — the business logic for the email-to-expense channel.
 //
 // Two jobs:
 //   1. Ingest()                — turn one received email into draft expense(s),
@@ -38,15 +38,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/text/runes"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
-	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	emailinboxdb "github.com/operationfb/accounting-saas/db/email_inbox"
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 )
 
@@ -66,11 +67,11 @@ const maxInboxLocalPartAttempts = 20
 // internal/ocr's defaultOCRTimeout.
 const defaultProcessTimeout = 2 * time.Minute
 
-// EmailInboxService wires the inbound-email channel to the capture pipeline.
-type EmailInboxService struct {
+// Service wires the inbound-email channel to the capture pipeline.
+type Service struct {
 	authQueries  auth.Querier
-	eventQueries *emailinbox.Queries
-	attachments  *AttachmentService
+	eventQueries *emailinboxdb.Queries
+	attachments  *attachments.Service
 	renderer     htmlrender.Renderer // nil when GOTENBERG_URL is unset → HTML-body capture is skipped
 	inboxDomain  string              // e.g. "receipts.example.com" (lower-cased)
 
@@ -82,10 +83,10 @@ type EmailInboxService struct {
 	processTimeout time.Duration
 }
 
-// NewEmailInboxService constructs the service. renderer may be nil (HTML-body
+// NewService constructs the service. renderer may be nil (HTML-body
 // capture then disabled). inboxDomain is required for the channel to do anything.
-func NewEmailInboxService(authQueries auth.Querier, eventQueries *emailinbox.Queries, attachments *AttachmentService, renderer htmlrender.Renderer, inboxDomain string) *EmailInboxService {
-	return &EmailInboxService{
+func NewService(authQueries auth.Querier, eventQueries *emailinboxdb.Queries, attachments *attachments.Service, renderer htmlrender.Renderer, inboxDomain string) *Service {
+	return &Service{
 		authQueries:     authQueries,
 		eventQueries:    eventQueries,
 		attachments:     attachments,
@@ -95,6 +96,12 @@ func NewEmailInboxService(authQueries auth.Querier, eventQueries *emailinbox.Que
 		processTimeout:  defaultProcessTimeout,
 	}
 }
+
+// SetRunInBackground overrides the post-claim background runner (default: a
+// goroutine, so the webhook acks Mailgun fast). Tests inject an inline runner so
+// the webhook's effects are assertable right after the handler returns. Replaces
+// the old direct field assignment now that runInBackground is package-private.
+func (s *Service) SetRunInBackground(fn func(func())) { s.runInBackground = fn }
 
 // IngestOutcome is the result of processing one email. The handler maps it to an
 // HTTP status (and thus Mailgun's retry behaviour).
@@ -112,7 +119,7 @@ type IngestOutcome struct {
 // outcome. It is the claim+process pair run inline, used by the service-level tests
 // for deterministic assertions. The webhook handler uses Accept instead, which acks
 // before the (slow) processing — see that method.
-func (s *EmailInboxService) Ingest(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
+func (s *Service) Ingest(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
 	eventID, done, outcome, err := s.claimOrDuplicate(ctx, in)
 	if err != nil || done {
 		return outcome, err
@@ -134,7 +141,7 @@ func (s *EmailInboxService) Ingest(ctx context.Context, in *InboundEmail) (Inges
 // The only errors returned synchronously are the fast ones from claimOrDuplicate:
 // a missing Message-Id (validation → 422) or a claim DB failure (internal → 500, so
 // Mailgun retries — safe because nothing was processed yet).
-func (s *EmailInboxService) Accept(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
+func (s *Service) Accept(ctx context.Context, in *InboundEmail) (IngestOutcome, error) {
 	eventID, done, outcome, err := s.claimOrDuplicate(ctx, in)
 	if err != nil || done {
 		return outcome, err
@@ -160,11 +167,11 @@ func (s *EmailInboxService) Accept(ctx context.Context, in *InboundEmail) (Inges
 // outcome to return when there is nothing more to do — a missing Message-Id (err
 // set) or a genuine duplicate of an already-finished email. Otherwise done=false
 // and the caller proceeds to process(eventID).
-func (s *EmailInboxService) claimOrDuplicate(ctx context.Context, in *InboundEmail) (eventID uuid.UUID, done bool, outcome IngestOutcome, err error) {
+func (s *Service) claimOrDuplicate(ctx context.Context, in *InboundEmail) (eventID uuid.UUID, done bool, outcome IngestOutcome, err error) {
 	// Without a Message-Id we can't dedupe. Reject (the handler 422s) rather than
 	// risk creating duplicates on every Mailgun retry.
 	if strings.TrimSpace(in.MessageID) == "" {
-		return uuid.Nil, true, IngestOutcome{}, ErrValidation("inbound email has no Message-Id", nil)
+		return uuid.Nil, true, IngestOutcome{}, kernel.ErrValidation("inbound email has no Message-Id", nil)
 	}
 
 	// --- Claim (dedupe). -----------------------------------------------------
@@ -185,7 +192,7 @@ func (s *EmailInboxService) claimOrDuplicate(ctx context.Context, in *InboundEma
 // capture each attachment → HTML-body fallback → record the terminal outcome. It
 // runs synchronously inline (Ingest) or in the background goroutine (Accept). The
 // Message-Id is already claimed as eventID.
-func (s *EmailInboxService) process(ctx context.Context, in *InboundEmail, eventID uuid.UUID) (IngestOutcome, error) {
+func (s *Service) process(ctx context.Context, in *InboundEmail, eventID uuid.UUID) (IngestOutcome, error) {
 	// --- 2. Resolve the recipient address → (claimant user, org). -----------
 	localPart, ok := s.resolveLocalPart(in)
 	if !ok {
@@ -227,8 +234,8 @@ func (s *EmailInboxService) process(ctx context.Context, in *InboundEmail, event
 		}
 
 		if err := s.captureAttachment(ctx, claimantID, orgID, att); err != nil {
-			var appErr *AppError
-			if errors.As(err, &appErr) && appErr.Code != ErrCodeInternal {
+			var appErr *kernel.AppError
+			if errors.As(err, &appErr) && appErr.Code != kernel.ErrCodeInternal {
 				// A bad file (unsupported type, too large, unreadable): skip it but
 				// keep going — other attachments may be fine. Recorded in the note.
 				notes = append(notes, fmt.Sprintf("attachment %d (%s): %s", i+1, att.Filename, appErr.Message))
@@ -273,39 +280,39 @@ func (s *EmailInboxService) process(ctx context.Context, in *InboundEmail, event
 // whether this was a FRESH claim. On a conflict (we've seen this Message-Id) it
 // reads the existing row so the caller can decide: skip a finished email, or
 // reprocess one that didn't finish.
-func (s *EmailInboxService) claim(ctx context.Context, in *InboundEmail) (id uuid.UUID, fresh bool, prevStatus string, err error) {
-	id, claimErr := s.eventQueries.ClaimInboundEmailEvent(ctx, emailinbox.ClaimInboundEmailEventParams{
+func (s *Service) claim(ctx context.Context, in *InboundEmail) (id uuid.UUID, fresh bool, prevStatus string, err error) {
+	id, claimErr := s.eventQueries.ClaimInboundEmailEvent(ctx, emailinboxdb.ClaimInboundEmailEventParams{
 		ProviderMessageID: in.MessageID,
 		Recipient:         in.Recipient,
 		Sender:            in.From,
-		Subject:           pgNullText(nilIfEmpty(in.Subject)),
+		Subject:           kernel.NullText(nilIfEmpty(in.Subject)),
 	})
 	if claimErr == nil {
 		return id, true, "received", nil
 	}
 	if !errors.Is(claimErr, pgx.ErrNoRows) {
-		return uuid.Nil, false, "", ErrInternal(fmt.Errorf("claim inbound email: %w", claimErr))
+		return uuid.Nil, false, "", kernel.ErrInternal(fmt.Errorf("claim inbound email: %w", claimErr))
 	}
 	// Conflict: already seen. Read its current status.
 	row, getErr := s.eventQueries.GetInboundEmailEventByMessageID(ctx, in.MessageID)
 	if getErr != nil {
-		return uuid.Nil, false, "", ErrInternal(fmt.Errorf("lookup inbound email: %w", getErr))
+		return uuid.Nil, false, "", kernel.ErrInternal(fmt.Errorf("lookup inbound email: %w", getErr))
 	}
 	return row.ID, false, row.Status, nil
 }
 
 // finish records the terminal event row and returns the matching outcome.
-func (s *EmailInboxService) finish(ctx context.Context, eventID uuid.UUID, status string, orgID uuid.UUID, attachmentCount, drafts int, note string) (IngestOutcome, error) {
-	err := s.eventQueries.FinishInboundEmailEvent(ctx, emailinbox.FinishInboundEmailEventParams{
+func (s *Service) finish(ctx context.Context, eventID uuid.UUID, status string, orgID uuid.UUID, attachmentCount, drafts int, note string) (IngestOutcome, error) {
+	err := s.eventQueries.FinishInboundEmailEvent(ctx, emailinboxdb.FinishInboundEmailEventParams{
 		ID:              eventID,
 		Status:          status,
 		OrganisationID:  pgUUIDOrNull(orgID),
 		AttachmentCount: int32(attachmentCount),
 		DraftsCreated:   int32(drafts),
-		Note:            pgNullText(nilIfEmpty(note)),
+		Note:            kernel.NullText(nilIfEmpty(note)),
 	})
 	if err != nil {
-		return IngestOutcome{}, ErrInternal(fmt.Errorf("finish inbound email: %w", err))
+		return IngestOutcome{}, kernel.ErrInternal(fmt.Errorf("finish inbound email: %w", err))
 	}
 	return IngestOutcome{Status: status, DraftsCreated: drafts}, nil
 }
@@ -313,20 +320,20 @@ func (s *EmailInboxService) finish(ctx context.Context, eventID uuid.UUID, statu
 // fail marks the event 'error' (best-effort, for visibility) and returns the
 // underlying cause so the handler 500s. Mailgun then retries; because the row is
 // left non-terminal, the retry reprocesses it rather than skipping it.
-func (s *EmailInboxService) fail(ctx context.Context, eventID uuid.UUID, cause error) (IngestOutcome, error) {
-	_ = s.eventQueries.FinishInboundEmailEvent(ctx, emailinbox.FinishInboundEmailEventParams{
+func (s *Service) fail(ctx context.Context, eventID uuid.UUID, cause error) (IngestOutcome, error) {
+	_ = s.eventQueries.FinishInboundEmailEvent(ctx, emailinboxdb.FinishInboundEmailEventParams{
 		ID:     eventID,
 		Status: "error",
-		Note:   pgNullText(nilIfEmpty(truncate(cause.Error(), 500))),
+		Note:   kernel.NullText(nilIfEmpty(truncate(cause.Error(), 500))),
 	})
-	return IngestOutcome{}, ErrInternal(cause)
+	return IngestOutcome{}, kernel.ErrInternal(cause)
 }
 
 // duplicateOf hashes the attachment's bytes and asks whether this claimant
 // already has a non-deleted expense built from the identical file. A read/open
 // error returns "not a duplicate" (capture will surface the bad file properly);
 // only a DB lookup error propagates (→ the caller 500s and Mailgun retries).
-func (s *EmailInboxService) duplicateOf(ctx context.Context, claimantID, orgID uuid.UUID, att InboundAttachment) (uuid.UUID, bool, error) {
+func (s *Service) duplicateOf(ctx context.Context, claimantID, orgID uuid.UUID, att InboundAttachment) (uuid.UUID, bool, error) {
 	r, err := att.Open()
 	if err != nil {
 		return uuid.Nil, false, nil
@@ -345,10 +352,10 @@ func (s *EmailInboxService) duplicateOf(ctx context.Context, claimantID, orgID u
 // captureAttachment streams one file into the existing capture pipeline. The
 // claimant is the inbox owner; CaptureFromReceipt validates the MIME type/size,
 // stores the bytes in GCS, creates the skeleton draft, and enqueues OCR.
-func (s *EmailInboxService) captureAttachment(ctx context.Context, claimantID, orgID uuid.UUID, att InboundAttachment) error {
+func (s *Service) captureAttachment(ctx context.Context, claimantID, orgID uuid.UUID, att InboundAttachment) error {
 	r, err := att.Open()
 	if err != nil {
-		return ErrValidation(fmt.Sprintf("could not read attachment %q", att.Filename), err)
+		return kernel.ErrValidation(fmt.Sprintf("could not read attachment %q", att.Filename), err)
 	}
 	if c, ok := r.(io.Closer); ok {
 		defer c.Close()
@@ -359,7 +366,7 @@ func (s *EmailInboxService) captureAttachment(ctx context.Context, claimantID, o
 
 // captureBody renders the email's HTML body (or plain-text wrapped in HTML) to a
 // PDF and captures it. Returns false (no error) when there's no body to render.
-func (s *EmailInboxService) captureBody(ctx context.Context, claimantID, orgID uuid.UUID, in *InboundEmail) (bool, error) {
+func (s *Service) captureBody(ctx context.Context, claimantID, orgID uuid.UUID, in *InboundEmail) (bool, error) {
 	htmlDoc := in.BodyHTML
 	if strings.TrimSpace(htmlDoc) == "" {
 		if strings.TrimSpace(in.BodyPlain) == "" {
@@ -382,7 +389,7 @@ func (s *EmailInboxService) captureBody(ctx context.Context, claimantID, orgID u
 // senderIsActiveMember reports whether the From address belongs to an active
 // member of orgID. This is the authorisation gate for the (human-readable, not
 // secret) inbox address. An unknown sender or any lookup miss → not a member.
-func (s *EmailInboxService) senderIsActiveMember(ctx context.Context, from string, orgID uuid.UUID) bool {
+func (s *Service) senderIsActiveMember(ctx context.Context, from string, orgID uuid.UUID) bool {
 	email := normalizeEmail(from)
 	if email == "" {
 		return false
@@ -401,7 +408,7 @@ func (s *EmailInboxService) senderIsActiveMember(ctx context.Context, from strin
 // resolveLocalPart finds the local part of the address on our inbox domain. It
 // prefers the envelope Recipient (reliable for catch-all, incl. Bcc) and falls
 // back to scanning the To header (which may list several recipients).
-func (s *EmailInboxService) resolveLocalPart(in *InboundEmail) (string, bool) {
+func (s *Service) resolveLocalPart(in *InboundEmail) (string, bool) {
 	if lp, ok := s.localPartForDomain(in.Recipient); ok {
 		return lp, true
 	}
@@ -418,7 +425,7 @@ func (s *EmailInboxService) resolveLocalPart(in *InboundEmail) (string, bool) {
 // localPartForDomain extracts the lower-cased local part of an address that is on
 // our inbox domain. Accepts a bare address or a "Name <addr>" form. Returns
 // ("", false) when the address isn't on s.inboxDomain.
-func (s *EmailInboxService) localPartForDomain(addr string) (string, bool) {
+func (s *Service) localPartForDomain(addr string) (string, bool) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" || s.inboxDomain == "" {
 		return "", false
@@ -445,16 +452,16 @@ func (s *EmailInboxService) localPartForDomain(addr string) (string, bool) {
 // GetOrCreateInboxAddress returns the caller's receipt-inbox address for this
 // organisation, generating (provisioning) the local part lazily on first call.
 // Returns "" when the channel is disabled (no INBOX_DOMAIN).
-func (s *EmailInboxService) GetOrCreateInboxAddress(ctx context.Context, userID, orgID uuid.UUID) (string, error) {
+func (s *Service) GetOrCreateInboxAddress(ctx context.Context, userID, orgID uuid.UUID) (string, error) {
 	if s.inboxDomain == "" {
 		return "", nil
 	}
 	m, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{OrganisationID: orgID, UserID: userID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrForbidden("you are not a member of this organisation")
+			return "", kernel.ErrForbidden("you are not a member of this organisation")
 		}
-		return "", ErrInternal(fmt.Errorf("load membership: %w", err))
+		return "", kernel.ErrInternal(fmt.Errorf("load membership: %w", err))
 	}
 	if m.InboxLocalPart.Valid && m.InboxLocalPart.String != "" {
 		return m.InboxLocalPart.String + "@" + s.inboxDomain, nil
@@ -473,14 +480,14 @@ func (s *EmailInboxService) GetOrCreateInboxAddress(ctx context.Context, userID,
 
 // baseLocalPart builds the human-readable base "{name}.{org}" for an address,
 // e.g. "aydin.gunal.acme-ltd". Falls back gracefully when names/slug are empty.
-func (s *EmailInboxService) baseLocalPart(ctx context.Context, userID, orgID uuid.UUID) (string, error) {
+func (s *Service) baseLocalPart(ctx context.Context, userID, orgID uuid.UUID) (string, error) {
 	user, err := s.authQueries.GetUser(ctx, userID)
 	if err != nil {
-		return "", ErrInternal(fmt.Errorf("load user: %w", err))
+		return "", kernel.ErrInternal(fmt.Errorf("load user: %w", err))
 	}
 	org, err := s.authQueries.GetOrganisation(ctx, orgID)
 	if err != nil {
-		return "", ErrInternal(fmt.Errorf("load organisation: %w", err))
+		return "", kernel.ErrInternal(fmt.Errorf("load organisation: %w", err))
 	}
 
 	name := slugify(user.FirstName + " " + user.LastName)
@@ -509,7 +516,7 @@ func (s *EmailInboxService) baseLocalPart(ctx context.Context, userID, orgID uui
 // provisionLocalPart claims a unique local part for the membership, trying base,
 // base.2, base.3, … until one is free. It is idempotent under races: if another
 // request set the address first, we re-read and return that.
-func (s *EmailInboxService) provisionLocalPart(ctx context.Context, userID, orgID uuid.UUID, base string) (string, error) {
+func (s *Service) provisionLocalPart(ctx context.Context, userID, orgID uuid.UUID, base string) (string, error) {
 	for attempt := 1; attempt <= maxInboxLocalPartAttempts; attempt++ {
 		candidate := base
 		if attempt > 1 {
@@ -527,19 +534,19 @@ func (s *EmailInboxService) provisionLocalPart(ctx context.Context, userID, orgI
 			// Our membership already has a local part (set concurrently) — re-read.
 			m, gerr := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{OrganisationID: orgID, UserID: userID})
 			if gerr != nil {
-				return "", ErrInternal(fmt.Errorf("reload membership: %w", gerr))
+				return "", kernel.ErrInternal(fmt.Errorf("reload membership: %w", gerr))
 			}
 			if m.InboxLocalPart.Valid {
 				return m.InboxLocalPart.String, nil
 			}
-			return "", ErrInternal(errors.New("inbox address vanished after concurrent set"))
+			return "", kernel.ErrInternal(errors.New("inbox address vanished after concurrent set"))
 		}
-		if isUniqueViolation(err) {
+		if kernel.IsUniqueViolation(err) {
 			continue // candidate taken by another membership; try the next suffix
 		}
-		return "", ErrInternal(fmt.Errorf("set inbox address: %w", err))
+		return "", kernel.ErrInternal(fmt.Errorf("set inbox address: %w", err))
 	}
-	return "", ErrInternal(errors.New("could not generate a unique inbox address"))
+	return "", kernel.ErrInternal(errors.New("could not generate a unique inbox address"))
 }
 
 // =============================================================================
@@ -555,13 +562,6 @@ func isTerminalStatus(status string) bool {
 	default:
 		return false
 	}
-}
-
-// isUniqueViolation reports whether err is a PostgreSQL unique-constraint
-// violation (SQLSTATE 23505).
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // normalizeEmail extracts and lower-cases the addr-spec from a From value, which
@@ -607,7 +607,7 @@ func foldASCII(s string) string {
 	return out
 }
 
-// nilIfEmpty returns nil for "" (so pgNullText writes SQL NULL) else a pointer.
+// nilIfEmpty returns nil for "" (so kernel.NullText writes SQL NULL) else a pointer.
 func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil

@@ -28,6 +28,7 @@ import (
 	// Dot-import (test-only, this file): the auto-categorise test references the
 	// ocr package's ExtractionResult + DocumentTypeReceipt and drives OcrService;
 	// dot-importing keeps them unqualified, as before the package split.
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	. "github.com/operationfb/accounting-saas/internal/ocr"
 )
@@ -235,7 +236,7 @@ func TestSupplierCategoryAutoCategorise(t *testing.T) {
 	devOrg := mustUUID(t, devOrgID)
 	travel := categoryUUID(t, ts, devOrgID, "365")
 	office := categoryUUID(t, ts, devOrgID, "250")
-	placeholder := categoryUUID(t, ts, devOrgID, placeholderCategoryNominal) // 280 Sundries
+	placeholder := categoryUUID(t, ts, devOrgID, attachments.PlaceholderCategoryNominal) // 280 Sundries
 
 	// seedMapping puts a remembered mapping in place directly, so the consume test
 	// doesn't depend on the trigger having run.

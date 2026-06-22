@@ -1,11 +1,11 @@
-package main
+package attachments
 
 // attachment_handler.go
 // =============================================================================
 // HTTP handlers for expense attachments (receipts). The handler's job is the
 // usual narrow one: parse the request, call AttachmentService, write the
 // response. All routes here sit behind authMiddleware, so the caller's identity
-// (user + organisation) comes from the token via getAuthUserID / getAuthOrgID,
+// (user + organisation) comes from the token via kernel.GetAuthUserID / kernel.GetAuthOrgID,
 // never from the request body.
 //
 // Routes (registered in server.go, nested under the expenses group):
@@ -20,28 +20,53 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/token"
 )
 
-// maxUploadRequestBytes hard-caps the whole multipart request body. It is a
+// Handler is the HTTP boundary for the attachments domain.
+type Handler struct{ svc *Service }
+
+// NewHandler builds the attachments HTTP handler.
+func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+
+// RegisterRoutes mounts the attachment sub-resource + Smart Upload under
+// /api/v1/expenses (its own auth group; same :id wildcard as the expense CRUD
+// routes that internal/expenses registers separately — Gin merges the two).
+func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
+	g := r.Group("/api/v1/expenses")
+	g.Use(kernel.AuthMiddleware(tokenMaker))
+	{
+		g.POST("/capture", h.handleSmartUpload)
+		g.POST("/:id/attachments", h.handleUploadAttachment)
+		g.GET("/:id/attachments", h.handleListAttachments)
+		g.GET("/:id/attachments/:attachmentId/download", h.handleDownloadAttachment)
+		g.PATCH("/:id/attachments/:attachmentId/primary", h.handleSetPrimaryAttachment)
+		g.DELETE("/:id/attachments/:attachmentId", h.handleDeleteAttachment)
+	}
+}
+
+// MaxUploadRequestBytes hard-caps the whole multipart request body. It is a
 // little larger than the per-file limit to allow for multipart framing; the
 // service enforces the precise per-file size limit. This stops a client from
 // streaming a huge body before we ever look at the declared file size.
-const maxUploadRequestBytes = defaultMaxUploadBytes + (1 << 20) // +1 MiB slack
+const MaxUploadRequestBytes = defaultMaxUploadBytes + (1 << 20) // +1 MiB slack
 
 // handleUploadAttachment handles POST /api/v1/expenses/:id/attachments.
 // Expects multipart/form-data with a "file" field and an optional "description".
-func (s *Server) handleUploadAttachment(c *gin.Context) {
+func (h *Handler) handleUploadAttachment(c *gin.Context) {
 	expenseID := c.Param("id")
-	userID := getAuthUserID(c)
-	orgID := getAuthOrgID(c)
+	userID := kernel.GetAuthUserID(c)
+	orgID := kernel.GetAuthOrgID(c)
 
 	// Cap the request body BEFORE parsing so an oversized upload can't exhaust
 	// memory/disk. Reads past the limit fail, which surfaces below as a 400.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadRequestBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadRequestBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
-		// Either no "file" field, or the body exceeded maxUploadRequestBytes.
+		// Either no "file" field, or the body exceeded MaxUploadRequestBytes.
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
 			"code":    "validation_error",
 			"message": "a multipart 'file' field is required (or the upload was too large)",
@@ -66,12 +91,12 @@ func (s *Server) handleUploadAttachment(c *gin.Context) {
 		description = &d
 	}
 
-	resp, err := s.attachmentService.UploadAttachment(
+	resp, err := h.svc.UploadAttachment(
 		c.Request.Context(), userID, orgID, expenseID,
 		fileHeader.Filename, fileHeader.Size, f, description,
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"attachment": resp})
@@ -85,13 +110,13 @@ func (s *Server) handleUploadAttachment(c *gin.Context) {
 // processor). It creates a skeleton draft, attaches the file, and kicks off
 // background OCR, then returns the new draft (with its PENDING attachment) so the
 // SPA can open the form and poll GET /expenses/:id until OCR fills it in.
-func (s *Server) handleSmartUpload(c *gin.Context) {
-	userID := getAuthUserID(c)
-	orgID := getAuthOrgID(c)
+func (h *Handler) handleSmartUpload(c *gin.Context) {
+	userID := kernel.GetAuthUserID(c)
+	orgID := kernel.GetAuthOrgID(c)
 	documentType := c.PostForm("document_type")
 
 	// Cap the request body BEFORE parsing, same as handleUploadAttachment.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadRequestBytes)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxUploadRequestBytes)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -112,24 +137,24 @@ func (s *Server) handleSmartUpload(c *gin.Context) {
 	}
 	defer f.Close()
 
-	resp, err := s.attachmentService.CaptureFromReceipt(
+	resp, err := h.svc.CaptureFromReceipt(
 		c.Request.Context(), userID, orgID, documentType,
 		fileHeader.Filename, fileHeader.Size, f,
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"expense": resp})
 }
 
 // handleListAttachments handles GET /api/v1/expenses/:id/attachments.
-func (s *Server) handleListAttachments(c *gin.Context) {
-	list, err := s.attachmentService.ListAttachments(
-		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"),
+func (h *Handler) handleListAttachments(c *gin.Context) {
+	list, err := h.svc.ListAttachments(
+		c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"),
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"attachments": list})
@@ -140,12 +165,12 @@ func (s *Server) handleListAttachments(c *gin.Context) {
 // It returns a short-lived signed URL the client uses to fetch the bytes
 // directly from storage. We return the URL as JSON (rather than 302-redirecting)
 // so the SPA can decide how to use it.
-func (s *Server) handleDownloadAttachment(c *gin.Context) {
-	url, err := s.attachmentService.GetDownloadURL(
-		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
+func (h *Handler) handleDownloadAttachment(c *gin.Context) {
+	url, err := h.svc.GetDownloadURL(
+		c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"download_url": url})
@@ -153,12 +178,12 @@ func (s *Server) handleDownloadAttachment(c *gin.Context) {
 
 // handleSetPrimaryAttachment handles
 // PATCH /api/v1/expenses/:id/attachments/:attachmentId/primary.
-func (s *Server) handleSetPrimaryAttachment(c *gin.Context) {
-	resp, err := s.attachmentService.SetPrimary(
-		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
+func (h *Handler) handleSetPrimaryAttachment(c *gin.Context) {
+	resp, err := h.svc.SetPrimary(
+		c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"attachment": resp})
@@ -166,12 +191,12 @@ func (s *Server) handleSetPrimaryAttachment(c *gin.Context) {
 
 // handleDeleteAttachment handles
 // DELETE /api/v1/expenses/:id/attachments/:attachmentId.
-func (s *Server) handleDeleteAttachment(c *gin.Context) {
-	err := s.attachmentService.DeleteAttachment(
-		c.Request.Context(), getAuthUserID(c), getAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
+func (h *Handler) handleDeleteAttachment(c *gin.Context) {
+	err := h.svc.DeleteAttachment(
+		c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("attachmentId"),
 	)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)

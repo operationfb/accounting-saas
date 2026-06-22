@@ -41,6 +41,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 )
@@ -119,7 +120,7 @@ func gcsObjectsUnder(t *testing.T, prefix string) []string {
 // removes the row and its GCS object afterwards.
 func uploadAs(t *testing.T, ts *testServer, callerID, orgID, expenseID, filename string, data []byte, desc *string) *expenses.AttachmentResponse {
 	t.Helper()
-	resp, err := ts.server.attachmentService.UploadAttachment(
+	resp, err := ts.attachmentService.UploadAttachment(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID),
 		expenseID, filename, int64(len(data)), bytes.NewReader(data), desc,
 	)
@@ -127,7 +128,7 @@ func uploadAs(t *testing.T, ts *testServer, callerID, orgID, expenseID, filename
 		t.Fatalf("uploadAs(%s): %v", filename, err)
 	}
 	t.Cleanup(func() {
-		_ = ts.server.attachmentService.DeleteAttachment(
+		_ = ts.attachmentService.DeleteAttachment(
 			context.Background(), mustUUID(t, callerID), mustUUID(t, orgID), expenseID, resp.ID,
 		)
 	})
@@ -180,7 +181,7 @@ func assertAppCode(t *testing.T, err error, want ErrorCode) {
 // expected id.
 func assertPrimary(t *testing.T, ts *testServer, callerID, orgID, expenseID, wantPrimaryID string) {
 	t.Helper()
-	list, err := ts.server.attachmentService.ListAttachments(
+	list, err := ts.attachmentService.ListAttachments(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID), expenseID)
 	if err != nil {
 		t.Fatalf("ListAttachments: %v", err)
@@ -266,7 +267,7 @@ func TestPrimaryAttachmentForPush(t *testing.T) {
 	exp := mustUUID(t, expenseID)
 
 	t.Run("returns the PRIMARY attachment's bytes + metadata", func(t *testing.T) {
-		data, name, ctype, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, bigEnough)
+		data, name, ctype, found, err := ts.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, bigEnough)
 		if err != nil {
 			t.Fatalf("PrimaryAttachmentForPush: %v", err)
 		}
@@ -283,7 +284,7 @@ func TestPrimaryAttachmentForPush(t *testing.T) {
 
 	t.Run("oversized → skipped (found=false, no error, no download)", func(t *testing.T) {
 		// maxBytes smaller than the file → the metadata guard skips it before download.
-		data, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, 1)
+		data, _, _, found, err := ts.attachmentService.PrimaryAttachmentForPush(ctx, org, exp, 1)
 		if err != nil {
 			t.Fatalf("oversized: unexpected error: %v", err)
 		}
@@ -294,7 +295,7 @@ func TestPrimaryAttachmentForPush(t *testing.T) {
 
 	t.Run("no attachment → found=false", func(t *testing.T) {
 		empty := createExpenseAs(t, ts, devUserID, devOrgID)
-		_, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, org, mustUUID(t, empty), bigEnough)
+		_, _, _, found, err := ts.attachmentService.PrimaryAttachmentForPush(ctx, org, mustUUID(t, empty), bigEnough)
 		if err != nil || found {
 			t.Errorf("no attachment: expected found=false/nil err, got found=%v err=%v", found, err)
 		}
@@ -302,7 +303,7 @@ func TestPrimaryAttachmentForPush(t *testing.T) {
 
 	t.Run("cross-tenant org → found=false (isolation)", func(t *testing.T) {
 		otherOrg, _ := newOrgWithOwner(t, ts)
-		_, _, _, found, err := ts.server.attachmentService.PrimaryAttachmentForPush(ctx, mustUUID(t, otherOrg), exp, bigEnough)
+		_, _, _, found, err := ts.attachmentService.PrimaryAttachmentForPush(ctx, mustUUID(t, otherOrg), exp, bigEnough)
 		if err != nil || found {
 			t.Errorf("cross-tenant: expected found=false/nil err, got found=%v err=%v", found, err)
 		}
@@ -326,7 +327,7 @@ func TestAttachmentPrimary_SetAndPromote(t *testing.T) {
 	}
 
 	// Switch the primary to a2.
-	updated, err := ts.server.attachmentService.SetPrimary(
+	updated, err := ts.attachmentService.SetPrimary(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, a2.ID)
 	if err != nil {
 		t.Fatalf("SetPrimary: %v", err)
@@ -337,7 +338,7 @@ func TestAttachmentPrimary_SetAndPromote(t *testing.T) {
 	assertPrimary(t, ts, devUserID, devOrgID, expenseID, a2.ID)
 
 	// Delete the primary (a2) → the oldest remaining (a1) is promoted.
-	if err := ts.server.attachmentService.DeleteAttachment(
+	if err := ts.attachmentService.DeleteAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, a2.ID); err != nil {
 		t.Fatalf("DeleteAttachment: %v", err)
 	}
@@ -352,7 +353,7 @@ func TestAttachmentList_OptionalEmpty(t *testing.T) {
 	defer ts.pool.Close()
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
-	list, err := ts.server.attachmentService.ListAttachments(
+	list, err := ts.attachmentService.ListAttachments(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID)
 	if err != nil {
 		t.Fatalf("ListAttachments on an expense with no files: %v", err)
@@ -377,13 +378,13 @@ func TestAttachmentUpload_RejectsBadType(t *testing.T) {
 	caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 
 	// Plain text is not an allowed receipt type.
-	_, err := ts.server.attachmentService.UploadAttachment(
+	_, err := ts.attachmentService.UploadAttachment(
 		context.Background(), caller, org, expenseID, "notes.txt",
 		int64(len(sampleText())), bytes.NewReader(sampleText()), nil)
 	assertAppCode(t, err, ErrCodeUnsupportedMediaType)
 
 	// A spoofed extension (text bytes named .pdf) is caught by the sniff.
-	_, err = ts.server.attachmentService.UploadAttachment(
+	_, err = ts.attachmentService.UploadAttachment(
 		context.Background(), caller, org, expenseID, "evil.pdf",
 		int64(len(sampleText())), bytes.NewReader(sampleText()), nil)
 	assertAppCode(t, err, ErrCodeUnsupportedMediaType)
@@ -403,8 +404,8 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
 	// 8-byte cap, sharing the configured real storage.
-	tiny := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
-		ts.server.attachmentService.storage, nil, 8, 0)
+	tiny := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+		ts.storage, nil, 8, 0)
 
 	data := samplePDF() // comfortably larger than 8 bytes
 	_, err := tiny.UploadAttachment(
@@ -435,13 +436,13 @@ func TestAttachment_MultiTenantScoping(t *testing.T) {
 	callerB, tenantB := mustUUID(t, userB), mustUUID(t, orgB)
 
 	// The parent expense isn't in org B, so every access is a 404 for them.
-	_, err := ts.server.attachmentService.ListAttachments(context.Background(), callerB, tenantB, expenseA)
+	_, err := ts.attachmentService.ListAttachments(context.Background(), callerB, tenantB, expenseA)
 	assertAppCode(t, err, ErrCodeNotFound)
 
-	_, err = ts.server.attachmentService.GetDownloadURL(context.Background(), callerB, tenantB, expenseA, att.ID)
+	_, err = ts.attachmentService.GetDownloadURL(context.Background(), callerB, tenantB, expenseA, att.ID)
 	assertAppCode(t, err, ErrCodeNotFound)
 
-	err = ts.server.attachmentService.DeleteAttachment(context.Background(), callerB, tenantB, expenseA, att.ID)
+	err = ts.attachmentService.DeleteAttachment(context.Background(), callerB, tenantB, expenseA, att.ID)
 	assertAppCode(t, err, ErrCodeNotFound)
 
 	// ...and it survives for the real owner.
@@ -461,15 +462,15 @@ func TestAttachment_Authorization(t *testing.T) {
 	memberID := newMemberUser(t, ts, devOrgID)
 	member, org := mustUUID(t, memberID), mustUUID(t, devOrgID)
 
-	_, err := ts.server.attachmentService.ListAttachments(context.Background(), member, org, expenseID)
+	_, err := ts.attachmentService.ListAttachments(context.Background(), member, org, expenseID)
 	assertAppCode(t, err, ErrCodeForbidden)
 
-	_, err = ts.server.attachmentService.UploadAttachment(
+	_, err = ts.attachmentService.UploadAttachment(
 		context.Background(), member, org, expenseID, "sneaky.pdf",
 		int64(len(samplePDF())), bytes.NewReader(samplePDF()), nil)
 	assertAppCode(t, err, ErrCodeForbidden)
 
-	_, err = ts.server.attachmentService.GetDownloadURL(context.Background(), member, org, expenseID, att.ID)
+	_, err = ts.attachmentService.GetDownloadURL(context.Background(), member, org, expenseID, att.ID)
 	assertAppCode(t, err, ErrCodeForbidden)
 }
 
@@ -489,7 +490,7 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // already cancelled before the call
-		_, err := ts.server.attachmentService.UploadAttachment(
+		_, err := ts.attachmentService.UploadAttachment(
 			ctx, mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			expenseID, "x.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()), nil)
 		if err == nil {
@@ -506,8 +507,8 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 			t.Fatalf("open pool: %v", err)
 		}
 		badPool.Close() // every query now fails
-		badSvc := NewAttachmentService(badPool, dbexpenses.New(badPool), auth.New(badPool),
-			ts.server.attachmentService.storage, nil, 0, 0)
+		badSvc := attachments.NewService(badPool, dbexpenses.New(badPool), auth.New(badPool),
+			ts.storage, nil, 0, 0)
 
 		_, err = badSvc.UploadAttachment(
 			context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
@@ -562,8 +563,8 @@ func TestAttachment_OrphanCleanup(t *testing.T) {
 	}
 	t.Cleanup(pool.Close) // Close is idempotent; the spy may already have closed it
 
-	spy := &poolClosingStorage{inner: ts.server.attachmentService.storage, pool: pool}
-	svc := NewAttachmentService(pool, dbexpenses.New(pool), auth.New(pool), spy, nil, 0, 0)
+	spy := &poolClosingStorage{inner: ts.storage, pool: pool}
+	svc := attachments.NewService(pool, dbexpenses.New(pool), auth.New(pool), spy, nil, 0, 0)
 
 	_, err = svc.UploadAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
@@ -594,7 +595,7 @@ func TestAttachment_DownloadURL(t *testing.T) {
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	att := uploadAs(t, ts, devUserID, devOrgID, expenseID, "r.pdf", samplePDF(), nil)
 
-	url, err := ts.server.attachmentService.GetDownloadURL(
+	url, err := ts.attachmentService.GetDownloadURL(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, att.ID)
 	if err != nil {
 		t.Skipf("could not generate a signed URL (needs a service-account signer): %v", err)
@@ -617,7 +618,7 @@ func TestAttachment_DownloadURL(t *testing.T) {
 	}
 
 	// Unknown attachment id → 404.
-	_, err = ts.server.attachmentService.GetDownloadURL(
+	_, err = ts.attachmentService.GetDownloadURL(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, uuid.NewString())
 	assertAppCode(t, err, ErrCodeNotFound)
 }

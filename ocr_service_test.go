@@ -33,6 +33,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	// Dot-import: these capture→OCR integration tests reference many of the ocr
 	// package's symbols (OcrService, NewOcrService, ExtractionResult,
@@ -83,10 +84,10 @@ func (s *spyEnqueuer) Enqueue(attID, orgID uuid.UUID, documentType string) {
 // captureAs runs a Smart Upload through a service wired with the given OCR
 // enqueuer (usually a spy, so OCR doesn't auto-run), and registers cleanup of
 // the expense + attachment + GCS object. Returns the new draft detail response.
-func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, documentType, filename string, data []byte) *expenses.ExpenseDetailResponse {
+func captureAs(t *testing.T, ts *testServer, ocr attachments.OcrEnqueuer, callerID, orgID, documentType, filename string, data []byte) *expenses.ExpenseDetailResponse {
 	t.Helper()
-	svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
-		ts.server.attachmentService.storage, ocr, 0, 0)
+	svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+		ts.storage, ocr, 0, 0)
 	resp, err := svc.CaptureFromReceipt(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID),
 		documentType, filename, int64(len(data)), bytes.NewReader(data),
@@ -108,7 +109,7 @@ func captureAs(t *testing.T, ts *testServer, ocr ocrEnqueuer, callerID, orgID, d
 // newOCRService builds an OcrService against the test pool + real storage with
 // the given (fake) extractor.
 func newOCRService(ts *testServer, ext DocumentExtractor) *OcrService {
-	return NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
+	return NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.storage, ext, attachments.PlaceholderDescription)
 }
 
 func containsExpense(list []*expenses.ExpenseResponse, id string) bool {
@@ -148,8 +149,8 @@ func TestSmartUploadCapture(t *testing.T) {
 		if draft.GrossValue != "0.00" {
 			t.Errorf("gross placeholder: got %q, want 0.00", draft.GrossValue)
 		}
-		if draft.CategoryNominalCode != placeholderCategoryNominal {
-			t.Errorf("category: got %q, want the Sundries placeholder %q", draft.CategoryNominalCode, placeholderCategoryNominal)
+		if draft.CategoryNominalCode != attachments.PlaceholderCategoryNominal {
+			t.Errorf("category: got %q, want the Sundries placeholder %q", draft.CategoryNominalCode, attachments.PlaceholderCategoryNominal)
 		}
 
 		if len(draft.Attachments) != 1 {
@@ -174,8 +175,8 @@ func TestSmartUploadCapture(t *testing.T) {
 	})
 
 	t.Run("invalid document_type is rejected", func(t *testing.T) {
-		svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
-			ts.server.attachmentService.storage, &spyEnqueuer{}, 0, 0)
+		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+			ts.storage, &spyEnqueuer{}, 0, 0)
 		_, err := svc.CaptureFromReceipt(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			"banana", "x.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()))
 		assertAppCode(t, err, ErrCodeValidation)
@@ -184,8 +185,8 @@ func TestSmartUploadCapture(t *testing.T) {
 	t.Run("Add file does NOT enqueue OCR", func(t *testing.T) {
 		// The standard attachment path must stay plain — no OCR, no needs_review.
 		spy := &spyEnqueuer{}
-		svc := NewAttachmentService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
-			ts.server.attachmentService.storage, spy, 0, 0)
+		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+			ts.storage, spy, 0, 0)
 		expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 		resp, err := svc.UploadAttachment(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			expenseID, "r.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()), nil)
@@ -307,7 +308,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 			"SELECT description FROM expenses WHERE id=$1", draft.ID).Scan(&desc); err != nil {
 			t.Fatalf("read description: %v", err)
 		}
-		if desc != placeholderDescription {
+		if desc != attachments.PlaceholderDescription {
 			t.Errorf("description should remain the placeholder when OCR has none; got %q", desc)
 		}
 	})
@@ -368,8 +369,8 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 		attID := mustUUID(t, draft.Attachments[0].ID)
 
 		// maxBytes=4 (smaller than samplePDF()) so the size guard trips → SKIPPED.
-		svc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage,
-			&fakeExtractor{result: &ExtractionResult{}}, placeholderDescription, WithMaxBytes(4))
+		svc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.storage,
+			&fakeExtractor{result: &ExtractionResult{}}, attachments.PlaceholderDescription, WithMaxBytes(4))
 		if err := svc.Process(context.Background(), attID, devOrg, DocumentTypeReceipt); err != nil {
 			t.Fatalf("process: %v", err)
 		}
@@ -489,7 +490,7 @@ func TestDocumentAILive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not build Document AI extractor: %v", err)
 	}
-	ocrSvc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.server.attachmentService.storage, ext, placeholderDescription)
+	ocrSvc := NewOcrService(ts.pool, dbexpenses.New(ts.pool), ts.storage, ext, attachments.PlaceholderDescription)
 	devOrg := mustUUID(t, devOrgID)
 	pdf := buildInvoicePDF() // a valid single-page PDF with real invoice text
 

@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 )
 
@@ -89,7 +90,7 @@ func decodeAttachment(t *testing.T, rec *httptest.ResponseRecorder) expenses.Att
 // attachment just returns a not-found error, which we ignore.
 func cleanupAttachment(t *testing.T, ts *testServer, expenseID, attachmentID string) {
 	t.Cleanup(func() {
-		_ = ts.server.attachmentService.DeleteAttachment(
+		_ = ts.attachmentService.DeleteAttachment(
 			context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID), expenseID, attachmentID)
 	})
 }
@@ -278,7 +279,7 @@ func TestAttachmentHandler_Errors(t *testing.T) {
 	t.Run("oversized body returns 400", func(t *testing.T) {
 		// Just over the hard request-body cap so http.MaxBytesReader trips during
 		// multipart parsing, before the service ever sees the file.
-		big := make([]byte, maxUploadRequestBytes+1024)
+		big := make([]byte, attachments.MaxUploadRequestBytes+1024)
 		copy(big, samplePDF()) // a valid signature up front; size trips first anyway
 		rec := uploadRequest(t, ts, authHeader, expenseID, "big.pdf", big, nil)
 		if rec.Code != http.StatusBadRequest {

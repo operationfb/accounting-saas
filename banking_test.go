@@ -22,7 +22,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
 	"github.com/jackc/pgx/v5/pgtype"
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 
 	"github.com/operationfb/accounting-saas/db/banking"
 )
@@ -37,7 +39,7 @@ func mkdate(y int, m time.Month, d int) pgtype.Date {
 	return pgtype.Date{Time: time.Date(y, m, d, 0, 0, 0, 0, time.UTC), Valid: true}
 }
 
-// isUniqueViolation (SQLSTATE 23505) — the primary-account and feed-dedupe
+// kernel.IsUniqueViolation (SQLSTATE 23505) — the primary-account and feed-dedupe
 // indexes raise it — is shared from email_inbox_service.go (same package).
 
 // createBankAccount inserts an account via the generated query with sensible
@@ -191,7 +193,7 @@ func TestBankingDataLayer(t *testing.T) {
 			Name: "Second", Currency: "GBP", Status: "active", IsPrimary: true,
 			ShowOnInvoices: true, GuessExplanations: true,
 		})
-		if !isUniqueViolation(err) {
+		if !kernel.IsUniqueViolation(err) {
 			t.Fatalf("second primary: want unique violation, got %v", err)
 		}
 
@@ -258,7 +260,7 @@ func TestBankingDataLayer(t *testing.T) {
 			OrganisationID: mustUUID(t, org), BankAccountID: acc.ID, DatedOn: mkdate(2026, 6, 2),
 			AmountMinor: -1_000, Status: "unexplained", Source: "feed", ExternalID: pgText("txn-abc"),
 		})
-		if !isUniqueViolation(err) {
+		if !kernel.IsUniqueViolation(err) {
 			t.Fatalf("duplicate external_id: want unique violation, got %v", err)
 		}
 

@@ -1,4 +1,4 @@
-package main
+package emailinbox
 
 // email_inbox_handler.go
 // =============================================================================
@@ -32,7 +32,36 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	kernel "github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/token"
 )
+
+// Handler is the HTTP boundary for the email-to-expense channel.
+type Handler struct {
+	svc        *Service // may be nil when the channel is unconfigured (INBOX_DOMAIN unset)
+	signingKey string   // Mailgun HMAC key; empty disables the inbound webhook
+}
+
+// NewHandler builds the handler. svc may be nil (then /inbox-address reports
+// enabled:false and the webhook is not mounted).
+func NewHandler(svc *Service, signingKey string) *Handler {
+	return &Handler{svc: svc, signingKey: signingKey}
+}
+
+// RegisterRoutes mounts the channel's routes. /inbox-address is ALWAYS mounted
+// (authed; the handler reports enabled:false when the channel is off). The inbound
+// webhook is PUBLIC — it carries no bearer token and is authenticated by Mailgun's
+// HMAC signature in the handler — so it's mounted only when fully configured.
+func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
+	authed := r.Group("/api/v1")
+	authed.Use(kernel.AuthMiddleware(tokenMaker))
+	authed.GET("/inbox-address", h.handleGetInboxAddress)
+
+	if h.svc != nil && h.signingKey != "" {
+		r.POST("/api/v1/webhooks/mailgun/inbound", h.handleMailgunInbound)
+	}
+}
 
 // maxInboundEmailBytes hard-caps the whole inbound webhook body. Receipts are
 // small; this leaves room for the body text plus a couple of attachments. An
@@ -41,7 +70,7 @@ import (
 const maxInboundEmailBytes int64 = 35 << 20 // 35 MiB
 
 // handleMailgunInbound handles POST /api/v1/webhooks/mailgun/inbound.
-func (s *Server) handleMailgunInbound(c *gin.Context) {
+func (h *Handler) handleMailgunInbound(c *gin.Context) {
 	// Cap the body before parsing so an oversized/abusive POST can't exhaust us.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxInboundEmailBytes)
 
@@ -60,7 +89,7 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 
 	// --- Authenticate FIRST: verify Mailgun's HMAC signature. ----------------
 	// An attacker without the signing key can't forge (timestamp, token, signature).
-	if !verifyMailgunSignature(s.mailgunSigningKey, val("timestamp"), val("token"), val("signature")) {
+	if !verifyMailgunSignature(h.signingKey, val("timestamp"), val("token"), val("signature")) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
@@ -88,11 +117,11 @@ func (s *Server) handleMailgunInbound(c *gin.Context) {
 	// we ack Mailgun fast (the capture/GCS/render work used to run on this request
 	// path and time Mailgun out). The request context is fine here: Accept only uses
 	// it for the fast synchronous claim, and the background work gets its own.
-	outcome, err := s.emailInboxService.Accept(c.Request.Context(), in)
+	outcome, err := h.svc.Accept(c.Request.Context(), in)
 	if err != nil {
-		appErr := AsAppError(err)
-		if appErr.Code == ErrCodeInternal {
-			logInternalError(c, appErr.Err)
+		appErr := kernel.AsAppError(err)
+		if appErr.Code == kernel.ErrCodeInternal {
+			kernel.LogInternalError(c, appErr.Err)
 			// Transient: we did NOT durably handle it → 500 so Mailgun retries.
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "temporary failure; please retry"})
 			return
@@ -262,16 +291,16 @@ func isInlineImageGroup(fhs []*multipart.FileHeader) bool {
 // caller's receipt-inbox address for their organisation. When the channel is
 // disabled (no INBOX_DOMAIN), it reports enabled:false rather than erroring, so
 // the SPA can simply hide the feature.
-func (s *Server) handleGetInboxAddress(c *gin.Context) {
-	if s.emailInboxService == nil {
+func (h *Handler) handleGetInboxAddress(c *gin.Context) {
+	if h.svc == nil {
 		c.JSON(http.StatusOK, gin.H{"enabled": false, "address": ""})
 		return
 	}
-	userID := getAuthUserID(c)
-	orgID := getAuthOrgID(c)
-	address, err := s.emailInboxService.GetOrCreateInboxAddress(c.Request.Context(), userID, orgID)
+	userID := kernel.GetAuthUserID(c)
+	orgID := kernel.GetAuthOrgID(c)
+	address, err := h.svc.GetOrCreateInboxAddress(c.Request.Context(), userID, orgID)
 	if err != nil {
-		respondError(c, err)
+		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": address != "", "address": address})

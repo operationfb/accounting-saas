@@ -47,12 +47,14 @@ import (
 	"github.com/operationfb/accounting-saas/db/auth"
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
-	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
+	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
@@ -79,7 +81,9 @@ type testServer struct {
 	tokenMaker        token.Maker
 	emailSender       *fakeEmailSender
 	expenseService    *expenses.Service
-	emailInboxService *EmailInboxService
+	attachmentService *attachments.Service
+	storage           storage.Storage // the storage.Storage backing attachmentService (nil without GCS); exposed for OCR/attachment direct-call tests
+	emailInboxService *emailinbox.Service
 
 	// integrationService is the freeagent integration service the harness wires; its
 	// Handler registers routes on server.Router(). Exposed for the direct-call tests.
@@ -184,7 +188,7 @@ func newTestServer(t *testing.T) *testServer {
 		}
 		store = gcsStore
 	}
-	attachmentService := NewAttachmentService(pool, queries, authQueries, store, nil, 0, 0)
+	attachmentService := attachments.NewService(pool, queries, authQueries, store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	memberSvc := members.NewService(authQueries)
@@ -194,11 +198,11 @@ func newTestServer(t *testing.T) *testServer {
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
 	// tests can compute a valid HMAC). Capture still flows through the real
 	// attachment service, so attachment/HTML tests require GCS like other captures.
-	emailInboxService := NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
+	emailInboxService := emailinbox.NewService(authQueries, dbemailinbox.New(pool), attachmentService, &fakeHTMLRenderer{pdf: samplePDF()}, testInboxDomain)
 	// Run the webhook's background processing INLINE in tests so handler tests can
 	// assert the effect (draft created, event-row status) right after ServeHTTP,
 	// instead of racing the goroutine Accept spawns in production.
-	emailInboxService.runInBackground = func(fn func()) { fn() }
+	emailInboxService.SetRunInBackground(func(fn func()) { fn() })
 	// FreeAgent integration: a sandbox-host client (no real calls are made unless a
 	// test drives the OAuth flow) plus the shared maker/queries. apiPublicURL is a
 	// fixed test value used only to build the redirect_uri.
@@ -208,10 +212,11 @@ func newTestServer(t *testing.T) *testServer {
 	faProvider := "fa-test-" + testutil.RandomString(8)
 	integrationSvc := integrations.NewService(integrationsdb.New(pool), authQueries, freeagent.NewClient(true), attachmentService, freeagent.MaxAttachmentBytes, faProvider, tokenMaker, "http://api.test", testAppBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
-	server := NewServer(attachmentService, emailInboxService, tokenMaker, testMailgunSigningKey, []string{testCORSOrigin})
-	// Expenses self-registers its CRUD + reference-data routes (like production); the
-	// attachment sub-routes are still mounted by NewServer until Stage 2.
+	server := NewServer([]string{testCORSOrigin})
+	// Every domain self-registers its routes (like production).
 	expenses.NewHandler(service).RegisterRoutes(server.Router(), tokenMaker)
+	attachments.NewHandler(attachmentService).RegisterRoutes(server.Router(), tokenMaker)
+	emailinbox.NewHandler(emailInboxService, testMailgunSigningKey).RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
@@ -235,6 +240,8 @@ func newTestServer(t *testing.T) *testServer {
 		server:              server,
 		pool:                pool,
 		expenseService:      service,
+		attachmentService:   attachmentService,
+		storage:             store,
 		tokenMaker:          tokenMaker,
 		emailSender:         emailSender,
 		emailInboxService:   emailInboxService,
@@ -1488,7 +1495,7 @@ func TestHandleDeleteExpense(t *testing.T) {
 			"SELECT storage_path FROM expense_attachments WHERE id=$1", draft.Attachments[0].ID).Scan(&storageKey); err != nil {
 			t.Fatalf("read storage_path: %v", err)
 		}
-		t.Cleanup(func() { _ = ts.server.attachmentService.storage.Delete(context.Background(), storageKey) })
+		t.Cleanup(func() { _ = ts.storage.Delete(context.Background(), storageKey) })
 
 		// It starts in the inbox.
 		caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)

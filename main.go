@@ -30,13 +30,15 @@ import (
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
-	emailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
+	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
+	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
@@ -277,13 +279,13 @@ func main() {
 	// extractor. Wire it in only when both exist; otherwise leave it nil so the
 	// attachment service treats OCR as disabled (a typed-nil interface is avoided
 	// by assigning only inside this guard).
-	var ocrTrigger ocrEnqueuer
+	var ocrTrigger attachments.OcrEnqueuer
 	if attachmentStorage != nil && docExtractor != nil {
-		ocrTrigger = ocr.NewOcrService(pool, queries, attachmentStorage, docExtractor, placeholderDescription)
+		ocrTrigger = ocr.NewOcrService(pool, queries, attachmentStorage, docExtractor, attachments.PlaceholderDescription)
 	}
 
 	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).
-	attachmentService := NewAttachmentService(pool, queries, authQueries, attachmentStorage, ocrTrigger, 0, 0)
+	attachmentService := attachments.NewService(pool, queries, authQueries, attachmentStorage, ocrTrigger, 0, 0)
 
 	// -------------------------------------------------------------------------
 	// Email-to-expense (Mailgun inbound webhook).
@@ -306,9 +308,9 @@ func main() {
 	}
 
 	mailgunSigningKey := os.Getenv("MAILGUN_INBOUND_SIGNING_KEY")
-	var emailInboxService *EmailInboxService
+	var emailInboxService *emailinbox.Service
 	if inboxDomain := os.Getenv("INBOX_DOMAIN"); inboxDomain != "" {
-		emailInboxService = NewEmailInboxService(authQueries, emailinbox.New(pool), attachmentService, htmlRenderer, inboxDomain)
+		emailInboxService = emailinbox.NewService(authQueries, dbemailinbox.New(pool), attachmentService, htmlRenderer, inboxDomain)
 		if mailgunSigningKey == "" {
 			log.Printf("email inbox: INBOX_DOMAIN=%q set but MAILGUN_INBOUND_SIGNING_KEY empty — address display works, inbound webhook disabled", inboxDomain)
 		} else {
@@ -371,13 +373,16 @@ func main() {
 	// CORS_ALLOWED_ORIGINS; defaults to the Nuxt dev server when unset.
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 
-	server := NewServer(attachmentService, emailInboxService, tokenMaker, mailgunSigningKey, corsOrigins)
+	server := NewServer(corsOrigins)
 
-	// Expenses (the core domain) self-registers its CRUD + reference-data routes
-	// on the shared engine, like every other domain. The attachment sub-resource
-	// (/expenses/:id/attachments, /capture) is still registered by NewServer until
-	// the attachments domain is extracted.
+	// Every domain self-registers its routes on the shared engine, like every other
+	// domain. Attachments mounts the receipt sub-resource + Smart Upload under
+	// /api/v1/expenses (same :id wildcard as the expense CRUD — Gin merges the two
+	// groups). Email-inbox always mounts /inbox-address (it reports enabled:false
+	// when emailInboxService is nil); its webhook mounts only when configured.
 	expenses.NewHandler(service).RegisterRoutes(server.Router(), tokenMaker)
+	attachments.NewHandler(attachmentService).RegisterRoutes(server.Router(), tokenMaker)
+	emailinbox.NewHandler(emailInboxService, mailgunSigningKey).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Each integration registers its OWN routes on the shared engine (the
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in

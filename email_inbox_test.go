@@ -2,11 +2,11 @@ package main
 
 // email_inbox_test.go
 // =============================================================================
-// Integration tests for the email-to-expense channel (EmailInboxService + the
+// Integration tests for the email-to-expense channel (emailinbox.Service + the
 // Mailgun webhook handler).
 //
 // Following the repo's rules: real Postgres + real GCS, and we fake ONLY the
-// external services — Mailgun (we build InboundEmail directly / POST a signed
+// external services — Mailgun (we build emailinbox.InboundEmail directly / POST a signed
 // multipart payload) and Gotenberg (fakeHTMLRenderer). Tests that actually
 // capture a file (and so hit GCS) call requireGCS; routing/auth/address tests
 // don't capture and run without GCS.
@@ -29,6 +29,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 )
 
 // =============================================================================
@@ -53,9 +55,9 @@ func (f *fakeHTMLRenderer) RenderPDF(_ context.Context, html string) ([]byte, er
 	return f.pdf, nil
 }
 
-// inboundFile builds an InboundAttachment whose Open() yields a fresh reader.
-func inboundFile(filename string, data []byte) InboundAttachment {
-	return InboundAttachment{
+// inboundFile builds an emailinbox.InboundAttachment whose Open() yields a fresh reader.
+func inboundFile(filename string, data []byte) emailinbox.InboundAttachment {
+	return emailinbox.InboundAttachment{
 		Filename: filename,
 		Size:     int64(len(data)),
 		Open:     func() (io.ReadSeeker, error) { return bytes.NewReader(data), nil },
@@ -105,7 +107,7 @@ func cleanupOrgCaptures(t *testing.T, ts *testServer, orgID, ownerID string) {
 			rows.Close()
 			// DeleteAttachment removes the metadata row AND the GCS object.
 			for _, p := range ps {
-				_ = ts.server.attachmentService.DeleteAttachment(ctx, mustUUID(t, ownerID), mustUUID(t, orgID), p.exp, p.att)
+				_ = ts.attachmentService.DeleteAttachment(ctx, mustUUID(t, ownerID), mustUUID(t, orgID), p.exp, p.att)
 			}
 		}
 		_, _ = ts.pool.Exec(ctx, `DELETE FROM expenses WHERE organisation_id = $1`, orgID)
@@ -154,7 +156,7 @@ func memberEmailFor(userID string) string { return "member-" + userID + "@test.l
 
 // seedSundries inserts the '280' Sundries placeholder category that
 // CaptureFromReceipt files a skeleton draft under (280 = FreeAgent's nominal code
-// for Sundries; matches placeholderCategoryNominal). Ephemeral orgs (unlike the
+// for Sundries; matches attachments.PlaceholderCategoryNominal). Ephemeral orgs (unlike the
 // seeded dev org) have no categories, so capture tests must seed this one.
 func seedSundries(t *testing.T, ts *testServer, orgID string) {
 	t.Helper()
@@ -193,7 +195,7 @@ func TestEmailInboxRouting(t *testing.T) {
 
 	t.Run("unknown address is ignored", func(t *testing.T) {
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: "nobody-" + uuid.NewString() + "@" + testInboxDomain,
 			From:      "someone@example.com",
@@ -214,7 +216,7 @@ func TestEmailInboxRouting(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
 		setInboxLocalPart(t, ts, orgID, ownerID, "alpha-"+orgID[:8])
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: "alpha@some-other-domain.com",
 			From:      ownerEmailFor(ownerID),
@@ -232,7 +234,7 @@ func TestEmailInboxRouting(t *testing.T) {
 		local := "alpha-" + orgID[:8]
 		setInboxLocalPart(t, ts, orgID, ownerID, local)
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: local + "@" + testInboxDomain,
 			From:      "outsider@example.com", // not a member of this org
@@ -253,7 +255,7 @@ func TestEmailInboxRouting(t *testing.T) {
 
 		msg := newMessageID(t, ts)
 		// ownerA is a real, active member — but of org A, not org B.
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: localB + "@" + testInboxDomain,
 			From:      ownerEmailFor(ownerA),
@@ -275,7 +277,7 @@ func TestEmailInboxRouting(t *testing.T) {
 		local := "alpha-" + orgID[:8]
 		setInboxLocalPart(t, ts, orgID, ownerID, local)
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: local + "@" + testInboxDomain,
 			From:      ownerEmailFor(ownerID),
@@ -290,7 +292,7 @@ func TestEmailInboxRouting(t *testing.T) {
 	})
 
 	t.Run("missing Message-Id is rejected (so Mailgun retries, never duplicates)", func(t *testing.T) {
-		_, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		_, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			Recipient: "alpha@" + testInboxDomain,
 			From:      "x@example.com",
 		})
@@ -312,12 +314,12 @@ func TestEmailInboxCapture(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID:   msg,
 			Recipient:   local + "@" + testInboxDomain,
 			From:        ownerEmailFor(ownerID),
 			Subject:     "Lunch receipt",
-			Attachments: []InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
+			Attachments: []emailinbox.InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
 		})
 		if err != nil {
 			t.Fatalf("Ingest: %v", err)
@@ -343,11 +345,11 @@ func TestEmailInboxCapture(t *testing.T) {
 		colleague := newMemberUser(t, ts, orgID) // active member of the same org
 
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID:   msg,
 			Recipient:   local + "@" + testInboxDomain, // the OWNER's inbox
 			From:        memberEmailFor(colleague),     // sent by the colleague
-			Attachments: []InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
+			Attachments: []emailinbox.InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
 		})
 		if err != nil {
 			t.Fatalf("Ingest: %v", err)
@@ -370,11 +372,11 @@ func TestEmailInboxCapture(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: local + "@" + testInboxDomain,
 			From:      ownerEmailFor(ownerID),
-			Attachments: []InboundAttachment{
+			Attachments: []emailinbox.InboundAttachment{
 				inboundFile("a.pdf", samplePDF()),
 				inboundFile("b.jpg", sampleJPEG()),
 			},
@@ -394,11 +396,11 @@ func TestEmailInboxCapture(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: local + "@" + testInboxDomain,
 			From:      ownerEmailFor(ownerID),
-			Attachments: []InboundAttachment{
+			Attachments: []emailinbox.InboundAttachment{
 				inboundFile("note.txt", sampleText()), // not a receipt → skipped
 				inboundFile("receipt.pdf", samplePDF()),
 			},
@@ -418,7 +420,7 @@ func TestEmailInboxCapture(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
 		msg := newMessageID(t, ts)
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID: msg,
 			Recipient: local + "@" + testInboxDomain,
 			From:      ownerEmailFor(ownerID),
@@ -446,11 +448,11 @@ func TestEmailInboxCapture(t *testing.T) {
 	t.Run("duplicate delivery (Mailgun retry) creates no second draft", func(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
-		email := &InboundEmail{
+		email := &emailinbox.InboundEmail{
 			MessageID:   newMessageID(t, ts),
 			Recipient:   local + "@" + testInboxDomain,
 			From:        ownerEmailFor(ownerID),
-			Attachments: []InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
+			Attachments: []emailinbox.InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
 		}
 		if _, err := ts.emailInboxService.Ingest(ctx, email); err != nil {
 			t.Fatalf("first Ingest: %v", err)
@@ -469,12 +471,12 @@ func TestEmailInboxCapture(t *testing.T) {
 
 	t.Run("same file re-sent as a NEW email (distinct Message-Id) is deduped", func(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
-		send := func() (IngestOutcome, error) {
-			return ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		send := func() (emailinbox.IngestOutcome, error) {
+			return ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 				MessageID:   newMessageID(t, ts), // a DIFFERENT Message-Id each send
 				Recipient:   local + "@" + testInboxDomain,
 				From:        ownerEmailFor(ownerID),
-				Attachments: []InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
+				Attachments: []emailinbox.InboundAttachment{inboundFile("receipt.pdf", samplePDF())},
 			})
 		}
 
@@ -501,20 +503,20 @@ func TestEmailInboxCapture(t *testing.T) {
 	t.Run("a DIFFERENT file to the same inbox is not deduped", func(t *testing.T) {
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
-		if _, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		if _, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID:   newMessageID(t, ts),
 			Recipient:   local + "@" + testInboxDomain,
 			From:        ownerEmailFor(ownerID),
-			Attachments: []InboundAttachment{inboundFile("a.pdf", samplePDF())},
+			Attachments: []emailinbox.InboundAttachment{inboundFile("a.pdf", samplePDF())},
 		}); err != nil {
 			t.Fatalf("first send: %v", err)
 		}
 
-		out, err := ts.emailInboxService.Ingest(ctx, &InboundEmail{
+		out, err := ts.emailInboxService.Ingest(ctx, &emailinbox.InboundEmail{
 			MessageID:   newMessageID(t, ts),
 			Recipient:   local + "@" + testInboxDomain,
 			From:        ownerEmailFor(ownerID),
-			Attachments: []InboundAttachment{inboundFile("b.png", samplePNG())}, // different bytes
+			Attachments: []emailinbox.InboundAttachment{inboundFile("b.png", samplePNG())}, // different bytes
 		})
 		if err != nil {
 			t.Fatalf("second send: %v", err)
@@ -865,34 +867,6 @@ func mailgunWebhookURLEncoded(t *testing.T, fields map[string]string) *http.Requ
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/mailgun/inbound", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return req
-}
-
-// TestInlineAttachmentNames is a pure unit test for the content-id-map parser.
-func TestInlineAttachmentNames(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"single inline", `{"<logo@x>":"attachment-2"}`, []string{"attachment-2"}},
-		{"two inline", `{"<a>":"attachment-1","<b>":"attachment-3"}`, []string{"attachment-1", "attachment-3"}},
-		{"empty string", ``, nil},
-		{"empty object", `{}`, nil},
-		{"garbage", `not json`, nil},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := inlineAttachmentNames(c.in)
-			if len(got) != len(c.want) {
-				t.Fatalf("size: got %d %v, want %d %v", len(got), got, len(c.want), c.want)
-			}
-			for _, w := range c.want {
-				if !got[w] {
-					t.Errorf("missing %q in %v", w, got)
-				}
-			}
-		})
-	}
 }
 
 // =============================================================================
