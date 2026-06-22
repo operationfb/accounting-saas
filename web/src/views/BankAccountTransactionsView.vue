@@ -49,6 +49,9 @@ onMounted(load)
 function editDetails() {
   router.push(`/bank-accounts/${id}/edit`)
 }
+function uploadStatement() {
+  router.push(`/bank-accounts/${id}/transactions/import`)
+}
 
 // --- "More ▾" menu (owner/admin only; the backend enforces it) ---
 const moreMenu = ref()
@@ -142,7 +145,13 @@ function amount(pounds: string | null | undefined): string {
       <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
         <h1 class="text-[22px] font-bold">{{ account.name }}</h1>
         <div class="flex gap-2.5">
-          <Button label="Upload statement" severity="secondary" outlined disabled />
+          <Button
+            v-if="auth.isOrgAdmin"
+            label="Upload statement"
+            severity="secondary"
+            outlined
+            @click="uploadStatement"
+          />
           <Button label="Edit details" severity="secondary" outlined @click="editDetails" />
           <!-- "More" hosts Add transaction + Delete account — owner/admin only. -->
           <template v-if="auth.isOrgAdmin">

@@ -110,3 +110,14 @@ export const BankAccountTransactionsResponseSchema = z.object({
 })
 export type BankAccountTransactions = z.infer<typeof BankAccountTransactionsResponseSchema>
 
+// POST /api/v1/bank-accounts/:id/transactions/import → the import counts plus the
+// refreshed statement (a superset of BankAccountTransactionsResponse).
+export const StatementImportResultSchema = z.object({
+  imported: z.number(),
+  skipped_duplicates: z.number(),
+  total: z.number(),
+  account: BankAccountSchema,
+  transactions: z.array(BankTransactionSchema).nullish(),
+})
+export type StatementImportResult = z.infer<typeof StatementImportResultSchema>
+

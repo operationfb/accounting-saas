@@ -1,12 +1,14 @@
-import { apiFetch } from '@/lib/api'
+import { apiFetch, apiUpload } from '@/lib/api'
 import {
   ListBankAccountsResponseSchema,
   GetBankAccountResponseSchema,
   BankAccountTransactionsResponseSchema,
+  StatementImportResultSchema,
   type BankAccount,
   type BankTransaction,
   type CreateBankAccountRequest,
   type CreateBankTransactionRequest,
+  type StatementImportResult,
 } from '@/types/bank-account'
 
 // Statement payload shared by the read + the three transaction mutations (all return
@@ -94,4 +96,14 @@ export async function deleteBankTransaction(accountId: string, txnId: string): P
 // (no body); apiFetch tolerates the empty body, so we just await success.
 export async function deleteBankAccount(id: string): Promise<void> {
   await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+// POST /api/v1/bank-accounts/:id/transactions/import — upload a CSV statement (owner/admin,
+// multipart "file"). Returns the import counts + the refreshed statement. A 422 (bad CSV — the
+// backend names the offending rows) surfaces as an ApiError for the view to show.
+export async function importBankStatement(accountId: string, file: File): Promise<StatementImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const data = await apiUpload<unknown>(`/bank-accounts/${encodeURIComponent(accountId)}/transactions/import`, form)
+  return StatementImportResultSchema.parse(data)
 }
