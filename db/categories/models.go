@@ -41,3 +41,15 @@ type TransactionType struct {
 	IsActive     bool               `json:"is_active"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
+
+// Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.
+type VatRate struct {
+	ID            uuid.UUID          `json:"id"`
+	CountryCode   string             `json:"country_code"`
+	Name          string             `json:"name"`
+	RateBps       int32              `json:"rate_bps"`
+	IsFixedRatio  bool               `json:"is_fixed_ratio"`
+	EffectiveFrom pgtype.Date        `json:"effective_from"`
+	EffectiveTo   pgtype.Date        `json:"effective_to"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}

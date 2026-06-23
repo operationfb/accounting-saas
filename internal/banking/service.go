@@ -41,22 +41,25 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	banking "github.com/operationfb/accounting-saas/db/banking"
+	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
 
-// Service holds the pool (for the multi-statement primary-flip
-// transaction), the banking query set, and the auth queries used to resolve the
-// caller's membership/role.
+// Service holds the pool (for the multi-statement primary-flip transaction), the
+// banking query set, the auth queries (caller's membership/role + the org's
+// company_type), and the categories query set (the explain flow's reference
+// lookups: type, offered-category check, VAT rate).
 type Service struct {
 	pool        *pgxpool.Pool
 	queries     *banking.Queries
 	authQueries auth.Querier
+	catQueries  *categoriesdb.Queries
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
-func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier) *Service {
-	return &Service{pool: pool, queries: queries, authQueries: authQueries}
+func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries) *Service {
+	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries}
 }
 
 // =============================================================================

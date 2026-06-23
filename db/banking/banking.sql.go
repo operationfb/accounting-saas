@@ -897,6 +897,123 @@ func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListEx
 	return items, nil
 }
 
+const listExplanationsForTransactionDetailed = `-- name: ListExplanationsForTransactionDetailed :many
+SELECT
+    e.id, e.organisation_id, e.bank_transaction_id, e.created_by_user_id, e.dated_on, e.description, e.type, e.gross_value_minor, e.category_id, e.sales_tax_status, e.sales_tax_rate_id, e.sales_tax_value_minor, e.is_manual_sales_tax, e.ec_status, e.place_of_supply, e.transfer_bank_account_id, e.paid_user_id, e.marked_for_review, e.cheque_number, e.receipt_reference, e.deleted_at, e.created_at, e.updated_at,
+    c.name         AS category_name,
+    c.nominal_code AS category_nominal_code,
+    ta.name        AS transfer_account_name,
+    u.first_name   AS paid_user_first_name,
+    u.last_name    AS paid_user_last_name,
+    vr.name        AS vat_rate_name,
+    vr.rate_bps    AS vat_rate_bps
+FROM bank_transaction_explanations e
+LEFT JOIN categories    c  ON c.id  = e.category_id
+LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
+LEFT JOIN users         u  ON u.id  = e.paid_user_id
+LEFT JOIN vat_rates     vr ON vr.id = e.sales_tax_rate_id
+WHERE e.bank_transaction_id = $1
+  AND e.organisation_id     = $2
+  AND e.deleted_at IS NULL
+ORDER BY e.created_at ASC, e.id ASC
+`
+
+type ListExplanationsForTransactionDetailedParams struct {
+	BankTransactionID uuid.UUID `json:"bank_transaction_id"`
+	OrganisationID    uuid.UUID `json:"organisation_id"`
+}
+
+type ListExplanationsForTransactionDetailedRow struct {
+	ID                    uuid.UUID          `json:"id"`
+	OrganisationID        uuid.UUID          `json:"organisation_id"`
+	BankTransactionID     uuid.UUID          `json:"bank_transaction_id"`
+	CreatedByUserID       pgtype.UUID        `json:"created_by_user_id"`
+	DatedOn               pgtype.Date        `json:"dated_on"`
+	Description           pgtype.Text        `json:"description"`
+	Type                  string             `json:"type"`
+	GrossValueMinor       int64              `json:"gross_value_minor"`
+	CategoryID            pgtype.UUID        `json:"category_id"`
+	SalesTaxStatus        string             `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID        `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64              `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool               `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text        `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text        `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID        `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID        `json:"paid_user_id"`
+	MarkedForReview       bool               `json:"marked_for_review"`
+	ChequeNumber          pgtype.Text        `json:"cheque_number"`
+	ReceiptReference      pgtype.Text        `json:"receipt_reference"`
+	DeletedAt             pgtype.Timestamptz `json:"deleted_at"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	CategoryName          pgtype.Text        `json:"category_name"`
+	CategoryNominalCode   pgtype.Text        `json:"category_nominal_code"`
+	TransferAccountName   pgtype.Text        `json:"transfer_account_name"`
+	PaidUserFirstName     pgtype.Text        `json:"paid_user_first_name"`
+	PaidUserLastName      pgtype.Text        `json:"paid_user_last_name"`
+	VatRateName           pgtype.Text        `json:"vat_rate_name"`
+	VatRateBps            pgtype.Int4        `json:"vat_rate_bps"`
+}
+
+// -----------------------------------------------------------------------------
+// ListExplanationsForTransactionDetailed — a line's live explanations with the
+// resolved display names in ONE query: the category (name + nominal), the transfer
+// account name, the paid user's name, and the VAT rate (name + bps). LEFT JOINs so
+// entity-link explanations (NULL category) still return. Backs the explain panel +
+// every explain mutation's response. Org-scoped, oldest first. :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExplanationsForTransactionDetailed(ctx context.Context, arg ListExplanationsForTransactionDetailedParams) ([]ListExplanationsForTransactionDetailedRow, error) {
+	rows, err := q.db.Query(ctx, listExplanationsForTransactionDetailed, arg.BankTransactionID, arg.OrganisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListExplanationsForTransactionDetailedRow
+	for rows.Next() {
+		var i ListExplanationsForTransactionDetailedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.BankTransactionID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.Description,
+			&i.Type,
+			&i.GrossValueMinor,
+			&i.CategoryID,
+			&i.SalesTaxStatus,
+			&i.SalesTaxRateID,
+			&i.SalesTaxValueMinor,
+			&i.IsManualSalesTax,
+			&i.EcStatus,
+			&i.PlaceOfSupply,
+			&i.TransferBankAccountID,
+			&i.PaidUserID,
+			&i.MarkedForReview,
+			&i.ChequeNumber,
+			&i.ReceiptReference,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.CategoryName,
+			&i.CategoryNominalCode,
+			&i.TransferAccountName,
+			&i.PaidUserFirstName,
+			&i.PaidUserLastName,
+			&i.VatRateName,
+			&i.VatRateBps,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteBankAccount = `-- name: SoftDeleteBankAccount :exec
 UPDATE bank_accounts SET
     deleted_at = now(),

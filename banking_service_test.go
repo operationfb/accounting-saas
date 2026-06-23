@@ -591,3 +591,208 @@ func TestBankAccountService(t *testing.T) {
 		}
 	})
 }
+
+// TestExplainService covers the explain/reconcile write path (internal/banking/explain.go):
+// the per-type validation, splitting + the over-explain guard, VAT extraction, the Transfer
+// and Money-Paid-to-User entity links, and the recompute-driven status/remaining in the
+// response. Uses a FRESH ephemeral org with a few hand-seeded CoA categories (the global
+// transaction_type_categories mapping already exists for every org).
+func TestExplainService(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+	svc := ts.bankingService
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+
+	// company_type drives the Money-Paid-to-User options (907 is offered for 'limited').
+	if _, err := ts.pool.Exec(ctx, `UPDATE organisations SET company_type='limited' WHERE id=$1`, org); err != nil {
+		t.Fatalf("set company_type: %v", err)
+	}
+	// Seed a handful of CoA accounts for this org (the mapping is global; the accounts are per-org).
+	seed := func(code, name, accountType, apiGroup string) {
+		if _, err := ts.pool.Exec(ctx,
+			`INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group) VALUES ($1,$2,$3,$4,$5)`,
+			org, code, name, accountType, apiGroup); err != nil {
+			t.Fatalf("seed category %s: %v", code, err)
+		}
+	}
+	seed("254", "Travel and Subsistence", "ADMIN_EXPENSE", "admin_expenses_categories")
+	seed("001", "Sales", "INCOME", "income_categories")
+	seed("907", "Drawings", "USER_ACCOUNT", "general_categories")
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(context.Background(), `DELETE FROM bank_transaction_explanations WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(context.Background(), `DELETE FROM categories WHERE organisation_id=$1`, org)
+	})
+
+	acc, err := svc.CreateBankAccount(ctx, userID, orgID, bankReq("Main", nil))
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cleanupBankAccount(t, ts, acc.ID)
+	acc2, err := svc.CreateBankAccount(ctx, userID, orgID, bankReq("Savings", nil))
+	if err != nil {
+		t.Fatalf("create account 2: %v", err)
+	}
+	cleanupBankAccount(t, ts, acc2.ID)
+
+	catID := func(code string) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM categories WHERE organisation_id=$1 AND nominal_code=$2`, org, code).Scan(&id); err != nil {
+			t.Fatalf("catID %s: %v", code, err)
+		}
+		return id
+	}
+	newTxn := func(accID string, amountMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source)
+			 VALUES ($1,$2,CURRENT_DATE,$3,'unexplained','manual') RETURNING id::text`, org, accID, amountMinor).Scan(&id); err != nil {
+			t.Fatalf("new txn: %v", err)
+		}
+		return id
+	}
+	ptr := func(s string) *string { return &s }
+
+	t.Run("Payment fully explains a money-out line", func(t *testing.T) {
+		txn := newTxn(acc.ID, -12000) // £120 out
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{
+			Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID("254")),
+		})
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if resp.Status != "explained" || resp.UnexplainedAmount != "0.00" {
+			t.Errorf("got status=%q unexplained=%q, want explained / 0.00", resp.Status, resp.UnexplainedAmount)
+		}
+		if len(resp.Explanations) != 1 || resp.Explanations[0].Amount != "120.00" {
+			t.Fatalf("explanations: %+v", resp.Explanations)
+		}
+	})
+
+	t.Run("VAT is extracted from the portion gross", func(t *testing.T) {
+		var vatID string
+		if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM vat_rates WHERE rate_bps=2000 AND country_code='GB' LIMIT 1`).Scan(&vatID); err != nil {
+			t.Skipf("no GB 20%% VAT rate seeded: %v", err)
+		}
+		txn := newTxn(acc.ID, -12000) // £120 incl 20% → £20 VAT
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{
+			Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID("254")), VATRateID: ptr(vatID),
+		})
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if resp.Explanations[0].VATValue != "20.00" {
+			t.Errorf("VAT value: got %q, want 20.00", resp.Explanations[0].VATValue)
+		}
+	})
+
+	t.Run("split across two portions sums to fully explained", func(t *testing.T) {
+		txn := newTxn(acc.ID, -10000) // £100 out
+		r1, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "60.00", CategoryID: ptr(catID("254"))})
+		if err != nil {
+			t.Fatalf("first split: %v", err)
+		}
+		if r1.Status != "unexplained" || r1.UnexplainedAmount != "-40.00" {
+			t.Errorf("after first split: status=%q remaining=%q, want unexplained / -40.00", r1.Status, r1.UnexplainedAmount)
+		}
+		r2, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "40.00", CategoryID: ptr(catID("254"))})
+		if err != nil {
+			t.Fatalf("second split: %v", err)
+		}
+		if r2.Status != "explained" || r2.UnexplainedAmount != "0.00" || len(r2.Explanations) != 2 {
+			t.Errorf("after second split: status=%q remaining=%q n=%d", r2.Status, r2.UnexplainedAmount, len(r2.Explanations))
+		}
+	})
+
+	t.Run("over-explaining is rejected", func(t *testing.T) {
+		txn := newTxn(acc.ID, -5000) // £50 out
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "60.00", CategoryID: ptr(catID("254"))})
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("direction mismatch is rejected", func(t *testing.T) {
+		txn := newTxn(acc.ID, -5000) // money OUT
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "SALES", Amount: "50.00", CategoryID: ptr(catID("001"))}) // SALES is money-in
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("unsupported (future-entity) type is rejected", func(t *testing.T) {
+		txn := newTxn(acc.ID, -5000)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "BILL_PAYMENT", Amount: "50.00", CategoryID: ptr(catID("254"))})
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("category not offered for the type is rejected", func(t *testing.T) {
+		txn := newTxn(acc.ID, -5000)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "50.00", CategoryID: ptr(catID("001"))}) // income cat under Payment
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("Transfer to another account", func(t *testing.T) {
+		txn := newTxn(acc.ID, -7500) // £75 out
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "TRANSFER_TO_ACCOUNT", Amount: "75.00", TransferBankAccountID: ptr(acc2.ID)})
+		if err != nil {
+			t.Fatalf("transfer: %v", err)
+		}
+		if resp.Status != "explained" {
+			t.Errorf("status=%q, want explained", resp.Status)
+		}
+		if resp.Explanations[0].TransferBankAccountID == nil || *resp.Explanations[0].TransferBankAccountID != acc2.ID {
+			t.Errorf("transfer account not set: %+v", resp.Explanations[0])
+		}
+	})
+
+	t.Run("Transfer to the same account is rejected", func(t *testing.T) {
+		txn := newTxn(acc.ID, -7500)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "TRANSFER_TO_ACCOUNT", Amount: "75.00", TransferBankAccountID: ptr(acc.ID)})
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("Money Paid to User (member + account 907)", func(t *testing.T) {
+		member := addMember(t, ts, org, "admin")
+		txn := newTxn(acc.ID, -30000) // £300 out
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{
+			Type: "MONEY_PAID_TO_USER", Amount: "300.00", CategoryID: ptr(catID("907")), PaidUserID: ptr(member),
+		})
+		if err != nil {
+			t.Fatalf("user payment: %v", err)
+		}
+		if resp.Status != "explained" {
+			t.Errorf("status=%q, want explained", resp.Status)
+		}
+		if resp.Explanations[0].PaidUserID == nil || *resp.Explanations[0].PaidUserID != member {
+			t.Errorf("paid user not set: %+v", resp.Explanations[0])
+		}
+	})
+
+	t.Run("soft-delete re-opens the remainder", func(t *testing.T) {
+		txn := newTxn(acc.ID, -10000)
+		r1, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "100.00", CategoryID: ptr(catID("254"))})
+		if err != nil || r1.Status != "explained" {
+			t.Fatalf("setup: status=%q err=%v", r1.Status, err)
+		}
+		r2, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txn, r1.Explanations[0].ID)
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if r2.Status != "unexplained" || len(r2.Explanations) != 0 {
+			t.Errorf("after delete: status=%q n=%d, want unexplained / 0", r2.Status, len(r2.Explanations))
+		}
+	})
+
+	t.Run("explaining another org's transaction is 404", func(t *testing.T) {
+		otherOrg, otherUser := newOrgWithOwner(t, ts)
+		txn := newTxn(acc.ID, -5000) // belongs to `org`
+		_, err := svc.CreateExplanation(ctx, mustUUID(t, otherUser), mustUUID(t, otherOrg), acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "50.00", CategoryID: ptr(catID("254"))})
+		assertAppCode(t, err, kernel.ErrCodeNotFound)
+	})
+
+	t.Run("a non-admin cannot explain", func(t *testing.T) {
+		memberID := addMember(t, ts, org, "member")
+		txn := newTxn(acc.ID, -5000)
+		_, err := svc.CreateExplanation(ctx, mustUUID(t, memberID), orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "50.00", CategoryID: ptr(catID("254"))})
+		assertAppCode(t, err, kernel.ErrCodeForbidden)
+	})
+}

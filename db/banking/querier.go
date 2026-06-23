@@ -136,6 +136,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListExplanationsForTransaction(ctx context.Context, arg ListExplanationsForTransactionParams) ([]BankTransactionExplanation, error)
 	// -----------------------------------------------------------------------------
+	// ListExplanationsForTransactionDetailed — a line's live explanations with the
+	// resolved display names in ONE query: the category (name + nominal), the transfer
+	// account name, the paid user's name, and the VAT rate (name + bps). LEFT JOINs so
+	// entity-link explanations (NULL category) still return. Backs the explain panel +
+	// every explain mutation's response. Org-scoped, oldest first. :many.
+	// -----------------------------------------------------------------------------
+	ListExplanationsForTransactionDetailed(ctx context.Context, arg ListExplanationsForTransactionDetailedParams) ([]ListExplanationsForTransactionDetailedRow, error)
+	// -----------------------------------------------------------------------------
 	// SoftDeleteBankAccount  (the "delete")
 	// Marks the account deleted (financial records are never hard-removed; its
 	// transactions stay for audit). :exec. Idempotent — deleting an already-deleted

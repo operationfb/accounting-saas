@@ -12,9 +12,26 @@ import (
 
 type Querier interface {
 	// -----------------------------------------------------------------------------
+	// CategoryOfferedForType — does this type offer this nominal (for the org's
+	// company_type)? Backs the explain service's "is this category valid for the
+	// chosen type" guard. Returns the matching nominal_code(s) (empty = not offered).
+	// -----------------------------------------------------------------------------
+	CategoryOfferedForType(ctx context.Context, arg CategoryOfferedForTypeParams) (bool, error)
+	// -----------------------------------------------------------------------------
 	// GetCategory — one category by id, org-scoped. :one.
 	// -----------------------------------------------------------------------------
 	GetCategory(ctx context.Context, arg GetCategoryParams) (Category, error)
+	// -----------------------------------------------------------------------------
+	// GetTransactionType — one type by code (global reference). :one.
+	// Used by the explain service to read a type's direction + entity_link.
+	// -----------------------------------------------------------------------------
+	GetTransactionType(ctx context.Context, code string) (TransactionType, error)
+	// -----------------------------------------------------------------------------
+	// GetVatRate — one VAT rate by id (for the VAT extraction on an explanation).
+	// The frontend picks the id from GET /api/v1/vat-rates; the service reads rate_bps
+	// and feeds money.ComputeFixedVAT. :one.
+	// -----------------------------------------------------------------------------
+	GetVatRate(ctx context.Context, id uuid.UUID) (VatRate, error)
 	// =============================================================================
 	// CATEGORIES MODULE — SQLC QUERIES
 	// File: db/queries/categories.sql

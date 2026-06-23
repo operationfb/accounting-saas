@@ -12,6 +12,45 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const categoryOfferedForType = `-- name: CategoryOfferedForType :one
+SELECT EXISTS (
+    SELECT 1
+    FROM transaction_type_categories m
+    JOIN categories c
+      ON  c.organisation_id = $1
+      AND c.is_active
+      AND ( (m.nominal_code <> '' AND c.nominal_code = m.nominal_code)
+         OR (m.api_group   <> '' AND c.api_group     = m.api_group) )
+    WHERE m.transaction_type_code = $2
+      AND (m.company_type = 'ALL' OR m.company_type = $3)
+      AND c.id = $4
+) AS offered
+`
+
+type CategoryOfferedForTypeParams struct {
+	OrganisationID      uuid.UUID `json:"organisation_id"`
+	TransactionTypeCode string    `json:"transaction_type_code"`
+	CompanyType         string    `json:"company_type"`
+	CategoryID          uuid.UUID `json:"category_id"`
+}
+
+// -----------------------------------------------------------------------------
+// CategoryOfferedForType — does this type offer this nominal (for the org's
+// company_type)? Backs the explain service's "is this category valid for the
+// chosen type" guard. Returns the matching nominal_code(s) (empty = not offered).
+// -----------------------------------------------------------------------------
+func (q *Queries) CategoryOfferedForType(ctx context.Context, arg CategoryOfferedForTypeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, categoryOfferedForType,
+		arg.OrganisationID,
+		arg.TransactionTypeCode,
+		arg.CompanyType,
+		arg.CategoryID,
+	)
+	var offered bool
+	err := row.Scan(&offered)
+	return offered, err
+}
+
 const getCategory = `-- name: GetCategory :one
 SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_active, created_at, updated_at FROM categories
 WHERE id              = $1
@@ -45,6 +84,54 @@ func (q *Queries) GetCategory(ctx context.Context, arg GetCategoryParams) (Categ
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTransactionType = `-- name: GetTransactionType :one
+SELECT code, name, direction, entity_link, display_order, is_active, created_at FROM transaction_types WHERE code = $1
+`
+
+// -----------------------------------------------------------------------------
+// GetTransactionType — one type by code (global reference). :one.
+// Used by the explain service to read a type's direction + entity_link.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetTransactionType(ctx context.Context, code string) (TransactionType, error) {
+	row := q.db.QueryRow(ctx, getTransactionType, code)
+	var i TransactionType
+	err := row.Scan(
+		&i.Code,
+		&i.Name,
+		&i.Direction,
+		&i.EntityLink,
+		&i.DisplayOrder,
+		&i.IsActive,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getVatRate = `-- name: GetVatRate :one
+SELECT id, country_code, name, rate_bps, is_fixed_ratio, effective_from, effective_to, created_at FROM vat_rates WHERE id = $1
+`
+
+// -----------------------------------------------------------------------------
+// GetVatRate — one VAT rate by id (for the VAT extraction on an explanation).
+// The frontend picks the id from GET /api/v1/vat-rates; the service reads rate_bps
+// and feeds money.ComputeFixedVAT. :one.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetVatRate(ctx context.Context, id uuid.UUID) (VatRate, error) {
+	row := q.db.QueryRow(ctx, getVatRate, id)
+	var i VatRate
+	err := row.Scan(
+		&i.ID,
+		&i.CountryCode,
+		&i.Name,
+		&i.RateBps,
+		&i.IsFixedRatio,
+		&i.EffectiveFrom,
+		&i.EffectiveTo,
+		&i.CreatedAt,
 	)
 	return i, err
 }

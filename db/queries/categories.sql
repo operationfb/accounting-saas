@@ -70,3 +70,40 @@ JOIN categories c
 WHERE m.transaction_type_code = sqlc.arg(transaction_type_code)
   AND (m.company_type = 'ALL' OR m.company_type = sqlc.arg(company_type))
 ORDER BY m.display_order, c.nominal_code;
+
+
+-- -----------------------------------------------------------------------------
+-- GetTransactionType — one type by code (global reference). :one.
+-- Used by the explain service to read a type's direction + entity_link.
+-- -----------------------------------------------------------------------------
+-- name: GetTransactionType :one
+SELECT * FROM transaction_types WHERE code = $1;
+
+
+-- -----------------------------------------------------------------------------
+-- CategoryOfferedForType — does this type offer this nominal (for the org's
+-- company_type)? Backs the explain service's "is this category valid for the
+-- chosen type" guard. Returns the matching nominal_code(s) (empty = not offered).
+-- -----------------------------------------------------------------------------
+-- name: CategoryOfferedForType :one
+SELECT EXISTS (
+    SELECT 1
+    FROM transaction_type_categories m
+    JOIN categories c
+      ON  c.organisation_id = sqlc.arg(organisation_id)
+      AND c.is_active
+      AND ( (m.nominal_code <> '' AND c.nominal_code = m.nominal_code)
+         OR (m.api_group   <> '' AND c.api_group     = m.api_group) )
+    WHERE m.transaction_type_code = sqlc.arg(transaction_type_code)
+      AND (m.company_type = 'ALL' OR m.company_type = sqlc.arg(company_type))
+      AND c.id = sqlc.arg(category_id)
+) AS offered;
+
+
+-- -----------------------------------------------------------------------------
+-- GetVatRate — one VAT rate by id (for the VAT extraction on an explanation).
+-- The frontend picks the id from GET /api/v1/vat-rates; the service reads rate_bps
+-- and feeds money.ComputeFixedVAT. :one.
+-- -----------------------------------------------------------------------------
+-- name: GetVatRate :one
+SELECT * FROM vat_rates WHERE id = $1;

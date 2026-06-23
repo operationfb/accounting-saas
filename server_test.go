@@ -46,6 +46,7 @@ import (
 
 	"github.com/operationfb/accounting-saas/db/auth"
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
@@ -53,6 +54,7 @@ import (
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
+	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
@@ -221,9 +223,12 @@ func newTestServer(t *testing.T) *testServer {
 	integrationHandler.RegisterInternalRoutes(server.Router(), testWorkflowServiceAccount)
 
 	// Banking: build + register like the per-domain handlers above; exposed on the
-	// harness so the service-level tests can call it directly.
-	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries)
+	// harness so the service-level tests can call it directly. The explain flow needs
+	// the categories query set; the categories reference endpoints register too.
+	categoryQueries := dbcategories.New(pool)
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries)
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
+	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Contacts + Projects + Organisation (Company Details): build + register like the
 	// per-domain handlers above. Contacts + Organisation are exposed on the harness

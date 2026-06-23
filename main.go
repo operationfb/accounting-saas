@@ -30,6 +30,7 @@ import (
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
@@ -38,6 +39,7 @@ import (
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
+	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
 	email "github.com/operationfb/accounting-saas/internal/email"
@@ -401,11 +403,16 @@ func main() {
 	currencyHandler := currencies.NewHandler(currencies.NewService(dbcurrencies.New(pool)))
 	currencyHandler.RegisterRoutes(server.Router(), tokenMaker)
 
-	// Banking: the org's own bank accounts. Its own service + handler in
-	// internal/banking, registering its own routes on the shared engine (the
-	// per-domain pattern) — the root Server struct is untouched.
-	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries))
+	// Banking: the org's own bank accounts + the explain/reconcile flow. Its service
+	// takes the categories query set (the explain reference lookups + VAT). Registers
+	// its own routes on the shared engine (the per-domain pattern).
+	categoryQueries := dbcategories.New(pool)
+	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
+
+	// Categories: the reconcile reference endpoints (the explain Type dropdown + its
+	// per-type category picker), a thin read-only service over the categories queries.
+	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Auth (login + password reset, PUBLIC routes) + the user profile, plus Contacts
 	// + Projects + Members + Organisation — each self-registering on the shared engine.

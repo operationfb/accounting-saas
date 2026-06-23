@@ -432,3 +432,31 @@ UPDATE bank_transaction_explanations SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- ListExplanationsForTransactionDetailed — a line's live explanations with the
+-- resolved display names in ONE query: the category (name + nominal), the transfer
+-- account name, the paid user's name, and the VAT rate (name + bps). LEFT JOINs so
+-- entity-link explanations (NULL category) still return. Backs the explain panel +
+-- every explain mutation's response. Org-scoped, oldest first. :many.
+-- -----------------------------------------------------------------------------
+-- name: ListExplanationsForTransactionDetailed :many
+SELECT
+    e.*,
+    c.name         AS category_name,
+    c.nominal_code AS category_nominal_code,
+    ta.name        AS transfer_account_name,
+    u.first_name   AS paid_user_first_name,
+    u.last_name    AS paid_user_last_name,
+    vr.name        AS vat_rate_name,
+    vr.rate_bps    AS vat_rate_bps
+FROM bank_transaction_explanations e
+LEFT JOIN categories    c  ON c.id  = e.category_id
+LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
+LEFT JOIN users         u  ON u.id  = e.paid_user_id
+LEFT JOIN vat_rates     vr ON vr.id = e.sales_tax_rate_id
+WHERE e.bank_transaction_id = $1
+  AND e.organisation_id     = $2
+  AND e.deleted_at IS NULL
+ORDER BY e.created_at ASC, e.id ASC;

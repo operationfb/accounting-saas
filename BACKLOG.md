@@ -216,18 +216,21 @@ remains is the reconciliation/feed richness:
   synthetic-hash `external_id` dedupe). OFX/QFX needs an OFX parser (a new dependency);
   it would dedupe on the bank's FITID via the same `external_id` index. _File:
   `internal/banking/statement_import.go`._
-- **Transaction reconciliation / "explain" — DATA LAYER landed; service + UI remain.**
-  The data layer is built: a per-org Chart of Accounts (`categories`), the 18
-  `transaction_types`, the `transaction_type_categories` mapping (every category per
-  type, branched by `company_type`, sourced from the FreeAgent workbook), and the
-  `bank_transaction_explanations` record with a recompute trigger driving
-  `bank_transactions.unexplained_amount_minor` + `status`. Still to do:
-  - **Explain service + UI.** The per-type explain form (Type picker →
-    category/entity/VAT via `ListCategoriesForType`), VAT computation
-    (`money.ComputeFixedVAT` + `categories.default_vat`), the split UI, and the
-    "Guess explanations" engine. Drives the Explained / Unexplained / For-approval tabs.
-    _Files: new `internal/banking` service methods + handlers, `db/queries/banking.sql`
-    (the explanation CRUD exists), `db/queries/categories.sql`._
+- **Transaction reconciliation / "explain" — DATA LAYER + service + UI landed; refinements remain.**
+  Built: the CoA (`categories`), the 18 `transaction_types`, the
+  `transaction_type_categories` mapping + recompute trigger (data layer); the explain
+  service (`internal/banking/explain.go` + `internal/categories` reference endpoints)
+  with per-type validation, splitting + the over-explain guard, and VAT via
+  `money.ComputeFixedVAT`; and the **inline expanding panel** on
+  `BankAccountTransactionsView.vue` (Type → category/Transfer/User pickers, VAT
+  pre-fill from `default_vat`, add/edit/delete + split). v1 covers 12 of 18 types
+  (`entity_link ∈ {NONE, BANK_ACCOUNT, USER, CAPITAL_ASSET}`). Refinements still to do:
+  - **"Guess explanations" auto-engine.** Pre-suggest an explanation (the account's
+    `guess_explanations` flag is stored but unused) — e.g. from the supplier→category
+    dictionary or prior explanations; lands rows in `for_approval`.
+  - **Inline category summary on collapsed explained rows** (today the status icon shows
+    explained; you must expand to see the category) + **widen explain beyond owner/admin**
+    (reading explanations is any-member-capable in the API but the panel is admin-gated).
   - **Double-entry ledger / posting engine.** "Which account per type-category pair"
     is currently reference metadata only — no journal lines are posted. A future ledger
     posts balanced debits/credits across nominals (incl. the per-entity sub-accounts

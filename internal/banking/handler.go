@@ -47,6 +47,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.POST("/:id/transactions/import", h.ImportTransactions)
 		g.PUT("/:id/transactions/:txnId", h.UpdateTransaction)
 		g.DELETE("/:id/transactions/:txnId", h.DeleteTransaction)
+		// Explain / reconcile: a transaction's explanations (read any member; write owner/admin).
+		g.GET("/:id/transactions/:txnId/explanations", h.ListExplanations)
+		g.POST("/:id/transactions/:txnId/explanations", h.CreateExplanation)
+		g.PUT("/:id/transactions/:txnId/explanations/:explId", h.UpdateExplanation)
+		g.DELETE("/:id/transactions/:txnId/explanations/:explId", h.DeleteExplanation)
 		g.PUT("/:id", h.Update)
 		g.DELETE("/:id", h.Delete)
 	}
@@ -152,6 +157,55 @@ func (h *Handler) UpdateTransaction(c *gin.Context) {
 // DeleteTransaction handles DELETE /api/v1/bank-accounts/:id/transactions/:txnId — remove a manual line.
 func (h *Handler) DeleteTransaction(c *gin.Context) {
 	resp, err := h.svc.DeleteTransaction(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// ListExplanations handles GET /…/:txnId/explanations — a line's explanations + its
+// reconcile state (status + remaining). Any active member.
+func (h *Handler) ListExplanations(c *gin.Context) {
+	resp, err := h.svc.ListExplanations(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// CreateExplanation handles POST /…/:txnId/explanations — explain (part of) a line.
+func (h *Handler) CreateExplanation(c *gin.Context) {
+	var req CreateExplanationRequest
+	if !kernel.BindJSON(c, &req) {
+		return
+	}
+	resp, err := h.svc.CreateExplanation(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"), req)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, resp)
+}
+
+// UpdateExplanation handles PUT /…/:txnId/explanations/:explId — edit one explanation.
+func (h *Handler) UpdateExplanation(c *gin.Context) {
+	var req CreateExplanationRequest
+	if !kernel.BindJSON(c, &req) {
+		return
+	}
+	resp, err := h.svc.UpdateExplanation(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"), c.Param("explId"), req)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// DeleteExplanation handles DELETE /…/:txnId/explanations/:explId — un-explain a portion.
+func (h *Handler) DeleteExplanation(c *gin.Context) {
+	resp, err := h.svc.DeleteExplanation(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), c.Param("txnId"), c.Param("explId"))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return
