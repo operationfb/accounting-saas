@@ -1,9 +1,12 @@
 <script setup lang="ts">
-// CSV statement import — a dedicated full-page view (not a modal), consistent with
-// the manual-entry view. Reached from the statement view's "Upload statement" button
-// (owner/admin only — the backend enforces it). Flow: download the template → pick a
-// .csv → Import (POST …/transactions/import) → show the imported/skipped summary →
-// "View statement" returns to /bank-accounts/:id (which refetches).
+// Statement import — a dedicated full-page view (not a modal), consistent with the
+// manual-entry view. Reached from the statement view's "Upload statement" button
+// (owner/admin only — the backend enforces it). Accepts two formats on the same
+// endpoint, which the backend auto-detects from the file's contents:
+//   - OFX  — the format most banks export directly (no template needed).
+//   - CSV  — arranged to match our downloadable template.
+// Flow: pick a file → Import (POST …/transactions/import) → show the imported/skipped
+// summary → "View statement" returns to /bank-accounts/:id (which refetches).
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
@@ -91,10 +94,10 @@ function backToStatement() {
     <div v-else class="mb-[18px]" />
 
     <!-- Account load states -->
-    <FaCard v-if="loading" title="Upload a CSV">
+    <FaCard v-if="loading" title="Upload a statement">
       <div class="py-10 text-center text-fa-muted"><i class="pi pi-spin pi-spinner mr-2" />Loading…</div>
     </FaCard>
-    <FaCard v-else-if="loadError" title="Upload a CSV">
+    <FaCard v-else-if="loadError" title="Upload a statement">
       <div class="py-8 text-center">
         <p class="mb-4 text-sm text-[#c0392b]">{{ loadError }}</p>
         <Button label="Back to bank accounts" severity="secondary" outlined @click="router.push('/bank-accounts')" />
@@ -117,18 +120,22 @@ function backToStatement() {
     </FaCard>
 
     <!-- Upload form -->
-    <FaCard v-else title="Upload a CSV">
+    <FaCard v-else title="Upload a statement">
       <p class="mb-4 text-sm text-fa-muted">
-        Export your bank statement as CSV and arrange the columns to match our template, then upload
-        it here. One row per transaction; re-importing the same file is safe (duplicates are skipped).
+        Upload your bank statement. We accept <strong>OFX</strong> — the format most banks export, so
+        just download it from your bank and upload it here (no template needed) — or <strong>CSV</strong>
+        arranged to match our template below. Re-importing the same file is safe (duplicates are skipped).
       </p>
+
+      <h3 class="mb-2 text-sm font-bold">Importing a CSV</h3>
+      <p class="mb-3 text-sm text-fa-muted">Only needed for CSV — if you're uploading an OFX file, skip straight to the upload below.</p>
 
       <a
         :href="templateHref"
         download="statement_import_template.csv"
         class="mb-5 inline-flex items-center gap-2 rounded-[5px] border border-fa-border bg-white px-3.5 py-2 text-sm font-semibold text-fa-blue hover:bg-[#f7fafc]"
       >
-        <i class="pi pi-download" />Download template
+        <i class="pi pi-download" />Download CSV template
       </a>
 
       <h3 class="mb-2 text-sm font-bold">How to fill in the template</h3>
@@ -152,9 +159,9 @@ function backToStatement() {
       </div>
 
       <!-- File picker -->
-      <input ref="fileInput" type="file" accept=".csv,text/csv" class="hidden" @change="onFilePicked" />
+      <input ref="fileInput" type="file" accept=".ofx,.csv,text/csv,application/x-ofx" class="hidden" @change="onFilePicked" />
       <div class="mb-1 flex items-center gap-3">
-        <Button label="Choose CSV file" icon="pi pi-paperclip" severity="secondary" outlined @click="fileInput?.click()" />
+        <Button label="Choose file" icon="pi pi-paperclip" severity="secondary" outlined @click="fileInput?.click()" />
         <span v-if="file" class="text-sm font-semibold text-fa-text">{{ file.name }}</span>
         <span v-else class="text-sm text-fa-muted">No file chosen</span>
       </div>

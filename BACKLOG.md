@@ -152,39 +152,36 @@ _Last updated: 2026-06-23_
 
 ## Invoices
 
-The DATALAYER landed (2026-06-23): `db/schema/invoices_schema.sql` (the `invoices` +
-`invoice_items` tables), `db/queries/invoices.sql`, and the generated `db/invoices` package.
-This is a deliberately MINIMAL first cut — header (contact, dates, reference, currency, status,
-computed totals) + simple lines (description, quantity, unit price, VAT rate). There is no
-service / handler / route / frontend yet, and no tests (nothing to exercise until the service
-lands). Deferred:
+The DATALAYER + BACKEND landed (2026-06-23). Datalayer: `db/schema/invoices_schema.sql`
+(`invoices` + `invoice_items`), `db/queries/invoices.sql`, the generated `db/invoices` package.
+Backend: `internal/invoices` (`Service` + `Handler` + DTOs + `status.go`), self-registering
+`/api/v1/invoices` (CRUD + `POST /:id/status`), wired in `main.go`; the add-on VAT helpers
+(`money.AddOnVAT` / `money.PercentToBps` / `money.BpsToPercentString`); and the derived display
+status. Tested in `invoice_service_test.go` (real Postgres) + `money/money_test.go`. Still a
+MINIMAL cut. Deferred:
 
-- **Invoice service + API + frontend.** Build `internal/invoices` (`Service` + `Handler`,
-  self-registering `/api/v1/invoices*`), the DTOs, and the create/edit/list/get/delete flow
-  (lines rebuilt inside a transaction via `DeleteInvoiceItemsForInvoice` + `CreateInvoiceItem`,
-  then `UpdateInvoiceTotals`), plus the SPA views. Ship with real-Postgres integration tests
-  (happy path, money/VAT rounding, multi-tenant scoping, validation), following
-  `contact_service_test.go`.
-- **Add-on VAT money helper.** Invoice line VAT is ADDED on top of a VAT-exclusive `price_minor`
-  (`vat = round(line_net × rate_bps / 10000)`) — the opposite of `money.ComputeFixedVAT`, which
-  EXTRACTS VAT from an inclusive gross. Add an `AddVAT`-style helper to `money/money.go` for the
-  line/total roll-up so the service doesn't hand-roll it. _File: `money/money.go`._
-- **Derived display status.** Compute Open / Overdue / Paid / Overpaid / Zero Value at read time
-  from `due_on` + `total_value_minor` + `paid_value_minor` (the stored `status` only holds
-  DRAFT/SCHEDULED/SENT/WRITTEN_OFF/REFUNDED). _File: a future invoice service._
+- **Frontend SPA.** No invoice views yet — list, create/edit (with the line-item editor), detail,
+  and the issue / write-off / refund actions. _Files: `web/src/...`._
 - **Reference auto-numbering.** `reference` is free/nullable today (unique per org via
   `uq_invoices_reference`). Add a per-org sequence generator, honouring
   `projects.project_invoice_sequence` (a project may use its own number sequence). _Files:
-  `db/queries/invoices.sql`, invoice service._
+  `db/queries/invoices.sql`, `internal/invoices`._
 - **Payments / reconciliation → `paid_value_minor`.** Nothing populates `paid_value_minor` yet
-  (defaults 0, so every invoice derives as unpaid). Wire it from the banking `INVOICE_RECEIPT`
-  explanation link (see the banking backlog's "future-entity explanation links") and/or a
-  payments table; add `paid_on` / `written_off_date` columns then too. _Files: schema,
+  (defaults 0, so a SENT invoice always derives as Open/Overdue, never Paid). Wire it from the
+  banking `INVOICE_RECEIPT` explanation link (see the banking backlog's "future-entity explanation
+  links") and/or a payments table; add `paid_on` / `written_off_date` columns then (and split the
+  single `UpdateInvoiceStatus` into per-transition queries that stamp them). _Files: schema,
   `db/queries/invoices.sql`, banking._
-- **Wire `ContactHasInvoices` into the contacts in-use guard.** The datalayer query exists;
-  inject the invoices querier into `contacts.NewService` and OR it into the existing
+- **Wire `ContactHasInvoices` into the contacts in-use guard.** The datalayer query exists but is
+  unused; inject the invoices querier into `contacts.NewService` and OR it into the existing
   `ContactHasProjects` check, so a contact with invoices can't be soft-deleted and reports
   `in_use=true`. _Files: `internal/contacts/service.go`, `main.go`._
+- **Tighten status-change authz (optional).** Create / edit / delete / status all use the contacts
+  rule (creator or owner/admin). If issuing / writing-off / refunding should be owner/admin-only,
+  gate `ChangeStatus` on `kernel.IsOrgAdmin`. _File: `internal/invoices/service.go`._
+- **Service-layer currency validation.** `currency` is upper-cased + defaulted to GBP, but only the
+  DB FK rejects an unknown code (a 500-class). Validate against `currencies` for a clean 422 (the
+  same deferred item as expenses/projects). _File: `internal/invoices/service.go`._
 - **Restore the deferred FreeAgent surface** as features land: header `project_id`,
   `discount_percent`, `comments`, `po_reference`, `ec_status`, `place_of_supply`, display flags
   (`omit_header`, `show_project_name`); multi-currency (`exchange_rate` + native-currency totals);

@@ -52,6 +52,7 @@ var rootAllowlist = map[string]bool{
 	"inbound_email.go":             true,
 	"integration_internal_test.go": true,
 	"integration_service_test.go":  true,
+	"invoice_service_test.go":      true,
 	"main.go":                      true,
 	"member_service_test.go":       true,
 	"ocr_service_test.go":          true,

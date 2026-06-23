@@ -141,3 +141,96 @@ func TestClampToInt32(t *testing.T) {
 		})
 	}
 }
+
+// TestAddOnVAT covers the INVOICE direction — VAT added on top of a net amount.
+// Contrast TestComputeFixedVAT above, which extracts VAT from a gross.
+func TestAddOnVAT(t *testing.T) {
+	cases := []struct {
+		name    string
+		net     int64
+		rateBps int32
+		want    int64
+	}{
+		{"20% of £100 net", 10000, 2000, 2000},
+		{"5% of £100 net", 10000, 500, 500},
+		{"zero rate yields zero", 10000, 0, 0},
+		{"rounds up (.8)", 999, 2000, 200}, // 999*2000/10000 = 199.8 → 200
+		{"half rounds up", 2500, 10, 3},    // 2500*10/10000 = 2.5 → 3 (half away from zero)
+		{"beyond int32 range", 3_000_000_000, 2000, 600_000_000},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := AddOnVAT(c.net, c.rateBps); got != c.want {
+				t.Errorf("AddOnVAT(%d, %d) = %d, want %d", c.net, c.rateBps, got, c.want)
+			}
+		})
+	}
+}
+
+func TestPercentToBps(t *testing.T) {
+	cases := []struct {
+		name    string
+		percent string
+		want    int32
+		wantErr bool
+	}{
+		{"whole", "20", 2000, false},
+		{"fractional", "17.5", 1750, false},
+		{"five", "5", 500, false},
+		{"zero", "0", 0, false},
+		{"blank is zero", "", 0, false},
+		{"whitespace is zero", "   ", 0, false},
+		{"over-precise rounds half-up", "20.005", 2001, false}, // 2000.5 → 2001
+		{"unparseable", "abc", 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := PercentToBps(c.percent)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("PercentToBps(%q): expected error, got nil (result %d)", c.percent, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PercentToBps(%q): unexpected error %v", c.percent, err)
+			}
+			if got != c.want {
+				t.Errorf("PercentToBps(%q) = %d, want %d", c.percent, got, c.want)
+			}
+		})
+	}
+}
+
+func TestBpsToPercentString(t *testing.T) {
+	cases := []struct {
+		bps  int32
+		want string
+	}{
+		{2000, "20"},
+		{1750, "17.5"},
+		{500, "5"},
+		{0, "0"},
+	}
+	for _, c := range cases {
+		t.Run(c.want, func(t *testing.T) {
+			if got := BpsToPercentString(c.bps); got != c.want {
+				t.Errorf("BpsToPercentString(%d) = %q, want %q", c.bps, got, c.want)
+			}
+		})
+	}
+}
+
+// TestVATRateRoundTrip checks a rate survives bps → percent string → bps.
+func TestVATRateRoundTrip(t *testing.T) {
+	for _, bps := range []int32{0, 500, 1750, 2000} {
+		s := BpsToPercentString(bps)
+		got, err := PercentToBps(s)
+		if err != nil {
+			t.Fatalf("PercentToBps(%q): %v", s, err)
+		}
+		if got != bps {
+			t.Errorf("round trip %d → %q → %d", bps, s, got)
+		}
+	}
+}

@@ -51,6 +51,7 @@ import (
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
+	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
@@ -60,6 +61,7 @@ import (
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	invoices "github.com/operationfb/accounting-saas/internal/invoices"
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
@@ -100,6 +102,10 @@ type testServer struct {
 	// server.Router()). Exposed for the direct-call tests.
 	contactService      *contacts.Service
 	organisationService *organisation.Service
+
+	// invoiceService is the invoices domain service the harness wires (its Handler
+	// registers /api/v1/invoices on server.Router()). Exposed for direct-call tests.
+	invoiceService *invoices.Service
 
 	// faProvider is the UNIQUE throwaway FreeAgent provider key this test server's
 	// integration service is built with. It scopes both the global
@@ -193,6 +199,7 @@ func newTestServer(t *testing.T) *testServer {
 	attachmentService := attachments.NewService(pool, queries, authQueries, store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool))
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
 	userSvc := userauth.NewService(authQueries)
@@ -238,6 +245,7 @@ func newTestServer(t *testing.T) *testServer {
 	userauth.NewHandler(userSvc).RegisterRoutes(server.Router(), tokenMaker)
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
+	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
 
@@ -254,6 +262,7 @@ func newTestServer(t *testing.T) *testServer {
 		bankingService:      bankingSvc,
 		contactService:      contactSvc,
 		organisationService: organisationSvc,
+		invoiceService:      invoiceSvc,
 		faProvider:          faProvider,
 	}
 }

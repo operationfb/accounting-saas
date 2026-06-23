@@ -20,7 +20,11 @@
 //     arithmetic; we convert to integers for storage.
 package money
 
-import "github.com/shopspring/decimal"
+import (
+	"strings"
+
+	"github.com/shopspring/decimal"
+)
 
 // hundred is the pounds↔pence factor. decimal values are immutable (every
 // operation returns a new value), so sharing one instance across calls is safe.
@@ -59,6 +63,34 @@ func BpsToPercent(bps int32) string {
 	return decimal.NewFromInt(int64(bps)).Div(hundred).String() + "%"
 }
 
+// BpsToPercentString renders a VAT rate held in basis points as a PLAIN numeric
+// percentage string with NO "%" suffix — the form an API carries the rate in when
+// it is a number the client will parse: 2000 → "20", 1750 → "17.5", 0 → "0".
+// (BpsToPercent above keeps the "%" for human display; this bare value is what the
+// inverse PercentToBps round-trips.)
+func BpsToPercentString(bps int32) string {
+	return decimal.NewFromInt(int64(bps)).Div(hundred).String()
+}
+
+// PercentToBps parses a percentage string into integer basis points (100 bps == 1%):
+// "20" → 2000, "17.5" → 1750. A blank/empty string is treated as 0 (no VAT) rather
+// than an error, so an omitted line rate defaults to zero-rated. An over-precise
+// value is rounded half-up to whole basis points rather than rejected; an
+// unparseable string returns an error (the caller maps it to a validation error).
+// The inverse of BpsToPercentString.
+func PercentToBps(percent string) (int32, error) {
+	p := strings.TrimSpace(percent)
+	if p == "" {
+		return 0, nil
+	}
+	d, err := decimal.NewFromString(p)
+	if err != nil {
+		return 0, err
+	}
+	// percent × 100 = basis points (20 → 2000). Round half-up to whole bps.
+	return int32(d.Mul(hundred).Round(0).IntPart()), nil
+}
+
 // ComputeFixedVAT returns the VAT *contained in* a VAT-INCLUSIVE total for a
 // fixed-ratio rate. The entered gross already includes VAT, so we EXTRACT the
 // VAT fraction rather than add the rate on top:
@@ -77,6 +109,27 @@ func ComputeFixedVAT(grossMinor, rateBps int32) int32 {
 		Div(decimal.NewFromInt(int64(10000 + rateBps))).
 		Round(0) // whole pence, half away from zero
 	return int32(v.IntPart())
+}
+
+// AddOnVAT returns the VAT charged ON TOP of a VAT-EXCLUSIVE net amount, for a rate
+// held in basis points:
+//
+//	vat = net × rate_bps / 10000   (rounded half-up to the penny)
+//
+// This is the INVOICE direction — an invoice line price is net, and VAT is added on
+// top. It is the INVERSE of ComputeFixedVAT, which EXTRACTS the VAT already CONTAINED
+// in a VAT-inclusive gross (denominator 10000 + rate, the HMRC VAT fraction). Do NOT
+// swap them: extracting from a net line would under-charge the VAT.
+//
+// Example: £100.00 net (10000) at 20% (2000) → 10000 × 2000 / 10000 = 2000 = £20.00.
+// int64-based (unlike ComputeFixedVAT's int32) because invoice line/total amounts can
+// exceed the int32 ceiling.
+func AddOnVAT(netMinor int64, rateBps int32) int64 {
+	return decimal.NewFromInt(netMinor).
+		Mul(decimal.NewFromInt(int64(rateBps))).
+		Div(decimal.NewFromInt(10000)).
+		Round(0). // whole pence, half away from zero
+		IntPart()
 }
 
 // ClampToInt32 saturates an int64 into int32 range. Used as a defensive guard

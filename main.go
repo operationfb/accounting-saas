@@ -36,6 +36,7 @@ import (
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
+	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
@@ -48,6 +49,7 @@ import (
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	invoices "github.com/operationfb/accounting-saas/internal/invoices"
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
@@ -144,6 +146,11 @@ func main() {
 
 	contactSvc := contacts.NewService(pool, contactQueries, authQueries, projectQueries)
 	projectSvc := projects.NewService(pool, projectQueries, authQueries, contactQueries)
+
+	// Invoices: sales documents an org issues to its contacts. Like projects it
+	// needs the contacts querier to validate an invoice's contact belongs to the
+	// same org. Self-registers /api/v1/invoices after NewServer.
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries)
 
 	// Members: a thin, read-only internal/members service over the auth queries for
 	// listing an organisation's members (owner/admin only). Reuses the shared
@@ -420,6 +427,7 @@ func main() {
 	userauth.NewHandler(userSvc).RegisterRoutes(server.Router(), tokenMaker)
 	contacts.NewHandler(contactSvc).RegisterRoutes(server.Router(), tokenMaker)
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
+	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
