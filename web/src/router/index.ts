@@ -10,6 +10,9 @@ import ContactListView from '@/views/ContactListView.vue'
 import ContactEntryView from '@/views/ContactEntryView.vue'
 import ProjectListView from '@/views/ProjectListView.vue'
 import ProjectEntryView from '@/views/ProjectEntryView.vue'
+import InvoiceListView from '@/views/InvoiceListView.vue'
+import InvoiceEntryView from '@/views/InvoiceEntryView.vue'
+import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
 import BankAccountListView from '@/views/BankAccountListView.vue'
 import BankAccountEntryView from '@/views/BankAccountEntryView.vue'
 import BankAccountTransactionsView from '@/views/BankAccountTransactionsView.vue'
@@ -36,6 +39,12 @@ const router = createRouter({
     { path: '/projects', name: 'projects', component: ProjectListView, meta: { requiresAuth: true, title: 'Projects' } },
     { path: '/projects/new', name: 'project-new', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
     { path: '/projects/:id/edit', name: 'project-edit', component: ProjectEntryView, meta: { requiresAuth: true, title: 'Projects' } },
+    // Invoices. /invoices/new is declared BEFORE /invoices/:id so "new" isn't
+    // captured as an id (vue-router matches in declaration order).
+    { path: '/invoices', name: 'invoices', component: InvoiceListView, meta: { requiresAuth: true, title: 'Invoices' } },
+    { path: '/invoices/new', name: 'invoice-new', component: InvoiceEntryView, meta: { requiresAuth: true, title: 'Invoices' } },
+    { path: '/invoices/:id', name: 'invoice-detail', component: InvoiceDetailView, meta: { requiresAuth: true, title: 'Invoices' } },
+    { path: '/invoices/:id/edit', name: 'invoice-edit', component: InvoiceEntryView, meta: { requiresAuth: true, title: 'Invoices' } },
     { path: '/bank-accounts', name: 'bank-accounts', component: BankAccountListView, meta: { requiresAuth: true, title: 'Banking' } },
     { path: '/bank-accounts/new', name: 'bank-account-new', component: BankAccountEntryView, meta: { requiresAuth: true, title: 'Banking' } },
     { path: '/bank-accounts/:id', name: 'bank-account-transactions', component: BankAccountTransactionsView, meta: { requiresAuth: true, title: 'Banking' } },

@@ -12,11 +12,10 @@ package banking
 // encoding/csv + crypto/sha256). Columns are matched by HEADER NAME (order-free):
 //   date         required, DD/MM/YYYY
 //   description  required
-//   money_in     decimal pounds — set on a credit (money in)
-//   money_out    decimal pounds — set on a debit (money out)
+//   amount       required, SIGNED decimal pounds — positive = money in, negative
+//                (leading '-', e.g. -54.20) = money out. Stored straight into
+//                amount_minor. Must not be empty or zero.
 //   bank_memo    optional raw bank narrative
-// Exactly one of money_in / money_out must be a positive amount per row; the
-// service signs it into amount_minor (+ in / - out).
 //
 // Imported rows are source='statement', status='unexplained', transaction_type
 // defaulted by sign, created_by = the uploader. DEDUPE: each line gets a stable
@@ -186,10 +185,10 @@ func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
 		key := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(h, bom)))
 		col[key] = i
 	}
-	for _, required := range []string{"date", "description", "money_in", "money_out"} {
+	for _, required := range []string{"date", "description", "amount"} {
 		if _, ok := col[required]; !ok {
 			return nil, kernel.ErrValidation(fmt.Sprintf(
-				"CSV is missing the required column %q (expected: date, description, money_in, money_out, and optionally bank_memo)",
+				"CSV is missing the required column %q (expected: date, description, amount, and optionally bank_memo)",
 				required), nil)
 		}
 	}
@@ -229,20 +228,21 @@ func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
 			continue
 		}
 
-		inMinor, inErr := parseMoneyField(field(rec, "money_in"))
-		outMinor, outErr := parseMoneyField(field(rec, "money_out"))
-		if inErr != nil || outErr != nil {
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: money_in/money_out must be a valid positive amount", rowNum))
+		// One SIGNED amount column: + money in, - money out. Empty/zero is rejected;
+		// the sign goes straight into amount_minor.
+		amountStr := field(rec, "amount")
+		if amountStr == "" {
+			rowErrs = append(rowErrs, fmt.Sprintf("row %d: missing amount", rowNum))
 			continue
 		}
-		hasIn, hasOut := inMinor > 0, outMinor > 0
-		if hasIn == hasOut { // both set, or neither
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: provide exactly one of money_in or money_out", rowNum))
+		amountMinor, aerr := parseSignedAmount(amountStr)
+		if aerr != nil {
+			rowErrs = append(rowErrs, fmt.Sprintf("row %d: amount %q must be a number; use a leading - for money out (e.g. -54.20)", rowNum, amountStr))
 			continue
 		}
-		amountMinor := inMinor
-		if hasOut {
-			amountMinor = -outMinor
+		if amountMinor == 0 {
+			rowErrs = append(rowErrs, fmt.Sprintf("row %d: amount must not be zero", rowNum))
+			continue
 		}
 
 		// Stable dedupe id; occurrence counter distinguishes identical lines in one file.
@@ -275,21 +275,15 @@ func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
 	return out, nil
 }
 
-// parseMoneyField parses an optional pounds field → minor units. Empty → 0 (no
-// error). Tolerates £, commas and spaces. Rejects negatives (use the other column).
-func parseMoneyField(s string) (int64, error) {
+// parseSignedAmount parses the SIGNED amount column → minor units (pence). Tolerates
+// £, commas and spaces, but KEEPS a leading '-' (negative = money out). Empty → 0 with
+// no error; the caller treats an empty cell as a "missing amount" row error.
+func parseSignedAmount(s string) (int64, error) {
 	s = strings.NewReplacer("£", "", ",", "", " ", "").Replace(strings.TrimSpace(s))
 	if s == "" {
 		return 0, nil
 	}
-	minor, err := money.PoundsToMinor(s)
-	if err != nil {
-		return 0, err
-	}
-	if minor < 0 {
-		return 0, errors.New("negative amount")
-	}
-	return minor, nil
+	return money.PoundsToMinor(s) // handles negatives: "-54.20" → -5420
 }
 
 func isBlankRecord(rec []string) bool {

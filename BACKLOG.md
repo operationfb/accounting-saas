@@ -160,8 +160,17 @@ Backend: `internal/invoices` (`Service` + `Handler` + DTOs + `status.go`), self-
 status. Tested in `invoice_service_test.go` (real Postgres) + `money/money_test.go`. Still a
 MINIMAL cut. Deferred:
 
-- **Frontend SPA.** No invoice views yet — list, create/edit (with the line-item editor), detail,
-  and the issue / write-off / refund actions. _Files: `web/src/...`._
+- **Frontend SPA — core landed (2026-06-23); refinements deferred.** Built: the invoice list, the
+  create/edit header form (contact picker + reference + date + payment-terms→due_on + currency), the
+  document-style detail view (Draft→Sent→Paid tracker, line-item table + totals, Payment Details /
+  Other Information), the "New invoice item" modal, and the issue/reopen (Mark as sent / Back to
+  draft) actions. _Files: `web/src/views/Invoice{List,Entry,Detail}View.vue`,
+  `web/src/components/InvoiceItemDialog.vue`, `web/src/services/invoices.service.ts`,
+  `web/src/types/invoice.ts`, `web/src/lib/invoiceStatus.ts`, router + `AppTopBar`._ Deferred UI: the
+  FreeAgent fields with no backend column (line **Units**/`item_type`, "**add to price list**",
+  invoice **Additional text**/comments, **project** link); the **schedule / write-off / refund**
+  status buttons (the backend already supports them); a **reference auto-number** prefill; and the
+  **Paid** tracker step (needs the payments feature).
 - **Reference auto-numbering.** `reference` is free/nullable today (unique per org via
   `uq_invoices_reference`). Add a per-org sequence generator, honouring
   `projects.project_invoice_sequence` (a project may use its own number sequence). _Files:
@@ -260,8 +269,10 @@ remains is the reconciliation/feed richness:
     `internal/banking/statement_import.go`, `db/schema/banking_schema.sql`._
   - **Real accounting-period** (vs the UK-tax-year assumption) — a financial-year-start
     field on the organisation. _File: `db/schema/auth_schema.sql`._
-  - **Server-side pagination** (v1 loads all rows + filters client-side; fine until accounts
-    get large), **bulk-checkbox actions**, and the **account-switcher dropdown**.
+  - **Server-side pagination** — a **client-side pager (25/50/100)** now slices the filtered
+    list (mirrors the expenses list), but the statement still LOADS every row; server-side
+    paging (limit/offset + a server-computed brought-forward) is the real scale fix. Plus
+    **bulk-checkbox actions** and the **account-switcher dropdown**.
 - **Bank feed ingestion (TrueLayer / Open Banking).** Populate transactions with
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking

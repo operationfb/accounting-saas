@@ -197,6 +197,35 @@ const broughtForward = computed(() => {
   return bf
 })
 
+// --- pagination (client-side over the filtered list, like the expenses list) ---
+const PER_PAGE_OPTIONS = [
+  { label: '25', value: 25 },
+  { label: '50', value: 50 },
+  { label: '100', value: 100 },
+]
+const perPage = ref(25)
+const currentPage = ref(1) // 1-indexed
+const showPagination = computed(() => visible.value.length > 25)
+const totalPages = computed(() => Math.max(1, Math.ceil(visible.value.length / perPage.value)))
+// The slice to render. currentPage is clamped so a transiently out-of-range page (e.g. after
+// a row is explained off the current tab) never flashes empty.
+const pagedVisible = computed(() => {
+  const page = Math.min(currentPage.value, totalPages.value)
+  const start = (page - 1) * perPage.value
+  return visible.value.slice(start, start + perPage.value)
+})
+function prevPage() {
+  if (currentPage.value > 1) currentPage.value--
+}
+function nextPage() {
+  if (currentPage.value < totalPages.value) currentPage.value++
+}
+// Any filter change (period / search / tab) or a new page size sends you back to page 1.
+// (Deliberately not watching `visible`, so explaining a row in place doesn't reset the page.)
+watch([period, search, tab, perPage], () => {
+  currentPage.value = 1
+})
+
 // --- status icon (matches the bottom legend) ---
 function statusMeta(t: BankTransaction): { icon: string; cls: string; label: string } {
   if (t.source === 'manual') return { icon: 'pi-user', cls: 'text-[#8e44ad]', label: 'Manually added' }
@@ -608,7 +637,7 @@ async function removeEditing() {
               </thead>
               <tbody>
                 <!-- Balance brought forward at the start of the selected period (hidden while searching) -->
-                <tr v-if="tab === 'all' && !search.trim()">
+                <tr v-if="tab === 'all' && !search.trim() && currentPage === 1">
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                   <td class="border-b border-[#eef1f4] px-4 py-3 italic text-fa-muted">Balance brought forward</td>
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
@@ -619,7 +648,7 @@ async function removeEditing() {
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                 </tr>
 
-                <template v-for="t in visible" :key="t.id">
+                <template v-for="t in pagedVisible" :key="t.id">
                   <tr
                     class="group hover:bg-[#f7fafc]"
                     :class="{ 'cursor-pointer': auth.isOrgAdmin, 'bg-[#f7fafc]': expandedId === t.id }"
@@ -769,6 +798,39 @@ async function removeEditing() {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- Pagination — only past 25 rows; client-side, mirrors the expenses list. -->
+          <div
+            v-if="showPagination"
+            class="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-fa-border px-4 py-3 text-sm"
+          >
+            <div class="flex items-center gap-2">
+              <Select v-model="perPage" :options="PER_PAGE_OPTIONS" option-label="label" option-value="value" />
+              <span class="text-fa-muted">per page</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <Button
+                label="Previous"
+                icon="pi pi-angle-left"
+                severity="secondary"
+                outlined
+                size="small"
+                :disabled="currentPage === 1"
+                @click="prevPage"
+              />
+              <span class="text-fa-muted">Page {{ currentPage }} of {{ totalPages }}</span>
+              <Button
+                label="Next"
+                icon="pi pi-angle-right"
+                icon-pos="right"
+                severity="secondary"
+                outlined
+                size="small"
+                :disabled="currentPage === totalPages"
+                @click="nextPage"
+              />
+            </div>
           </div>
 
           <!-- Legend -->

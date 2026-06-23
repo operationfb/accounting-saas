@@ -494,9 +494,9 @@ func TestBankAccountService(t *testing.T) {
 		}
 		cleanupBankAccount(t, ts, acc.ID)
 
-		csv := "date,description,money_in,money_out\n" +
-			"11/06/2026,Salary,16413.59,\n" +
-			"12/06/2026,Coffee,,10.08\n"
+		csv := "date,description,amount\n" +
+			"11/06/2026,Salary,16413.59\n" + // positive = money in
+			"12/06/2026,Coffee,-10.08\n" // leading - = money out
 		res, err := importCSV(t, user, org, acc.ID, csv)
 		if err != nil {
 			t.Fatalf("import: %v", err)
@@ -538,9 +538,9 @@ func TestBankAccountService(t *testing.T) {
 			t.Fatalf("create account: %v", err)
 		}
 		cleanupBankAccount(t, ts, acc.ID)
-		csv := "date,description,money_in,money_out\n" +
-			"11/06/2026,Coffee,,5.00\n" +
-			"11/06/2026,Coffee,,5.00\n" // byte-identical line
+		csv := "date,description,amount\n" +
+			"11/06/2026,Coffee,-5.00\n" +
+			"11/06/2026,Coffee,-5.00\n" // byte-identical line
 		res, err := importCSV(t, user, org, acc.ID, csv)
 		if err != nil {
 			t.Fatalf("import: %v", err)
@@ -558,10 +558,12 @@ func TestBankAccountService(t *testing.T) {
 		}
 		cleanupBankAccount(t, ts, acc.ID)
 		for _, bad := range []string{
-			"description,money_in,money_out\nSalary,10.00,\n",                   // missing date column
-			"date,description,money_in,money_out\n11/06/2026,Both,10.00,5.00\n", // both money columns
-			"date,description,money_in,money_out\n11/06/2026,Neither,,\n",       // neither money column
-			"date,description,money_in,money_out\n2026-06-11,BadDate,10.00,\n",  // wrong date format
+			"description,amount\nSalary,10.00\n",            // missing date column
+			"date,description\n11/06/2026,NoAmountCol\n",    // missing amount column
+			"date,description,amount\n11/06/2026,Empty,\n",  // empty amount cell
+			"date,description,amount\n11/06/2026,Bad,abc\n", // non-numeric amount
+			"date,description,amount\n11/06/2026,Zero,0\n",  // zero amount
+			"date,description,amount\n2026-06-11,BadDate,10.00\n", // wrong date format
 		} {
 			if _, err := importCSV(t, user, org, acc.ID, bad); err == nil {
 				t.Errorf("expected 422 for invalid CSV: %q", bad)
@@ -581,7 +583,7 @@ func TestBankAccountService(t *testing.T) {
 			t.Fatalf("create account: %v", err)
 		}
 		cleanupBankAccount(t, ts, acc.ID)
-		csv := "date,description,money_in,money_out\n11/06/2026,X,1.00,\n"
+		csv := "date,description,amount\n11/06/2026,X,1.00\n"
 
 		member := addMember(t, ts, org, "member")
 		if _, err := importCSV(t, member, org, acc.ID, csv); err == nil {

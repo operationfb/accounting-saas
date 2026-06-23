@@ -27,8 +27,7 @@ const MAX_BYTES = 5 * 1024 * 1024 // mirrors the backend's maxStatementUploadByt
 const templateFields = [
   { name: 'date', required: 'Required', format: 'Transaction date, DD/MM/YYYY (e.g. 22/06/2026).' },
   { name: 'description', required: 'Required', format: 'What the transaction was (e.g. Tesco Stores).' },
-  { name: 'money_in', required: 'One of in/out', format: 'Amount received, decimal (e.g. 2500.00). Blank for a payment out.' },
-  { name: 'money_out', required: 'One of in/out', format: 'Amount paid out, decimal (e.g. 54.20). Blank for a payment in.' },
+  { name: 'amount', required: 'Required', format: 'Decimal. Positive for money in, negative (leading -) for money out. e.g. 2500.00 or -54.20.' },
   { name: 'bank_memo', required: 'Optional', format: 'Raw bank narrative / reference (e.g. FPS CREDIT).' },
 ]
 
