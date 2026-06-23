@@ -301,6 +301,8 @@ const selectedVatRate = computed(() => vatRates.value.find((r) => r.id === form.
 const isManualVat = computed(() => !!selectedVatRate.value && !selectedVatRate.value.is_fixed_ratio)
 const remainingAbs = computed(() => Math.abs(Number(remaining.value || '0')).toFixed(2))
 const fullyExplained = computed(() => Number(remaining.value || '0') === 0)
+// Explanations NOT currently being edited (the edited one shows in the form below).
+const otherExplanations = computed(() => explanations.value.filter((e) => e.id !== editingId.value))
 
 // Keep the VAT amount in sync: a fixed rate auto-extracts it from the Value; "No VAT" clears it;
 // a manual rate is left for the user to type. Fires on Value or rate change (incl. the default_vat
@@ -348,7 +350,13 @@ async function toggleExpand(t: BankTransaction) {
   try {
     await loadRefData()
     applyPanel(await listExplanations(id, t.id))
-    form.amount = remainingAbs.value
+    // Already explained with a single explanation → open straight into editing it
+    // (click the line to edit). Otherwise show the add form for the remaining amount.
+    if (fullyExplained.value && explanations.value.length === 1) {
+      await startEdit(explanations.value[0])
+    } else {
+      form.amount = remainingAbs.value
+    }
   } catch (err) {
     panelError.value = (err as ApiError)?.message ?? 'Could not load explanations.'
   } finally {
@@ -494,6 +502,11 @@ async function removeExplanation(e: Explanation) {
   } catch (err) {
     panelError.value = (err as ApiError)?.message ?? 'Could not remove the explanation.'
   }
+}
+// Remove the explanation currently open in the edit form (the in-form Remove button).
+async function removeEditing() {
+  const e = explanations.value.find((x) => x.id === editingId.value)
+  if (e) await removeExplanation(e)
 }
 </script>
 
@@ -650,20 +663,21 @@ async function removeExplanation(e: Explanation) {
                       <div v-else>
                         <p v-if="panelError" class="mb-2 text-sm text-[#c0392b]">{{ panelError }}</p>
 
-                        <!-- existing explanations -->
-                        <table v-if="explanations.length" class="mb-3 w-full text-sm">
+                        <!-- existing explanations — click a row to edit it (no inline links) -->
+                        <table v-if="otherExplanations.length" class="mb-3 w-full text-sm">
                           <tbody>
-                            <tr v-for="e in explanations" :key="e.id" class="border-b border-[#eef1f4]">
+                            <tr
+                              v-for="e in otherExplanations"
+                              :key="e.id"
+                              class="cursor-pointer border-b border-[#eef1f4] hover:bg-white"
+                              @click="startEdit(e)"
+                            >
                               <td class="py-1.5 font-semibold">{{ typeName(e.type) }}</td>
                               <td class="py-1.5 text-fa-muted">
                                 {{ e.category_name || e.transfer_account_name || e.paid_user_name || '—' }}
                               </td>
                               <td class="py-1.5 text-right tabular-nums">
                                 £{{ e.amount }}<span v-if="Number(e.vat_value) > 0" class="text-fa-muted"> (incl. £{{ e.vat_value }} VAT)</span>
-                              </td>
-                              <td class="whitespace-nowrap py-1.5 text-right">
-                                <button type="button" class="text-fa-blue hover:underline" @click="startEdit(e)">Edit</button>
-                                <button type="button" class="ml-3 text-[#c0392b] hover:underline" @click="removeExplanation(e)">Remove</button>
                               </td>
                             </tr>
                           </tbody>
@@ -739,6 +753,7 @@ async function removeExplanation(e: Explanation) {
                             <!-- buttons -->
                             <div class="col-start-2 mt-1 flex items-center gap-3">
                               <Button :label="editingId ? 'Save changes' : 'Add'" :loading="saving" @click="submitForm" />
+                              <Button v-if="editingId" label="Remove" severity="danger" outlined @click="removeEditing" />
                               <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancelForm">Cancel</button>
                             </div>
                           </div>
