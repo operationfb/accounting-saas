@@ -140,14 +140,61 @@ _Last updated: 2026-06-23_
   customer/supplier classification yet (the New Contact form had none). Add when
   invoices/bills need to filter contacts by role. _Files:
   `db/schema/contacts_schema.sql`, `db/queries/contacts.sql`, `contact_service.go`._
-- **Link expenses/invoices to a contact.** Contacts exist but nothing references
-  them yet. When building invoices (or attributing an expense to a supplier), add
-  a nullable `contact_id` FK + the lookup. _Files: schema, `expense_service.go` /
-  a future invoice service._
+- **Attribute an expense to a supplier contact.** Invoices now reference contacts
+  (`invoices.contact_id`, datalayer landed 2026-06-23) and projects already did
+  (`projects.contact_id`). The remaining gap is the EXPENSES side: add a nullable
+  `contact_id` FK on `expenses` + the lookup so a receipt can be attributed to a
+  supplier. _Files: `db/schema/schema.sql`, `expense_service.go`._
 - **List filtering, search & pagination for `GET /api/v1/contacts`.** Returns the
   whole org's contacts, ordered by name only, unpaged. Add name/email search, an
   active-only filter, and pagination. _Files: `contact_service.go`, `server.go`,
   `db/queries/contacts.sql`._
+
+## Invoices
+
+The DATALAYER landed (2026-06-23): `db/schema/invoices_schema.sql` (the `invoices` +
+`invoice_items` tables), `db/queries/invoices.sql`, and the generated `db/invoices` package.
+This is a deliberately MINIMAL first cut — header (contact, dates, reference, currency, status,
+computed totals) + simple lines (description, quantity, unit price, VAT rate). There is no
+service / handler / route / frontend yet, and no tests (nothing to exercise until the service
+lands). Deferred:
+
+- **Invoice service + API + frontend.** Build `internal/invoices` (`Service` + `Handler`,
+  self-registering `/api/v1/invoices*`), the DTOs, and the create/edit/list/get/delete flow
+  (lines rebuilt inside a transaction via `DeleteInvoiceItemsForInvoice` + `CreateInvoiceItem`,
+  then `UpdateInvoiceTotals`), plus the SPA views. Ship with real-Postgres integration tests
+  (happy path, money/VAT rounding, multi-tenant scoping, validation), following
+  `contact_service_test.go`.
+- **Add-on VAT money helper.** Invoice line VAT is ADDED on top of a VAT-exclusive `price_minor`
+  (`vat = round(line_net × rate_bps / 10000)`) — the opposite of `money.ComputeFixedVAT`, which
+  EXTRACTS VAT from an inclusive gross. Add an `AddVAT`-style helper to `money/money.go` for the
+  line/total roll-up so the service doesn't hand-roll it. _File: `money/money.go`._
+- **Derived display status.** Compute Open / Overdue / Paid / Overpaid / Zero Value at read time
+  from `due_on` + `total_value_minor` + `paid_value_minor` (the stored `status` only holds
+  DRAFT/SCHEDULED/SENT/WRITTEN_OFF/REFUNDED). _File: a future invoice service._
+- **Reference auto-numbering.** `reference` is free/nullable today (unique per org via
+  `uq_invoices_reference`). Add a per-org sequence generator, honouring
+  `projects.project_invoice_sequence` (a project may use its own number sequence). _Files:
+  `db/queries/invoices.sql`, invoice service._
+- **Payments / reconciliation → `paid_value_minor`.** Nothing populates `paid_value_minor` yet
+  (defaults 0, so every invoice derives as unpaid). Wire it from the banking `INVOICE_RECEIPT`
+  explanation link (see the banking backlog's "future-entity explanation links") and/or a
+  payments table; add `paid_on` / `written_off_date` columns then too. _Files: schema,
+  `db/queries/invoices.sql`, banking._
+- **Wire `ContactHasInvoices` into the contacts in-use guard.** The datalayer query exists;
+  inject the invoices querier into `contacts.NewService` and OR it into the existing
+  `ContactHasProjects` check, so a contact with invoices can't be soft-deleted and reports
+  `in_use=true`. _Files: `internal/contacts/service.go`, `main.go`._
+- **Restore the deferred FreeAgent surface** as features land: header `project_id`,
+  `discount_percent`, `comments`, `po_reference`, `ec_status`, `place_of_supply`, display flags
+  (`omit_header`, `show_project_name`); multi-currency (`exchange_rate` + native-currency totals);
+  line `item_type`, `sales_tax_status`, second sales tax, per-line `category_id` (income CoA →
+  `categories`) / `project_id`; CIS (`cis_rate` / `cis_deduction*`); payment methods / online
+  payment URL; `send_*_emails`; `recurring_invoice`; `include_timeslips/expenses/estimates`;
+  `property` / `bank_account` links. _File: `db/schema/invoices_schema.sql` (+ queries)._
+- **Invoice audit log.** No history table yet (same gap as the unwired `expense_audit_log`).
+- **Turn `expenses.rebilled_invoice_id` into a real FK** to `invoices(id)` now that the table
+  exists (it's a bare UUID today). _File: `db/schema/schema.sql`._
 
 ## Organisation / Company details
 
@@ -222,10 +269,16 @@ remains is the reconciliation/feed richness:
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking
   integration. _Files: new ingestion code, `db/queries/banking.sql`._
-- **Statement upload — OFX/QFX import.** CSV import landed (`source = 'statement'`,
-  synthetic-hash `external_id` dedupe). OFX/QFX needs an OFX parser (a new dependency);
-  it would dedupe on the bank's FITID via the same `external_id` index. _File:
-  `internal/banking/statement_import.go`._
+- **Statement upload — OFX hardening (OFX import DONE).** OFX import landed: a
+  hand-rolled, stdlib-only parser (no dependency) in `internal/banking/statement_import.go`,
+  auto-detected alongside CSV on the same endpoint, `source = 'statement'`, deduping on
+  the bank's FITID via `external_id = "ofx:"+FITID` (the existing per-account unique
+  index). Remaining niceties: **QFX** (Quicken's OFX dialect) should work through the
+  same tolerant parser but is untested; **Windows-1252** (`CHARSET:1252`) transcoding
+  (we currently treat bytes as UTF-8/ASCII); an optional **wrong-account guard** matching
+  the file's `BANKACCTFROM` (sort code / account number) to the target account; and
+  **multi-statement / multi-account** OFX files (v1 imports every `STMTTRN` into the
+  account in the URL). _File: `internal/banking/statement_import.go`._
 - **Transaction reconciliation / "explain" — DATA LAYER + service + UI landed; refinements remain.**
   Built: the CoA (`categories`), the 18 `transaction_types`, the
   `transaction_type_categories` mapping + recompute trigger (data layer); the explain

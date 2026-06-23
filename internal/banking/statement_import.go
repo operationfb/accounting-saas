@@ -2,9 +2,13 @@ package banking
 
 // statement_import.go
 // =============================================================================
-// CSV statement import: bulk-add bank transactions from an uploaded file.
+// Statement import: bulk-add bank transactions from an uploaded file. Two formats
+// are accepted on the SAME endpoint, auto-detected from the file's contents
+// (looksLikeOFX): a fixed-template CSV (below) and OFX (the format banks export —
+// see the OFX section at the bottom of this file). Both parse into the same
+// []parsedLine and flow through the one insert path in ImportStatement.
 //
-// v1 is a FIXED-TEMPLATE CSV (no per-bank column mapping, no dependency — stdlib
+// The CSV is a FIXED TEMPLATE (no per-bank column mapping, no dependency — stdlib
 // encoding/csv + crypto/sha256). Columns are matched by HEADER NAME (order-free):
 //   date         required, DD/MM/YYYY
 //   description  required
@@ -25,13 +29,16 @@ package banking
 // =============================================================================
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -85,7 +92,18 @@ func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uui
 		return nil, kernel.ErrInternal(err)
 	}
 
-	lines, err := parseStatementCSV(content)
+	// Read the (handler-capped) upload once, then pick the parser by sniffing the
+	// content — so the single import endpoint serves both CSV and OFX uploads.
+	raw, err := io.ReadAll(content)
+	if err != nil {
+		return nil, kernel.ErrValidation("could not read the uploaded file", err)
+	}
+	var lines []parsedLine
+	if looksLikeOFX(raw) {
+		lines, err = parseStatementOFX(raw)
+	} else {
+		lines, err = parseStatementCSV(bytes.NewReader(raw))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -288,4 +306,179 @@ func firstN(s []string, n int) []string {
 		return s[:n]
 	}
 	return s
+}
+
+// =============================================================================
+// OFX statement import
+// -----------------------------------------------------------------------------
+// OFX is the format banks export ("Barclays - data.ofx"). Two wire forms exist:
+//   - OFX 1.x — SGML, with UNCLOSED leaf tags (<TRNAMT>200.00 with no </TRNAMT>);
+//     only aggregates like <STMTTRN>…</STMTTRN> are closed.
+//   - OFX 2.x — well-formed XML (every tag closed).
+// We need only a handful of fields per transaction, so rather than a full SGML/XML
+// parser (or a new dependency) we scan tolerantly: read each <TAG>'s value up to the
+// next '<' (ofxField). That single rule reads BOTH forms — in 2.x the closing
+// "</TAG>" simply IS the next '<', so the value comes out identical.
+//
+// Each <STMTTRN> becomes a parsedLine and flows through the SAME insert path as the
+// CSV importer. Unlike CSV, OFX's TRNAMT is already SIGNED and each transaction has
+// the bank's own unique id (FITID) — so dedupe is external_id = "ofx:"+FITID, which
+// the (bank_account_id, external_id) unique index makes idempotent on re-import.
+//
+// v1 imports every STMTTRN into the account named in the URL; the file's BANKACCTFROM
+// (sort code / account number) is parsed past, not matched (see BACKLOG).
+// =============================================================================
+
+// looksLikeOFX sniffs the upload to choose the parser. An OFX file either starts with
+// the SGML header keyword "OFXHEADER" (1.x) or contains the <OFX> root (1.x and 2.x);
+// a CSV statement never does. Only the head is inspected, upper-cased for a
+// case-insensitive match (this string is used for a boolean test, never for indexing).
+func looksLikeOFX(raw []byte) bool {
+	head := raw
+	if len(head) > 1024 {
+		head = head[:1024]
+	}
+	h := strings.ToUpper(string(head))
+	return strings.HasPrefix(strings.TrimSpace(h), "OFXHEADER") || strings.Contains(h, "<OFX>")
+}
+
+// validOFXTransactionType is the OFX TRNTYPE enum the bank_transactions CHECK accepts
+// (db/schema/banking_schema.sql). Any code outside it — e.g. the spec's HOLD, the one
+// standard type the column omits — is normalised to OTHER so an insert can't trip the
+// CHECK.
+var validOFXTransactionType = map[string]bool{
+	"CREDIT": true, "DEBIT": true, "INT": true, "DIV": true, "FEE": true,
+	"SRVCHG": true, "DEP": true, "ATM": true, "POS": true, "XFER": true,
+	"CHECK": true, "PAYMENT": true, "CASH": true, "DIRECTDEP": true,
+	"DIRECTDEBIT": true, "REPEATPMT": true, "OTHER": true,
+}
+
+// ofxStmtTrnRe captures the body of each <STMTTRN>…</STMTTRN> aggregate. These are
+// closed even in OFX 1.x, so a non-greedy match per block is reliable. (?s) lets '.'
+// span the newlines between a block's fields.
+var ofxStmtTrnRe = regexp.MustCompile(`(?s)<STMTTRN>(.*?)</STMTTRN>`)
+
+// parseStatementOFX parses an uploaded OFX statement into the same []parsedLine the
+// CSV path produces. ALL-OR-NOTHING like the CSV importer: any bad <STMTTRN> fails the
+// whole import with a 422 (nothing inserted) — re-upload after a fix is safe thanks to
+// the FITID dedupe.
+func parseStatementOFX(raw []byte) ([]parsedLine, error) {
+	blocks := ofxStmtTrnRe.FindAllStringSubmatch(string(raw), -1)
+	if len(blocks) == 0 {
+		return nil, kernel.ErrValidation("no transactions found in the OFX file", nil)
+	}
+
+	out := make([]parsedLine, 0, len(blocks))
+	var rowErrs []string
+	occ := map[string]int{} // occurrence counter, only for the FITID-less fallback key
+
+	for i, m := range blocks {
+		block := m[1]
+		txnNum := i + 1 // 1-based transaction index, for error messages
+
+		// DTPOSTED is YYYYMMDDHHMMSS[tz] (e.g. 20260615000000[-5:EST]); transactions are
+		// dated by day, so take the first 8 digits and ignore the time/timezone.
+		dateStr := ofxField(block, "DTPOSTED")
+		if len(dateStr) < 8 {
+			rowErrs = append(rowErrs, fmt.Sprintf("transaction %d: missing or invalid DTPOSTED %q", txnNum, dateStr))
+			continue
+		}
+		t, derr := time.Parse("20060102", dateStr[:8])
+		if derr != nil {
+			rowErrs = append(rowErrs, fmt.Sprintf("transaction %d: DTPOSTED %q is not a valid date", txnNum, dateStr))
+			continue
+		}
+
+		// TRNAMT is already SIGNED (+ money in, - money out) — straight to minor units.
+		amtStr := ofxField(block, "TRNAMT")
+		if amtStr == "" {
+			rowErrs = append(rowErrs, fmt.Sprintf("transaction %d: missing TRNAMT", txnNum))
+			continue
+		}
+		amountMinor, aerr := money.PoundsToMinor(amtStr)
+		if aerr != nil {
+			rowErrs = append(rowErrs, fmt.Sprintf("transaction %d: TRNAMT %q is not a valid amount", txnNum, amtStr))
+			continue
+		}
+
+		// Description = NAME (the payee/narrative), falling back to MEMO. Both carry
+		// embedded tabs/padding from the bank, so collapse the whitespace.
+		name := cleanOFXText(ofxField(block, "NAME"))
+		memo := cleanOFXText(ofxField(block, "MEMO"))
+		desc := name
+		if desc == "" {
+			desc = memo
+		}
+		if desc == "" {
+			desc = "(no description)" // NAME/MEMO are optional in OFX; keep description non-empty
+		}
+		var memoPtr *string
+		if memo != "" {
+			memoPtr = &memo
+		}
+
+		// Dedupe: the bank's FITID is unique per account → idempotent re-import. If a
+		// (non-compliant) export omits it, fall back to the CSV-style synthetic hash,
+		// with an occurrence counter so identical lines in one file stay distinct.
+		var externalID string
+		if fitid := ofxField(block, "FITID"); fitid != "" {
+			externalID = "ofx:" + fitid
+		} else {
+			base := fmt.Sprintf("%s\x1f%d\x1f%s", t.Format("2006-01-02"), amountMinor, desc)
+			k := occ[base]
+			occ[base] = k + 1
+			sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x1f%d", base, k)))
+			externalID = "ofx:" + hex.EncodeToString(sum[:])
+		}
+
+		// TRNTYPE is the bank's real type code; keep it, but normalise anything outside
+		// the DB CHECK set (e.g. HOLD) to OTHER.
+		trnType := strings.ToUpper(ofxField(block, "TRNTYPE"))
+		if !validOFXTransactionType[trnType] {
+			trnType = "OTHER"
+		}
+
+		out = append(out, parsedLine{
+			DatedOn:         pgtype.Date{Time: t, Valid: true},
+			AmountMinor:     amountMinor,
+			Description:     desc,
+			BankMemo:        memoPtr,
+			ExternalID:      externalID,
+			TransactionType: trnType,
+		})
+	}
+
+	if len(rowErrs) > 0 {
+		msg := "the OFX file has invalid transactions: " + strings.Join(firstN(rowErrs, 5), "; ")
+		if len(rowErrs) > 5 {
+			msg += fmt.Sprintf(" (and %d more)", len(rowErrs)-5)
+		}
+		return nil, kernel.ErrValidation(msg, nil)
+	}
+	return out, nil
+}
+
+// ofxField returns the value of a leaf OFX tag inside one <STMTTRN> block. It reads
+// from just after "<TAG>" up to the next '<' — the tag's value in BOTH OFX 1.x (where
+// the leaf tag is unclosed and terminated by the following element) and 2.x (where the
+// next '<' is the closing "</TAG>"). OFX tag names are upper-case by spec, so the match
+// is case-sensitive (avoids the byte-offset hazard of upper-casing the haystack).
+// Returns "" if the tag is absent; SGML entities (&amp; …) are unescaped.
+func ofxField(block, tag string) string {
+	open := "<" + tag + ">"
+	idx := strings.Index(block, open)
+	if idx < 0 {
+		return ""
+	}
+	rest := block[idx+len(open):]
+	if end := strings.IndexByte(rest, '<'); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(html.UnescapeString(rest))
+}
+
+// cleanOFXText collapses the whitespace OFX NAME/MEMO fields carry — the Barclays
+// export embeds TABs and trailing spaces — into single spaces, trimmed.
+func cleanOFXText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

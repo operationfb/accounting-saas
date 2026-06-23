@@ -233,6 +233,54 @@ sql:
             go_type: "string"
 
   # ===========================================================================
+  # INVOICES MODULE
+  # Generates the data layer for the invoices + invoice_items tables into package
+  # `invoices` at db/invoices — its own domain package.
+  #
+  # Loads schema.sql + auth_schema.sql + contacts_schema.sql + invoices_schema.sql
+  # in dependency order: invoices_schema.sql references set_updated_at() + the
+  # currencies table (schema.sql), the organisations / users tables (auth_schema.sql),
+  # and the contacts table its contact_id FK points at (contacts_schema.sql).
+  # omit_unused_structs keeps the other domains' structs out of db/invoices — only
+  # the Invoice + InvoiceItem structs (referenced by invoices.sql) are emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
+      - "db/schema/invoices_schema.sql"
+
+    queries: "db/queries/invoices.sql"
+
+    gen:
+      go:
+        package: "invoices"
+        out: "db/invoices"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep the expenses/auth/contacts structs (loaded only to satisfy FK deps)
+        # out of db/invoices — emit only what invoices.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+
+  # ===========================================================================
   # EMAIL INBOX MODULE
   # Generates the data layer for the email-to-expense audit/idempotency table
   # (inbound_email_events) into package `email_inbox` at db/email_inbox.

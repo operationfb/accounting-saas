@@ -478,6 +478,12 @@ func TestBankAccountService(t *testing.T) {
 		t.Helper()
 		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(csv))
 	}
+	// importOFX is the same entry point — ImportStatement auto-detects CSV vs OFX from
+	// the bytes — but named for intent in the OFX subtests below.
+	importOFX := func(t *testing.T, userID, orgID, accID, ofx string) (*banking.StatementImportResponse, error) {
+		t.Helper()
+		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(ofx))
+	}
 
 	t.Run("statement import: valid CSV creates statement lines + is idempotent", func(t *testing.T) {
 		org, user := newOrgWithOwner(t, ts)
@@ -588,6 +594,157 @@ func TestBankAccountService(t *testing.T) {
 			t.Error("importing into another org's account should be 404")
 		} else {
 			assertAppCode(t, err, kernel.ErrCodeNotFound)
+		}
+	})
+
+	// --- OFX import (same endpoint, format auto-detected) ---------------------
+	// Authz + the 404 path are format-agnostic (they run before parsing in the shared
+	// ImportStatement), so the CSV authz test above already covers them.
+
+	t.Run("statement import: valid OFX creates lines, derives sign + type, idempotent", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("OFXImport", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		// OFX 1.x (SGML): unclosed leaf tags, an already-SIGNED TRNAMT, a FITID per line.
+		// The first NAME carries the embedded tab + padding a real Barclays export has,
+		// so it also exercises the whitespace cleaning.
+		ofx := `OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+
+<OFX>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <STMTRS>
+        <CURDEF>GBP
+        <BANKACCTFROM>
+          <BANKID>492900
+          <ACCTID>20254190396605
+          <ACCTTYPE>CHECKING
+        </BANKACCTFROM>
+        <BANKTRANLIST>
+          <STMTTRN>
+            <TRNTYPE>DIRECTDEP
+            <DTPOSTED>20260528000000[-5:EST]
+            <TRNAMT>700.00
+            <FITID>FIT-CREDIT-1
+            <NAME>AXION LONDON LIMIT    ` + "\t" + `S BGC
+          </STMTTRN>
+          <STMTTRN>
+            <TRNTYPE>DIRECTDEBIT
+            <DTPOSTED>20260615000000[-5:EST]
+            <TRNAMT>-127.42
+            <FITID>FIT-DEBIT-1
+            <NAME>NOVUNA PERSONAL FI
+            <MEMO>Direct debit ref
+          </STMTTRN>
+        </BANKTRANLIST>
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>`
+
+		res, err := importOFX(t, user, org, acc.ID, ofx)
+		if err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		if res.Imported != 2 || res.SkippedDuplicates != 0 || res.Total != 2 {
+			t.Errorf("summary: got imported=%d skipped=%d total=%d, want 2/0/2", res.Imported, res.SkippedDuplicates, res.Total)
+		}
+		if len(res.Transactions) != 2 {
+			t.Fatalf("transactions: got %d, want 2", len(res.Transactions))
+		}
+		credit, debit := res.Transactions[0], res.Transactions[1] // chronological: 28 May before 15 Jun
+		if credit.Source != "statement" || credit.Status != "unexplained" {
+			t.Errorf("imported classification: source=%q status=%q, want statement/unexplained", credit.Source, credit.Status)
+		}
+		if credit.MoneyIn == nil || *credit.MoneyIn != "700.00" || credit.TransactionType == nil || *credit.TransactionType != "DIRECTDEP" {
+			t.Errorf("credit line: in=%v type=%v", credit.MoneyIn, credit.TransactionType)
+		}
+		// NAME's embedded tab + run of spaces collapse to single spaces.
+		if credit.Description == nil || *credit.Description != "AXION LONDON LIMIT S BGC" {
+			t.Errorf("credit description: got %v, want %q", credit.Description, "AXION LONDON LIMIT S BGC")
+		}
+		if debit.MoneyOut == nil || *debit.MoneyOut != "127.42" || debit.TransactionType == nil || *debit.TransactionType != "DIRECTDEBIT" {
+			t.Errorf("debit line: out=%v type=%v", debit.MoneyOut, debit.TransactionType)
+		}
+		if debit.BankMemo == nil || *debit.BankMemo != "Direct debit ref" {
+			t.Errorf("debit bank_memo: got %v, want %q", debit.BankMemo, "Direct debit ref")
+		}
+		if res.Account.CurrentBalance != "1572.58" { // 1000 + 700 - 127.42
+			t.Errorf("current balance: got %q, want 1572.58", res.Account.CurrentBalance)
+		}
+
+		// Re-importing the same bytes is a no-op (dedupe via FITID → external_id).
+		res2, err := importOFX(t, user, org, acc.ID, ofx)
+		if err != nil {
+			t.Fatalf("re-import: %v", err)
+		}
+		if res2.Imported != 0 || res2.SkippedDuplicates != 2 || len(res2.Transactions) != 2 {
+			t.Errorf("re-import: got imported=%d skipped=%d txns=%d, want 0/2/2", res2.Imported, res2.SkippedDuplicates, len(res2.Transactions))
+		}
+	})
+
+	t.Run("statement import: an unknown OFX TRNTYPE maps to OTHER", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("OFXType", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		// HOLD is a real OFX type the bank_transactions CHECK omits → must land as OTHER
+		// (else the insert would trip the CHECK).
+		ofx := `OFXHEADER:100
+<OFX>
+  <STMTTRN>
+    <TRNTYPE>HOLD
+    <DTPOSTED>20260601000000
+    <TRNAMT>-9.99
+    <FITID>FIT-HOLD-1
+    <NAME>Pending authorisation
+  </STMTTRN>
+</OFX>`
+		res, err := importOFX(t, user, org, acc.ID, ofx)
+		if err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		if len(res.Transactions) != 1 {
+			t.Fatalf("transactions: got %d, want 1", len(res.Transactions))
+		}
+		if tt := res.Transactions[0].TransactionType; tt == nil || *tt != "OTHER" {
+			t.Errorf("unknown TRNTYPE: got %v, want OTHER", tt)
+		}
+	})
+
+	t.Run("statement import: an OFX with no transactions is a 422 and imports nothing", func(t *testing.T) {
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("OFXEmpty", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		ofx := `OFXHEADER:100
+<OFX>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <STMTRS>
+        <CURDEF>GBP
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>`
+		if _, err := importOFX(t, user, org, acc.ID, ofx); err == nil {
+			t.Error("expected 422 for an OFX with no transactions")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeValidation)
+		}
+		if st, _ := svc.ListTransactions(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID); len(st.Transactions) != 0 {
+			t.Errorf("a rejected import must insert nothing: got %d transactions", len(st.Transactions))
 		}
 	})
 }
