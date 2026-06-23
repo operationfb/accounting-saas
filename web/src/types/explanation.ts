@@ -76,6 +76,7 @@ export interface CreateExplanationRequest {
   transfer_bank_account_id?: string
   paid_user_id?: string
   vat_rate_id?: string
+  vat_amount?: string // manual (non-fixed) rate only
   description?: string
   dated_on?: string
 }

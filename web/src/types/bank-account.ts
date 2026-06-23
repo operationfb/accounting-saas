@@ -89,6 +89,7 @@ export const BankTransactionSchema = z.object({
   money_out: z.string().nullish(),
   unexplained_amount: z.string(), // signed; reconcile UI later
   running_balance: z.string(),
+  explanation_summary: z.string().nullish(), // searchable digest of the line's explanations
 })
 export type BankTransaction = z.infer<typeof BankTransactionSchema>
 

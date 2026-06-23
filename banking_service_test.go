@@ -671,20 +671,44 @@ func TestExplainService(t *testing.T) {
 		}
 	})
 
-	t.Run("VAT is extracted from the portion gross", func(t *testing.T) {
+	t.Run("fixed VAT rate extracts the VAT and ignores a sent amount", func(t *testing.T) {
 		var vatID string
-		if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM vat_rates WHERE rate_bps=2000 AND country_code='GB' LIMIT 1`).Scan(&vatID); err != nil {
-			t.Skipf("no GB 20%% VAT rate seeded: %v", err)
+		if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM vat_rates WHERE rate_bps=2000 AND is_fixed_ratio=true AND country_code='GB' LIMIT 1`).Scan(&vatID); err != nil {
+			t.Skipf("no GB 20%% fixed VAT rate seeded: %v", err)
 		}
 		txn := newTxn(acc.ID, -12000) // £120 incl 20% → £20 VAT
 		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{
-			Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID("254")), VATRateID: ptr(vatID),
+			Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID("254")), VATRateID: ptr(vatID), VATAmount: ptr("999.00"),
 		})
 		if err != nil {
 			t.Fatalf("explain: %v", err)
 		}
-		if resp.Explanations[0].VATValue != "20.00" {
-			t.Errorf("VAT value: got %q, want 20.00", resp.Explanations[0].VATValue)
+		if resp.Explanations[0].VATValue != "20.00" { // computed — the sent 999.00 is ignored for a fixed rate
+			t.Errorf("VAT value: got %q, want 20.00 (computed; sent amount ignored)", resp.Explanations[0].VATValue)
+		}
+	})
+
+	t.Run("manual VAT rate stores the typed amount + is_manual flag", func(t *testing.T) {
+		var vatID string
+		if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM vat_rates WHERE is_fixed_ratio=false AND country_code='GB' LIMIT 1`).Scan(&vatID); err != nil {
+			t.Skipf("no GB manual VAT rate seeded: %v", err)
+		}
+		txn := newTxn(acc.ID, -12000) // £120 out; the user types £10 VAT (≠ the 20% = £20)
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{
+			Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID("254")), VATRateID: ptr(vatID), VATAmount: ptr("10.00"),
+		})
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if resp.Explanations[0].VATValue != "10.00" {
+			t.Errorf("manual VAT value: got %q, want 10.00 (the typed amount)", resp.Explanations[0].VATValue)
+		}
+		var isManual bool
+		if err := ts.pool.QueryRow(ctx, `SELECT is_manual_sales_tax FROM bank_transaction_explanations WHERE id=$1`, resp.Explanations[0].ID).Scan(&isManual); err != nil {
+			t.Fatalf("read is_manual_sales_tax: %v", err)
+		}
+		if !isManual {
+			t.Error("is_manual_sales_tax should be TRUE for a manual rate")
 		}
 	})
 

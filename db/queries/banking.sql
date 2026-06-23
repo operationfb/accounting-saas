@@ -290,11 +290,28 @@ LIMIT $3 OFFSET $4;
 -- LIMIT — the running balance needs the full ordered set; pagination is deferred.
 -- -----------------------------------------------------------------------------
 -- name: ListBankAccountTransactions :many
-SELECT * FROM bank_transactions
-WHERE organisation_id = $1   -- tenant scope
-  AND bank_account_id = $2   -- which account's statement
-  AND deleted_at IS NULL
-ORDER BY dated_on ASC, created_at ASC, id ASC;
+SELECT sqlc.embed(t),
+    -- A searchable digest of the line's explanations — category names, the transfer
+    -- account / paid-user names, and any notes — so the statement search matches across
+    -- explanations as well as the description/bank_memo. '' when a line has none.
+    COALESCE((
+        SELECT string_agg(trim(
+                   COALESCE(c.name, '')        || ' ' ||
+                   COALESCE(ta.name, '')       || ' ' ||
+                   COALESCE(u.first_name, '')  || ' ' ||
+                   COALESCE(u.last_name, '')   || ' ' ||
+                   COALESCE(e.description, '')), ' | ')
+        FROM bank_transaction_explanations e
+        LEFT JOIN categories    c  ON c.id  = e.category_id
+        LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
+        LEFT JOIN users         u  ON u.id  = e.paid_user_id
+        WHERE e.bank_transaction_id = t.id AND e.deleted_at IS NULL
+    ), '')::text AS explanation_summary
+FROM bank_transactions t
+WHERE t.organisation_id = $1   -- tenant scope
+  AND t.bank_account_id = $2   -- which account's statement
+  AND t.deleted_at IS NULL
+ORDER BY t.dated_on ASC, t.created_at ASC, t.id ASC;
 
 
 -- -----------------------------------------------------------------------------

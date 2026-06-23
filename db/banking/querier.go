@@ -108,7 +108,7 @@ type Querier interface {
 	// deterministic so same-dated lines accumulate in a stable order. v1 has no
 	// LIMIT — the running balance needs the full ordered set; pagination is deferred.
 	// -----------------------------------------------------------------------------
-	ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]BankTransaction, error)
+	ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]ListBankAccountTransactionsRow, error)
 	// -----------------------------------------------------------------------------
 	// ListBankAccounts  (the "list", with derived balance)
 	// All live accounts for an organisation, each with its derived current balance,

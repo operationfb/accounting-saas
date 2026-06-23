@@ -267,6 +267,9 @@ type BankTransactionResponse struct {
 	// pounds; equals the full amount until the reconcile flow decrements it.
 	UnexplainedAmount string `json:"unexplained_amount"`
 	RunningBalance    string `json:"running_balance"` // pounds, opening + Σ up to this line
+	// ExplanationSummary is a searchable digest of the line's explanations (category /
+	// transfer / user names + notes), so the statement search matches across explanations.
+	ExplanationSummary string `json:"explanation_summary,omitempty"`
 }
 
 // BankAccountTransactionsResponse is the combined statement-page payload: the
@@ -313,9 +316,9 @@ func (s *Service) buildStatement(ctx context.Context, orgID, accountUUID uuid.UU
 	// Fold a running balance over the chronological lines: opening + cumulative sum.
 	running := acct.OpeningBalanceMinor
 	out := make([]*BankTransactionResponse, 0, len(rows))
-	for _, t := range rows {
-		running += t.AmountMinor
-		out = append(out, bankTransactionToResponse(t, running))
+	for _, r := range rows {
+		running += r.BankTransaction.AmountMinor
+		out = append(out, bankTransactionToResponse(r.BankTransaction, running, r.ExplanationSummary))
 	}
 	return &BankAccountTransactionsResponse{
 		Account:      bankAccountToResponse(accountFromGetRow(acct), acct.CurrentBalanceMinor, acct.TransactionCount == 0),
@@ -325,7 +328,7 @@ func (s *Service) buildStatement(ctx context.Context, orgID, accountUUID uuid.UU
 
 // bankTransactionToResponse maps one stored line + its running balance into the API
 // shape, splitting the signed amount into money_in / money_out (pound strings).
-func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64) *BankTransactionResponse {
+func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64, explanationSummary string) *BankTransactionResponse {
 	var moneyIn, moneyOut *string
 	switch {
 	case t.AmountMinor > 0:
@@ -352,8 +355,9 @@ func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64) *B
 		TransactionType:   kernel.NullTextToPtr(t.TransactionType),
 		MoneyIn:           moneyIn,
 		MoneyOut:          moneyOut,
-		UnexplainedAmount: money.MinorToPounds(unexplainedMinor),
-		RunningBalance:    money.MinorToPounds(runningMinor),
+		UnexplainedAmount:  money.MinorToPounds(unexplainedMinor),
+		RunningBalance:     money.MinorToPounds(runningMinor),
+		ExplanationSummary: explanationSummary,
 	}
 }
 

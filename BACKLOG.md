@@ -205,9 +205,19 @@ views + the "More ▾" menu with delete-account), and CSV statement import
 (`POST /:id/transactions/import` + `BankStatementImportView`) have landed. What
 remains is the reconciliation/feed richness:
 
-- **Transaction-view richness (deferred from the statement view).** Period filter
-  (brought-forward = balance at period start), search, real server-side pagination
-  (v1 loads all rows), bulk-checkbox actions, and the account-switcher dropdown.
+- **Transaction-view richness — period filter + search LANDED; rest remain.** The
+  statement now has a **period filter** (months grouped by calendar year + the UK-tax-year
+  "Accounting Period" + "All time"; brought-forward recomputed at the period start) and a
+  **search** across the description/bank_memo AND the line's explanations (via an
+  `explanation_summary` digest on the statement payload) — both client-side over the
+  fully-loaded list. Still to do:
+  - **"Latest Statement Upload" period option** — needs an upload-batch concept (the CSV
+    importer doesn't tag a batch id on the rows it inserts). _Files:
+    `internal/banking/statement_import.go`, `db/schema/banking_schema.sql`._
+  - **Real accounting-period** (vs the UK-tax-year assumption) — a financial-year-start
+    field on the organisation. _File: `db/schema/auth_schema.sql`._
+  - **Server-side pagination** (v1 loads all rows + filters client-side; fine until accounts
+    get large), **bulk-checkbox actions**, and the **account-switcher dropdown**.
 - **Bank feed ingestion (TrueLayer / Open Banking).** Populate transactions with
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking

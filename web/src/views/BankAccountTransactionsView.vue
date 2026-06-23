@@ -8,12 +8,14 @@
 //
 // Deferred (no data/feature yet): per-row category + VAT, the explain/reconcile flow,
 // the live bank feed, statement upload, manual entry, period filter, search, pagination.
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Menu from 'primevue/menu'
 import Select from 'primevue/select'
 import InputText from 'primevue/inputtext'
+import InputGroup from 'primevue/inputgroup'
+import InputGroupAddon from 'primevue/inputgroupaddon'
 import type { MenuItem } from 'primevue/menuitem'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
@@ -28,7 +30,7 @@ import {
 } from '@/services/explanation.service'
 import { listVatRates } from '@/services/expenses.service'
 import { listMembers } from '@/services/members.service'
-import { formatMoney, formatDate } from '@/lib/format'
+import { formatMoney, formatDate, computeFixedVatPounds } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth'
 import type { BankAccount, BankTransaction } from '@/types/bank-account'
 import type { TransactionType, ExplanationCategory, Explanation, TransactionExplanations, CreateExplanationRequest } from '@/types/explanation'
@@ -52,6 +54,8 @@ async function load() {
     const data = await getBankAccountTransactions(id)
     account.value = data.account
     transactions.value = data.transactions
+    // Default to the most recent month with activity (like FreeAgent), else all time.
+    period.value = data.transactions.map((t) => t.dated_on.slice(0, 7)).sort().pop() ?? 'all'
   } catch (err) {
     error.value = (err as ApiError)?.message ?? 'Could not load transactions.'
   } finally {
@@ -113,10 +117,85 @@ function inTab(t: BankTransaction, which: Tab): boolean {
       return true
   }
 }
-function tabCount(key: Tab): number {
-  return transactions.value.filter((t) => inTab(t, key)).length
+
+// --- period filter + search (client-side; the statement loads the whole account) ---
+const period = ref<string>('all') // 'all' | 'YYYY-MM' (a month) | 'ay-YYYY' (a UK tax year)
+const search = ref('')
+
+// taxYearStart: the UK tax year (6 Apr–5 Apr) containing an ISO date → its start year.
+function taxYearStart(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number)
+  return m > 4 || (m === 4 && d >= 6) ? y : y - 1
 }
-const visible = computed(() => transactions.value.filter((t) => inTab(t, tab.value)))
+
+// The period dropdown options, derived from the transactions present: months grouped by
+// calendar year, the UK tax year(s) under "By Accounting Year", then "All time periods".
+const periodGroups = computed(() => {
+  const months = new Set<string>()
+  const taxYears = new Set<number>()
+  for (const t of transactions.value) {
+    months.add(t.dated_on.slice(0, 7))
+    taxYears.add(taxYearStart(t.dated_on))
+  }
+  const byYear = new Map<string, { label: string; value: string }[]>()
+  for (const ym of [...months].sort().reverse()) {
+    const [y, m] = ym.split('-')
+    if (!byYear.has(y)) byYear.set(y, [])
+    const label = `${new Date(Number(y), Number(m) - 1, 1).toLocaleString('en-GB', { month: 'long' })} ${y.slice(2)}`
+    byYear.get(y)!.push({ label, value: ym })
+  }
+  const groups: { group: string; items: { label: string; value: string }[] }[] = []
+  for (const [year, items] of byYear) groups.push({ group: year, items })
+  const ayItems = [...taxYears]
+    .sort((a, b) => b - a)
+    .map((sy) => ({ label: `Accounting Period ${sy}/${String((sy + 1) % 100).padStart(2, '0')}`, value: `ay-${sy}` }))
+  if (ayItems.length) groups.push({ group: 'By Accounting Year', items: ayItems })
+  groups.push({ group: ' ', items: [{ label: 'All time periods', value: 'all' }] })
+  return groups
+})
+
+// periodStart: the first ISO date of the selected period (null = all time).
+const periodStart = computed<string | null>(() => {
+  const p = period.value
+  if (!p || p === 'all') return null
+  if (p.startsWith('ay-')) return `${p.slice(3)}-04-06`
+  return `${p}-01`
+})
+function inPeriod(t: BankTransaction): boolean {
+  const p = period.value
+  if (!p || p === 'all') return true
+  if (p.startsWith('ay-')) {
+    const sy = Number(p.slice(3))
+    return t.dated_on >= `${sy}-04-06` && t.dated_on <= `${sy + 1}-04-05`
+  }
+  return t.dated_on.startsWith(p) // month "YYYY-MM"
+}
+// Search across the user description, the bank memo, AND the explanation digest.
+function matchesSearch(t: BankTransaction): boolean {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return true
+  return [t.description, t.bank_memo, t.explanation_summary].some((s) => (s ?? '').toLowerCase().includes(q))
+}
+
+// Transactions in the selected period — the basis for the tab counts + the visible list.
+const periodFiltered = computed(() => transactions.value.filter(inPeriod))
+function tabCount(key: Tab): number {
+  return periodFiltered.value.filter((t) => inTab(t, key)).length
+}
+const visible = computed(() => periodFiltered.value.filter((t) => inTab(t, tab.value) && matchesSearch(t)))
+
+// Balance brought forward at the start of the selected period (= the running balance of
+// the last line before it, or the opening balance if none / all time).
+const broughtForward = computed(() => {
+  const start = periodStart.value
+  if (!start) return account.value?.opening_balance ?? '0.00'
+  let bf = account.value?.opening_balance ?? '0.00'
+  for (const t of transactions.value) {
+    if (t.dated_on >= start) break
+    bf = t.running_balance
+  }
+  return bf
+})
 
 // --- status icon (matches the bottom legend) ---
 function statusMeta(t: BankTransaction): { icon: string; cls: string; label: string } {
@@ -160,7 +239,7 @@ const members = ref<{ id: string; name: string }[]>([])
 const refLoaded = ref(false)
 
 // the add/edit form
-const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', amount: '', vatRateId: '', description: '' })
+const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', amount: '', vatRateId: '', vatAmount: '', description: '' })
 const editingId = ref<string | null>(null)
 const saving = ref(false)
 const formError = ref('')
@@ -174,11 +253,66 @@ const typeOptions = computed(() =>
   txnTypes.value.filter((t) => t.direction === lineDirection.value && t.supported).map((t) => ({ label: t.name, value: t.code })),
 )
 const categoryOptions = computed(() => catsForType.value.map((c) => ({ label: `${c.name} (${c.nominal_code})`, value: c.id })))
+// Friendly headings for the grouped category picker (the CoA section → a lighter group header,
+// like the expenses form). Backend already orders the categories by group then nominal code.
+const CATEGORY_GROUP_LABELS: Record<string, string> = {
+  INCOME: 'Income',
+  OTHER_INCOME: 'Other Income',
+  COST_OF_SALES: 'Cost of Sales',
+  ADMIN_EXPENSE: 'Admin Expenses',
+  PAYROLL_EXPENSE: 'Payroll',
+  CAPITAL_ASSET: 'Capital Assets',
+  CURRENT_ASSET: 'Current Assets',
+  BANK: 'Bank',
+  LIABILITY: 'Liabilities',
+  TAX_LIABILITY: 'Tax',
+  USER_ACCOUNT: 'User Accounts',
+  EQUITY: 'Equity',
+  SYSTEM: 'System',
+}
+const categoryGroups = computed(() => {
+  const groups = new Map<string, { label: string; value: string }[]>()
+  for (const c of catsForType.value) {
+    const name = CATEGORY_GROUP_LABELS[c.account_type] ?? (c.account_type || 'Other')
+    if (!groups.has(name)) groups.set(name, [])
+    groups.get(name)!.push({ label: `${c.name} (${c.nominal_code})`, value: c.id })
+  }
+  return [...groups.entries()].map(([group, items]) => ({ group, items }))
+})
+// The account's currency symbol (£/$/€) for the inline amount fields — via Intl, no fetch.
+const currencySymbol = computed(() => {
+  const code = account.value?.currency || 'GBP'
+  try {
+    return (
+      new Intl.NumberFormat('en-GB', { style: 'currency', currency: code, currencyDisplay: 'narrowSymbol' })
+        .formatToParts(0)
+        .find((p) => p.type === 'currency')?.value ?? code
+    )
+  } catch {
+    return code
+  }
+})
 const accountOptions = computed(() => otherAccounts.value.map((a) => ({ label: a.name, value: a.id })))
 const memberOptions = computed(() => members.value.map((m) => ({ label: m.name, value: m.id })))
 const vatOptions = computed(() => [{ label: 'No VAT', value: '' }, ...vatRates.value.map((r) => ({ label: `${r.name} (${r.rate})`, value: r.id }))])
+const selectedVatRate = computed(() => vatRates.value.find((r) => r.id === form.vatRateId) ?? null)
+// A "manual" VAT rate (is_fixed_ratio = false, e.g. "Standard Rate (manual)") lets the user type
+// the VAT amount; a fixed rate auto-extracts it from the Value (read-only).
+const isManualVat = computed(() => !!selectedVatRate.value && !selectedVatRate.value.is_fixed_ratio)
 const remainingAbs = computed(() => Math.abs(Number(remaining.value || '0')).toFixed(2))
 const fullyExplained = computed(() => Number(remaining.value || '0') === 0)
+
+// Keep the VAT amount in sync: a fixed rate auto-extracts it from the Value; "No VAT" clears it;
+// a manual rate is left for the user to type. Fires on Value or rate change (incl. the default_vat
+// pre-select in onCategoryChange).
+watch([() => form.amount, () => form.vatRateId], () => {
+  const rate = selectedVatRate.value
+  if (!rate) {
+    form.vatAmount = ''
+  } else if (rate.is_fixed_ratio) {
+    form.vatAmount = computeFixedVatPounds(form.amount || '0', rate.rate_bps)
+  }
+})
 
 function typeName(code: string): string {
   return txnTypes.value.find((t) => t.code === code)?.name ?? code
@@ -241,6 +375,7 @@ function resetForm() {
   form.paidUserId = ''
   form.amount = ''
   form.vatRateId = ''
+  form.vatAmount = ''
   form.description = ''
   catsForType.value = []
   formError.value = ''
@@ -306,6 +441,7 @@ async function submitForm() {
     payload.category_id = form.categoryId
   }
   if (form.vatRateId) payload.vat_rate_id = form.vatRateId
+  if (isManualVat.value && form.vatAmount) payload.vat_amount = form.vatAmount
   if (form.description) payload.description = form.description
 
   saving.value = true
@@ -329,6 +465,7 @@ async function startEdit(e: Explanation) {
   form.amount = e.amount
   form.description = e.description ?? ''
   form.vatRateId = e.vat_rate_id ?? ''
+  form.vatAmount = e.vat_value
   await onTypeChange()
   form.categoryId = e.category_id ?? ''
   form.transferAccountId = e.transfer_bank_account_id ?? ''
@@ -338,6 +475,14 @@ async function startEdit(e: Explanation) {
 function cancelEdit() {
   resetForm()
   form.amount = remainingAbs.value
+}
+// Cancel: revert to add-mode when editing, else collapse the panel.
+function cancelForm() {
+  if (editingId.value) {
+    cancelEdit()
+  } else {
+    expandedId.value = null
+  }
 }
 
 async function removeExplanation(e: Explanation) {
@@ -418,6 +563,23 @@ async function removeExplanation(e: Explanation) {
             </button>
           </div>
 
+          <!-- Period filter + search -->
+          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-fa-border px-3 py-2.5">
+            <Select
+              v-model="period"
+              :options="periodGroups"
+              option-group-label="group"
+              option-group-children="items"
+              option-label="label"
+              option-value="value"
+              class="w-56"
+            />
+            <div class="relative">
+              <i class="pi pi-search pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fa-muted" />
+              <InputText v-model="search" placeholder="Search transactions…" class="w-64 pl-9" />
+            </div>
+          </div>
+
           <!-- Table -->
           <div class="overflow-x-auto">
             <table class="w-full border-collapse text-sm">
@@ -432,14 +594,14 @@ async function removeExplanation(e: Explanation) {
                 </tr>
               </thead>
               <tbody>
-                <!-- Balance brought forward (the opening balance; on the All tab) -->
-                <tr v-if="tab === 'all'">
+                <!-- Balance brought forward at the start of the selected period (hidden while searching) -->
+                <tr v-if="tab === 'all' && !search.trim()">
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                   <td class="border-b border-[#eef1f4] px-4 py-3 italic text-fa-muted">Balance brought forward</td>
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                   <td class="border-b border-[#eef1f4] px-4 py-3 text-right font-semibold tabular-nums">
-                    {{ amount(account.opening_balance) }}
+                    {{ amount(broughtForward) }}
                   </td>
                   <td class="border-b border-[#eef1f4] px-4 py-3" />
                 </tr>
@@ -512,40 +674,73 @@ async function removeExplanation(e: Explanation) {
                           {{ fullyExplained ? 'Fully explained' : `£${remainingAbs} left to explain` }}
                         </p>
 
-                        <!-- add / edit form -->
-                        <div v-if="!fullyExplained || editingId" class="rounded border border-fa-border bg-white p-3">
-                          <div class="flex flex-wrap items-end gap-2.5">
-                            <label class="flex flex-col gap-1 text-xs text-fa-muted">Type
-                              <Select v-model="form.type" :options="typeOptions" option-label="label" option-value="value" placeholder="Choose…" class="w-52" @change="onTypeChange" />
-                            </label>
+                        <!-- add / edit form — FreeAgent-style vertical labelled layout -->
+                        <div v-if="!fullyExplained || editingId" class="rounded border border-fa-border bg-white p-4">
+                          <div class="grid max-w-2xl grid-cols-[100px_minmax(0,1fr)] items-center gap-x-3 gap-y-3 text-sm">
+                            <!-- Type -->
+                            <label class="text-right text-fa-muted">Type</label>
+                            <Select v-model="form.type" :options="typeOptions" option-label="label" option-value="value" placeholder="Choose…" class="w-full max-w-xs" @change="onTypeChange" />
 
-                            <label v-if="entityLink === 'BANK_ACCOUNT'" class="flex flex-col gap-1 text-xs text-fa-muted">Account
-                              <Select v-model="form.transferAccountId" :options="accountOptions" option-label="label" option-value="value" placeholder="Account" class="w-52" />
-                            </label>
-                            <template v-else-if="entityLink === 'USER'">
-                              <label class="flex flex-col gap-1 text-xs text-fa-muted">User
-                                <Select v-model="form.paidUserId" :options="memberOptions" option-label="label" option-value="value" placeholder="User" class="w-44" />
-                              </label>
-                              <label class="flex flex-col gap-1 text-xs text-fa-muted">Account
-                                <Select v-model="form.categoryId" :options="categoryOptions" option-label="label" option-value="value" placeholder="Account" class="w-52" @change="onCategoryChange" />
-                              </label>
+                            <!-- VAT: rate + amount (amount editable only for a manual rate) -->
+                            <label class="text-right text-fa-muted">VAT</label>
+                            <div class="flex items-center gap-2">
+                              <Select v-model="form.vatRateId" :options="vatOptions" option-label="label" option-value="value" class="w-52" />
+                              <InputGroup class="w-32">
+                                <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
+                                <InputText
+                                  v-model="form.vatAmount"
+                                  :readonly="!isManualVat"
+                                  :class="isManualVat ? '' : 'bg-[#f1f3f5] text-fa-muted'"
+                                  inputmode="decimal"
+                                  class="text-right"
+                                />
+                              </InputGroup>
+                            </div>
+
+                            <!-- Value (the gross) -->
+                            <label class="text-right text-fa-muted">Value</label>
+                            <InputGroup class="w-40">
+                              <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
+                              <InputText v-model="form.amount" inputmode="decimal" class="text-right" />
+                            </InputGroup>
+
+                            <!-- Category / Transfer / User -->
+                            <template v-if="entityLink === 'BANK_ACCOUNT'">
+                              <label class="text-right text-fa-muted">Account</label>
+                              <Select v-model="form.transferAccountId" :options="accountOptions" option-label="label" option-value="value" placeholder="Account" class="w-full max-w-xs" />
                             </template>
-                            <label v-else class="flex flex-col gap-1 text-xs text-fa-muted">Category
-                              <Select v-model="form.categoryId" :options="categoryOptions" option-label="label" option-value="value" placeholder="Category" filter class="w-60" @change="onCategoryChange" />
-                            </label>
+                            <template v-else-if="entityLink === 'USER'">
+                              <label class="text-right text-fa-muted">User</label>
+                              <Select v-model="form.paidUserId" :options="memberOptions" option-label="label" option-value="value" placeholder="User" class="w-full max-w-xs" />
+                              <label class="text-right text-fa-muted">Account</label>
+                              <Select v-model="form.categoryId" :options="categoryOptions" option-label="label" option-value="value" placeholder="Account" class="w-full max-w-xs" @change="onCategoryChange" />
+                            </template>
+                            <template v-else>
+                              <label class="text-right text-fa-muted">Category</label>
+                              <Select
+                                v-model="form.categoryId"
+                                :options="categoryGroups"
+                                option-group-label="group"
+                                option-group-children="items"
+                                option-label="label"
+                                option-value="value"
+                                placeholder="Category"
+                                filter
+                                scroll-height="320px"
+                                class="w-full max-w-xs"
+                                @change="onCategoryChange"
+                              />
+                            </template>
 
-                            <label class="flex flex-col gap-1 text-xs text-fa-muted">Amount (£)
-                              <InputText v-model="form.amount" class="w-28" />
-                            </label>
-                            <label class="flex flex-col gap-1 text-xs text-fa-muted">VAT
-                              <Select v-model="form.vatRateId" :options="vatOptions" option-label="label" option-value="value" class="w-40" />
-                            </label>
-                            <label class="flex flex-col gap-1 text-xs text-fa-muted">Description
-                              <InputText v-model="form.description" placeholder="Optional" class="w-48" />
-                            </label>
+                            <!-- Description -->
+                            <label class="text-right text-fa-muted">Description</label>
+                            <InputText v-model="form.description" placeholder="Optional" class="w-full max-w-md" />
 
-                            <Button :label="editingId ? 'Save' : 'Add'" :loading="saving" @click="submitForm" />
-                            <Button v-if="editingId" label="Cancel" severity="secondary" outlined @click="cancelEdit" />
+                            <!-- buttons -->
+                            <div class="col-start-2 mt-1 flex items-center gap-3">
+                              <Button :label="editingId ? 'Save changes' : 'Add'" :loading="saving" @click="submitForm" />
+                              <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancelForm">Cancel</button>
+                            </div>
                           </div>
                           <p v-if="formError" class="mt-2 text-sm text-[#c0392b]">{{ formError }}</p>
                         </div>

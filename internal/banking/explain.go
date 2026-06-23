@@ -51,6 +51,7 @@ type CreateExplanationRequest struct {
 	TransferBankAccountID *string `json:"transfer_bank_account_id"`  // transfers
 	PaidUserID            *string `json:"paid_user_id"`              // user payments
 	VATRateID             *string `json:"vat_rate_id"`               // optional
+	VATAmount             *string `json:"vat_amount"`                // manual (non-fixed) rate only
 	Description           *string `json:"description"`
 	DatedOn               *string `json:"dated_on"` // YYYY-MM-DD, defaults to the transaction's date
 }
@@ -295,8 +296,9 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		}
 	}
 
-	// 5. VAT: optional rate → extract the VAT contained in the portion gross.
-	vatRateID, vatValueMinor, err := s.resolveExplanationVAT(ctx, req.VATRateID, grossMinor)
+	// 5. VAT: optional rate → a fixed rate extracts the VAT from the portion gross;
+	// a manual (non-fixed) rate stores the client-entered amount.
+	vatRateID, vatValueMinor, isManualVAT, err := s.resolveExplanationVAT(ctx, req.VATRateID, req.VATAmount, grossMinor)
 	if err != nil {
 		return zero, err
 	}
@@ -323,7 +325,7 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		SalesTaxStatus:        "TAXABLE",
 		SalesTaxRateID:        vatRateID,
 		SalesTaxValueMinor:    vatValueMinor,
-		IsManualSalesTax:      false,
+		IsManualSalesTax:      isManualVAT,
 		TransferBankAccountID: transferAccountID,
 		PaidUserID:            paidUserID,
 		MarkedForReview:       false,
@@ -392,26 +394,46 @@ func (s *Service) resolveUser(ctx context.Context, orgID uuid.UUID, userID *stri
 	return pgtype.UUID{Bytes: uID, Valid: true}, nil
 }
 
-// resolveExplanationVAT turns an optional vat_rate_id into the stored rate id + the
-// VAT EXTRACTED from the portion gross (money.ComputeFixedVAT). No rate → (NULL, 0).
-func (s *Service) resolveExplanationVAT(ctx context.Context, vatRateID *string, grossMinor int64) (pgtype.UUID, int64, error) {
+// resolveExplanationVAT turns an optional vat_rate_id (+ optional vat_amount) into the
+// stored rate id, VAT value, and the is_manual flag — mirroring expenses.resolveVAT:
+//   - no rate              → (NULL, 0, false)
+//   - fixed-ratio rate     → VAT EXTRACTED from the inclusive gross (money.ComputeFixedVAT);
+//                            any client amount is ignored; is_manual = false
+//   - non-fixed-ratio rate → value = the client vat_amount (0 if omitted); is_manual = true
+func (s *Service) resolveExplanationVAT(ctx context.Context, vatRateID, vatAmount *string, grossMinor int64) (pgtype.UUID, int64, bool, error) {
 	if vatRateID == nil || strings.TrimSpace(*vatRateID) == "" {
-		return pgtype.UUID{}, 0, nil
+		return pgtype.UUID{}, 0, false, nil
 	}
 	rID, err := uuid.Parse(strings.TrimSpace(*vatRateID))
 	if err != nil {
-		return pgtype.UUID{}, 0, kernel.ErrValidation("vat_rate_id is not a valid UUID", err)
+		return pgtype.UUID{}, 0, false, kernel.ErrValidation("vat_rate_id is not a valid UUID", err)
 	}
 	rate, err := s.catQueries.GetVatRate(ctx, rID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return pgtype.UUID{}, 0, kernel.ErrValidation("vat_rate_id not found", nil)
+			return pgtype.UUID{}, 0, false, kernel.ErrValidation("vat_rate_id not found", nil)
 		}
-		return pgtype.UUID{}, 0, kernel.ErrInternal(err)
+		return pgtype.UUID{}, 0, false, kernel.ErrInternal(err)
 	}
-	// A single explanation's gross fits int32 (the £21.4m ceiling); clamp as a guard.
-	vat := money.ComputeFixedVAT(money.ClampToInt32(absInt64(grossMinor)), rate.RateBps)
-	return pgtype.UUID{Bytes: rID, Valid: true}, int64(vat), nil
+	id := pgtype.UUID{Bytes: rID, Valid: true}
+
+	if rate.IsFixedRatio {
+		// Rate-locked: extract the VAT from the inclusive gross; ignore any client amount.
+		// A single explanation's gross fits int32 (the £21.4m ceiling); clamp as a guard.
+		vat := money.ComputeFixedVAT(money.ClampToInt32(absInt64(grossMinor)), rate.RateBps)
+		return id, int64(vat), false, nil
+	}
+
+	// Manual (non-fixed) rate: store the client-entered amount as-is (0 if omitted).
+	var valueMinor int64
+	if vatAmount != nil && strings.TrimSpace(*vatAmount) != "" {
+		minor, err := money.PoundsToMinor(strings.TrimSpace(*vatAmount))
+		if err != nil {
+			return pgtype.UUID{}, 0, false, kernel.ErrValidation("vat_amount is not a valid amount", err)
+		}
+		valueMinor = minor
+	}
+	return id, valueMinor, true, nil
 }
 
 // orgCompanyType reads the org's company_type ('' if unset → only the 'ALL'

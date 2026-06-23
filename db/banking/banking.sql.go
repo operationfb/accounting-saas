@@ -586,16 +586,38 @@ func (q *Queries) GetExplanation(ctx context.Context, arg GetExplanationParams) 
 }
 
 const listBankAccountTransactions = `-- name: ListBankAccountTransactions :many
-SELECT id, organisation_id, bank_account_id, created_by_user_id, dated_on, amount_minor, description, bank_memo, balance_minor, unexplained_amount_minor, status, source, transaction_type, external_id, deleted_at, created_at, updated_at FROM bank_transactions
-WHERE organisation_id = $1   -- tenant scope
-  AND bank_account_id = $2   -- which account's statement
-  AND deleted_at IS NULL
-ORDER BY dated_on ASC, created_at ASC, id ASC
+SELECT t.id, t.organisation_id, t.bank_account_id, t.created_by_user_id, t.dated_on, t.amount_minor, t.description, t.bank_memo, t.balance_minor, t.unexplained_amount_minor, t.status, t.source, t.transaction_type, t.external_id, t.deleted_at, t.created_at, t.updated_at,
+    -- A searchable digest of the line's explanations — category names, the transfer
+    -- account / paid-user names, and any notes — so the statement search matches across
+    -- explanations as well as the description/bank_memo. '' when a line has none.
+    COALESCE((
+        SELECT string_agg(trim(
+                   COALESCE(c.name, '')        || ' ' ||
+                   COALESCE(ta.name, '')       || ' ' ||
+                   COALESCE(u.first_name, '')  || ' ' ||
+                   COALESCE(u.last_name, '')   || ' ' ||
+                   COALESCE(e.description, '')), ' | ')
+        FROM bank_transaction_explanations e
+        LEFT JOIN categories    c  ON c.id  = e.category_id
+        LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
+        LEFT JOIN users         u  ON u.id  = e.paid_user_id
+        WHERE e.bank_transaction_id = t.id AND e.deleted_at IS NULL
+    ), '')::text AS explanation_summary
+FROM bank_transactions t
+WHERE t.organisation_id = $1   -- tenant scope
+  AND t.bank_account_id = $2   -- which account's statement
+  AND t.deleted_at IS NULL
+ORDER BY t.dated_on ASC, t.created_at ASC, t.id ASC
 `
 
 type ListBankAccountTransactionsParams struct {
 	OrganisationID uuid.UUID `json:"organisation_id"`
 	BankAccountID  uuid.UUID `json:"bank_account_id"`
+}
+
+type ListBankAccountTransactionsRow struct {
+	BankTransaction    BankTransaction `json:"bank_transaction"`
+	ExplanationSummary string          `json:"explanation_summary"`
 }
 
 // -----------------------------------------------------------------------------
@@ -607,33 +629,34 @@ type ListBankAccountTransactionsParams struct {
 // deterministic so same-dated lines accumulate in a stable order. v1 has no
 // LIMIT — the running balance needs the full ordered set; pagination is deferred.
 // -----------------------------------------------------------------------------
-func (q *Queries) ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]BankTransaction, error) {
+func (q *Queries) ListBankAccountTransactions(ctx context.Context, arg ListBankAccountTransactionsParams) ([]ListBankAccountTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, listBankAccountTransactions, arg.OrganisationID, arg.BankAccountID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []BankTransaction
+	var items []ListBankAccountTransactionsRow
 	for rows.Next() {
-		var i BankTransaction
+		var i ListBankAccountTransactionsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.OrganisationID,
-			&i.BankAccountID,
-			&i.CreatedByUserID,
-			&i.DatedOn,
-			&i.AmountMinor,
-			&i.Description,
-			&i.BankMemo,
-			&i.BalanceMinor,
-			&i.UnexplainedAmountMinor,
-			&i.Status,
-			&i.Source,
-			&i.TransactionType,
-			&i.ExternalID,
-			&i.DeletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.BankTransaction.ID,
+			&i.BankTransaction.OrganisationID,
+			&i.BankTransaction.BankAccountID,
+			&i.BankTransaction.CreatedByUserID,
+			&i.BankTransaction.DatedOn,
+			&i.BankTransaction.AmountMinor,
+			&i.BankTransaction.Description,
+			&i.BankTransaction.BankMemo,
+			&i.BankTransaction.BalanceMinor,
+			&i.BankTransaction.UnexplainedAmountMinor,
+			&i.BankTransaction.Status,
+			&i.BankTransaction.Source,
+			&i.BankTransaction.TransactionType,
+			&i.BankTransaction.ExternalID,
+			&i.BankTransaction.DeletedAt,
+			&i.BankTransaction.CreatedAt,
+			&i.BankTransaction.UpdatedAt,
+			&i.ExplanationSummary,
 		); err != nil {
 			return nil, err
 		}
