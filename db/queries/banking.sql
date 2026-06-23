@@ -336,3 +336,99 @@ UPDATE bank_transactions SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL;
+
+
+-- =============================================================================
+-- BANK TRANSACTION EXPLANATIONS (the reconcile record)
+-- A transaction can have MANY explanations (splitting). On every insert/update/
+-- delete the recompute_bank_transaction_explained_state() trigger refreshes the
+-- parent bank_transaction's unexplained_amount_minor + status — so these queries
+-- never touch those columns themselves. Org-scoped + soft-deleted throughout.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- CreateExplanation — add one explanation (a whole transaction or a split portion).
+-- gross_value_minor is SIGNED (+ in / - out). category_id is NULL for entity-link
+-- types; the entity-link / VAT fields are set as the chosen type requires. :one.
+-- -----------------------------------------------------------------------------
+-- name: CreateExplanation :one
+INSERT INTO bank_transaction_explanations (
+    organisation_id, bank_transaction_id, created_by_user_id, dated_on, description,
+    type, gross_value_minor, category_id,
+    sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax,
+    ec_status, place_of_supply,
+    transfer_bank_account_id, paid_user_id,
+    marked_for_review, cheque_number, receipt_reference
+) VALUES (
+    $1,  $2,  $3,  $4,  $5,
+    $6,  $7,  $8,
+    $9,  $10, $11, $12,
+    $13, $14,
+    $15, $16,
+    $17, $18, $19
+)
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- GetExplanation — one explanation by id, org-scoped, live only. :one.
+-- -----------------------------------------------------------------------------
+-- name: GetExplanation :one
+SELECT * FROM bank_transaction_explanations
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- ListExplanationsForTransaction — a transaction's live explanations, oldest
+-- first. Backs the per-transaction explain panel. Org-scoped. :many.
+-- -----------------------------------------------------------------------------
+-- name: ListExplanationsForTransaction :many
+SELECT * FROM bank_transaction_explanations
+WHERE bank_transaction_id = $1
+  AND organisation_id     = $2
+  AND deleted_at IS NULL
+ORDER BY created_at ASC, id ASC;
+
+
+-- -----------------------------------------------------------------------------
+-- UpdateExplanation — edit a live explanation (re-categorise, fix amount/VAT,
+-- confirm a guess). bank_transaction_id is NOT editable (no re-parenting). The
+-- recompute trigger refreshes the parent afterwards. Org-scoped. :one.
+-- -----------------------------------------------------------------------------
+-- name: UpdateExplanation :one
+UPDATE bank_transaction_explanations SET
+    dated_on                 = $3,
+    description              = $4,
+    type                     = $5,
+    gross_value_minor        = $6,
+    category_id              = $7,
+    sales_tax_status         = $8,
+    sales_tax_rate_id        = $9,
+    sales_tax_value_minor    = $10,
+    is_manual_sales_tax      = $11,
+    ec_status                = $12,
+    place_of_supply          = $13,
+    transfer_bank_account_id = $14,
+    paid_user_id             = $15,
+    marked_for_review        = $16,
+    cheque_number            = $17,
+    receipt_reference        = $18
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
+-- SoftDeleteExplanation — remove one explanation (un-explain part of a line).
+-- The recompute trigger bumps the parent back toward 'unexplained'. Org-scoped.
+-- :exec. Idempotent — an already-deleted row matches nothing.
+-- -----------------------------------------------------------------------------
+-- name: SoftDeleteExplanation :exec
+UPDATE bank_transaction_explanations SET
+    deleted_at = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL;

@@ -58,6 +58,19 @@ type Querier interface {
 	// one. amount_minor is SIGNED (+ in / - out).
 	// -----------------------------------------------------------------------------
 	CreateBankTransaction(ctx context.Context, arg CreateBankTransactionParams) (BankTransaction, error)
+	// =============================================================================
+	// BANK TRANSACTION EXPLANATIONS (the reconcile record)
+	// A transaction can have MANY explanations (splitting). On every insert/update/
+	// delete the recompute_bank_transaction_explained_state() trigger refreshes the
+	// parent bank_transaction's unexplained_amount_minor + status — so these queries
+	// never touch those columns themselves. Org-scoped + soft-deleted throughout.
+	// =============================================================================
+	// -----------------------------------------------------------------------------
+	// CreateExplanation — add one explanation (a whole transaction or a split portion).
+	// gross_value_minor is SIGNED (+ in / - out). category_id is NULL for entity-link
+	// types; the entity-link / VAT fields are set as the chosen type requires. :one.
+	// -----------------------------------------------------------------------------
+	CreateExplanation(ctx context.Context, arg CreateExplanationParams) (BankTransactionExplanation, error)
 	// -----------------------------------------------------------------------------
 	// GetBankAccount  (the "getter", with derived balance)
 	// Fetch a single account by id, scoped to the organisation, with its DERIVED
@@ -82,6 +95,10 @@ type Querier interface {
 	// account already implies the org (it was loaded org-scoped). :one.
 	// -----------------------------------------------------------------------------
 	GetBankTransactionByExternalID(ctx context.Context, arg GetBankTransactionByExternalIDParams) (BankTransaction, error)
+	// -----------------------------------------------------------------------------
+	// GetExplanation — one explanation by id, org-scoped, live only. :one.
+	// -----------------------------------------------------------------------------
+	GetExplanation(ctx context.Context, arg GetExplanationParams) (BankTransactionExplanation, error)
 	// -----------------------------------------------------------------------------
 	// ListBankAccountTransactions  (the statement view — OLDEST first, all rows)
 	// Powers the read-only transactions page. Unlike ListBankTransactions (newest
@@ -114,6 +131,11 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListBankTransactions(ctx context.Context, arg ListBankTransactionsParams) ([]BankTransaction, error)
 	// -----------------------------------------------------------------------------
+	// ListExplanationsForTransaction — a transaction's live explanations, oldest
+	// first. Backs the per-transaction explain panel. Org-scoped. :many.
+	// -----------------------------------------------------------------------------
+	ListExplanationsForTransaction(ctx context.Context, arg ListExplanationsForTransactionParams) ([]BankTransactionExplanation, error)
+	// -----------------------------------------------------------------------------
 	// SoftDeleteBankAccount  (the "delete")
 	// Marks the account deleted (financial records are never hard-removed; its
 	// transactions stay for audit). :exec. Idempotent — deleting an already-deleted
@@ -126,6 +148,12 @@ type Querier interface {
 	// :exec. Idempotent — an already-deleted line matches nothing and is a no-op.
 	// -----------------------------------------------------------------------------
 	SoftDeleteBankTransaction(ctx context.Context, arg SoftDeleteBankTransactionParams) error
+	// -----------------------------------------------------------------------------
+	// SoftDeleteExplanation — remove one explanation (un-explain part of a line).
+	// The recompute trigger bumps the parent back toward 'unexplained'. Org-scoped.
+	// :exec. Idempotent — an already-deleted row matches nothing.
+	// -----------------------------------------------------------------------------
+	SoftDeleteExplanation(ctx context.Context, arg SoftDeleteExplanationParams) error
 	// -----------------------------------------------------------------------------
 	// UnsetPrimaryBankAccounts  (clear the org's current primary)
 	// Sets is_primary = FALSE on whichever live account is currently primary for the
@@ -153,6 +181,12 @@ type Querier interface {
 	// updated_at is set explicitly in addition to the trigger. RETURNING * echoes the row.
 	// -----------------------------------------------------------------------------
 	UpdateBankTransaction(ctx context.Context, arg UpdateBankTransactionParams) (BankTransaction, error)
+	// -----------------------------------------------------------------------------
+	// UpdateExplanation — edit a live explanation (re-categorise, fix amount/VAT,
+	// confirm a guess). bank_transaction_id is NOT editable (no re-parenting). The
+	// recompute trigger refreshes the parent afterwards. Org-scoped. :one.
+	// -----------------------------------------------------------------------------
+	UpdateExplanation(ctx context.Context, arg UpdateExplanationParams) (BankTransactionExplanation, error)
 }
 
 var _ Querier = (*Queries)(nil)

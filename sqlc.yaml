@@ -377,21 +377,22 @@ sql:
 
   # ===========================================================================
   # BANKING MODULE
-  # Generates the data layer for the bank_accounts + bank_transactions tables
-  # into package `banking` at db/banking — its own domain package.
+  # Generates the data layer for the bank_accounts + bank_transactions +
+  # bank_transaction_explanations tables into package `banking` at db/banking.
   #
-  # Loads schema.sql + auth_schema.sql + banking_schema.sql in dependency order:
-  # banking_schema.sql references set_updated_at() (schema.sql) and the
-  # organisations / users tables its foreign keys point at (auth_schema.sql).
-  # omit_unused_structs keeps the other domains' structs out of db/banking —
-  # only BankAccount, BankTransaction and the List/Get *Row structs (carrying the
-  # derived current_balance_minor) are emitted.
+  # Loads schema.sql + auth_schema.sql + categories_schema.sql + banking_schema.sql
+  # in dependency order: banking_schema.sql references set_updated_at() + vat_rates
+  # (schema.sql), the organisations / users tables (auth_schema.sql), and the
+  # categories / transaction_types that bank_transaction_explanations FKs
+  # (categories_schema.sql). omit_unused_structs keeps the other domains' structs
+  # out of db/banking — only the banking structs + List/Get *Row structs are emitted.
   # ===========================================================================
   - engine: "postgresql"
 
     schema:
       - "db/schema/schema.sql"
       - "db/schema/auth_schema.sql"
+      - "db/schema/categories_schema.sql"
       - "db/schema/banking_schema.sql"
 
     queries: "db/queries/banking.sql"
@@ -407,6 +408,53 @@ sql:
 
         # Keep the expenses/auth structs (loaded only to satisfy FK deps) out of
         # db/banking — emit only what banking.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+
+  # ===========================================================================
+  # CATEGORIES MODULE (Chart of Accounts + reconcile reference)
+  # Generates the data layer for the categories (per-org CoA), transaction_types
+  # and transaction_type_categories tables into package `categories` at
+  # db/categories — the reference data behind explaining bank transactions.
+  #
+  # Loads schema.sql + auth_schema.sql + categories_schema.sql in dependency order:
+  # categories_schema.sql references set_updated_at() (schema.sql) and the
+  # organisations table its foreign key points at (auth_schema.sql).
+  # omit_unused_structs keeps the other domains' structs out of db/categories —
+  # only Category, TransactionType and the ListCategoriesForType row are emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/categories_schema.sql"
+
+    queries: "db/queries/categories.sql"
+
+    gen:
+      go:
+        package: "categories"
+        out: "db/categories"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep the expenses/auth structs (loaded only to satisfy FK deps) out of
+        # db/categories — emit only what categories.sql references.
         omit_unused_structs: true
 
         # Same type overrides as the other blocks.

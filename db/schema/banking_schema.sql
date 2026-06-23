@@ -9,9 +9,10 @@
 --   - bank_transactions  — the lines on each account's statement (the child)
 --
 -- This is its own bounded context (like auth, contacts, projects): own schema
--- file, own sqlc package (db/banking). Applied AFTER schema.sql + auth_schema.sql,
--- so the set_updated_at() trigger function and the organisations/users tables it
--- references already exist — the foreign keys below are declared INLINE.
+-- file, own sqlc package (db/banking). Applied AFTER schema.sql + auth_schema.sql +
+-- categories_schema.sql, so set_updated_at(), the organisations/users tables, and the
+-- categories/transaction_types that bank_transaction_explanations references already
+-- exist — the foreign keys below are declared INLINE.
 --
 -- Design decisions worth knowing:
 --
@@ -177,13 +178,74 @@ CREATE UNIQUE INDEX idx_bank_transactions_external
     WHERE external_id IS NOT NULL AND deleted_at IS NULL;
 
 
+-- -----------------------------------------------------------------------------
+-- bank_transaction_explanations
+-- "Explaining" a bank transaction: one accounting treatment for (part of) a line.
+-- A transaction can have MANY explanations (splitting) — Σ of a transaction's live
+-- explanations' gross_value_minor = its amount_minor when fully explained, and the
+-- recompute trigger (below) keeps bank_transactions.unexplained_amount_minor +
+-- status in sync. Imitates FreeAgent's bank_transaction_explanation; the chosen
+-- `type` (transaction_types) decides whether the row carries a category or an
+-- entity link. REFERENCE + RECORD only — no double-entry journal lines yet.
+-- -----------------------------------------------------------------------------
+CREATE TABLE bank_transaction_explanations (
+    -- Identity & tenancy
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organisation_id     UUID NOT NULL REFERENCES organisations(id),
+    bank_transaction_id UUID NOT NULL REFERENCES bank_transactions(id),  -- the line being explained
+    created_by_user_id  UUID REFERENCES users(id),                       -- who explained it (NULL = system guess)
+
+    dated_on            DATE NOT NULL,                                    -- usually the transaction's date
+    description         VARCHAR(500),
+    -- The explanation type (the FreeAgent "Type" dropdown). FK to the global
+    -- transaction_types reference; drives category-vs-entity-link.
+    type                VARCHAR(40) NOT NULL REFERENCES transaction_types(code),
+    -- This explanation's portion of the transaction, SIGNED like amount_minor
+    -- (+ in / - out). Splitting: the portions sum to amount_minor when fully explained.
+    gross_value_minor   BIGINT NOT NULL,
+    -- The CoA account this posts to. NULL for entity-link types (Transfer / Invoice
+    -- Receipt / Bill Payment / …), whose account comes from the linked entity.
+    category_id         UUID REFERENCES categories(id),
+
+    -- VAT (reuses the global vat_rates). sales_tax_value_minor is in home-currency pence.
+    sales_tax_status    VARCHAR(20) NOT NULL DEFAULT 'TAXABLE'
+                        CHECK (sales_tax_status IN ('TAXABLE','EXEMPT','OUT_OF_SCOPE')),
+    sales_tax_rate_id   UUID REFERENCES vat_rates(id),
+    sales_tax_value_minor BIGINT NOT NULL DEFAULT 0,
+    is_manual_sales_tax BOOLEAN NOT NULL DEFAULT FALSE,                  -- TRUE = user typed the VAT (not extracted)
+    ec_status           VARCHAR(30),                                     -- UK/Non-EC, Reverse Charge, EC VAT MOSS, …
+    place_of_supply     CHAR(2),                                         -- for EC VAT MOSS
+
+    -- Type-specific links to EXISTING entities (real FKs). Links to not-yet-built
+    -- entities (invoice/bill/credit note/HP/capital asset) are recorded by `type`
+    -- for now; their FK columns land with that module.
+    transfer_bank_account_id UUID REFERENCES bank_accounts(id),          -- Transfer to/from Another Account
+    paid_user_id        UUID REFERENCES users(id),                       -- Money Paid/Received to/from User
+
+    -- Misc (FreeAgent). marked_for_review = a guessed explanation pending a human OK.
+    marked_for_review   BOOLEAN NOT NULL DEFAULT FALSE,
+    cheque_number       VARCHAR(50),
+    receipt_reference   VARCHAR(100),
+
+    -- Lifecycle & audit (soft delete; the trigger treats deleted rows as gone)
+    deleted_at          TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Backs ListExplanationsForTransaction + the recompute SUM; org-scoped, live rows.
+CREATE INDEX idx_explanations_txn
+    ON bank_transaction_explanations (organisation_id, bank_transaction_id) WHERE deleted_at IS NULL;
+
+
 -- =============================================================================
 -- TRIGGERS — auto-update updated_at
 -- Reuses the set_updated_at() function defined in db/schema/schema.sql, exactly
 -- like auth_schema.sql / contacts_schema.sql do. Schemas are applied in order:
---   1. schema.sql          (defines set_updated_at)
---   2. auth_schema.sql     (organisations, users)
---   3. banking_schema.sql  (this file)
+--   1. schema.sql            (defines set_updated_at)
+--   2. auth_schema.sql       (organisations, users)
+--   3. categories_schema.sql (categories, transaction_types — referenced below)
+--   4. banking_schema.sql    (this file)
 -- =============================================================================
 CREATE TRIGGER trg_bank_accounts_updated_at
     BEFORE UPDATE ON bank_accounts
@@ -192,6 +254,60 @@ CREATE TRIGGER trg_bank_accounts_updated_at
 CREATE TRIGGER trg_bank_transactions_updated_at
     BEFORE UPDATE ON bank_transactions
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_explanations_updated_at
+    BEFORE UPDATE ON bank_transaction_explanations
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- =============================================================================
+-- TRIGGER — recompute a transaction's unexplained amount + status
+-- The reconcile mechanic. Whenever a transaction's explanations change (insert,
+-- edit, soft-delete/restore, hard-delete), recompute the PARENT bank_transaction:
+--   unexplained_amount_minor = amount_minor − Σ(live explanations' gross_value_minor)
+--   status = unexplained ≠ 0 → 'unexplained'
+--            else any live explanation marked_for_review → 'for_approval'
+--            else                                        → 'explained'
+-- An AFTER row trigger that RETURNs NULL (mirrors learn_supplier_category() in
+-- schema.sql). DB-side so the derived state stays correct whatever writes the
+-- explanations. (Explanations are never re-parented to a different transaction,
+-- so handling COALESCE(NEW, OLD)'s single parent is sufficient.)
+-- =============================================================================
+CREATE OR REPLACE FUNCTION recompute_bank_transaction_explained_state()
+RETURNS TRIGGER AS $$
+DECLARE
+    txn_id     UUID;
+    txn_amount BIGINT;
+    explained  BIGINT;
+    has_review BOOLEAN;
+BEGIN
+    -- The parent is on NEW (INSERT/UPDATE) or OLD (DELETE).
+    txn_id := COALESCE(NEW.bank_transaction_id, OLD.bank_transaction_id);
+
+    SELECT amount_minor INTO txn_amount FROM bank_transactions WHERE id = txn_id;
+
+    -- Σ the live explanations' portions + whether any is a guess pending review.
+    SELECT COALESCE(SUM(gross_value_minor), 0), COALESCE(bool_or(marked_for_review), FALSE)
+        INTO explained, has_review
+        FROM bank_transaction_explanations
+        WHERE bank_transaction_id = txn_id AND deleted_at IS NULL;
+
+    UPDATE bank_transactions SET
+        unexplained_amount_minor = txn_amount - explained,
+        status = CASE
+                     WHEN txn_amount - explained <> 0 THEN 'unexplained'
+                     WHEN has_review                  THEN 'for_approval'
+                     ELSE 'explained'
+                 END
+        WHERE id = txn_id;
+
+    RETURN NULL;  -- AFTER trigger: the return value is ignored
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_explanations_recompute
+    AFTER INSERT OR UPDATE OR DELETE ON bank_transaction_explanations
+    FOR EACH ROW EXECUTE FUNCTION recompute_bank_transaction_explained_state();
 
 
 -- =============================================================================
@@ -205,3 +321,7 @@ COMMENT ON COLUMN bank_accounts.routing_number IS 'US ABA routing number (9 digi
 COMMENT ON TABLE  bank_transactions IS 'Statement lines on a bank account. amount_minor is signed (+ in / - out). Org-scoped + soft-deleted. Reconciliation/explain is deferred (BACKLOG).';
 COMMENT ON COLUMN bank_transactions.amount_minor IS 'Signed minor units (pence): POSITIVE = money in, NEGATIVE = money out. BIGINT/int64.';
 COMMENT ON COLUMN bank_transactions.external_id IS 'Bank feed provider transaction id, for dedupe. NULL for manual rows; unique per account when present (idx_bank_transactions_external).';
+COMMENT ON TABLE  bank_transaction_explanations IS 'Accounting explanations for bank transactions (the reconcile record). Many per transaction (splitting). gross_value_minor is signed (+ in / - out). type drives category-vs-entity-link. The recompute trigger keeps bank_transactions.unexplained_amount_minor + status in sync. No double-entry journal yet.';
+COMMENT ON COLUMN bank_transaction_explanations.gross_value_minor IS 'This explanation''s portion of the transaction, signed minor units (pence). Σ of a transaction''s live explanations = its amount_minor when fully explained.';
+COMMENT ON COLUMN bank_transaction_explanations.category_id IS 'CoA account (categories) this posts to. NULL for entity-link types (Transfer / Invoice Receipt / Bill Payment / …), whose account comes from the linked entity.';
+COMMENT ON COLUMN bank_transaction_explanations.marked_for_review IS 'TRUE = a guessed/auto explanation pending human approval; drives the parent transaction''s status = for_approval (see recompute trigger).';

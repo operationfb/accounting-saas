@@ -61,3 +61,33 @@ type BankTransaction struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
+
+// Accounting explanations for bank transactions (the reconcile record). Many per transaction (splitting). gross_value_minor is signed (+ in / - out). type drives category-vs-entity-link. The recompute trigger keeps bank_transactions.unexplained_amount_minor + status in sync. No double-entry journal yet.
+type BankTransactionExplanation struct {
+	ID                uuid.UUID   `json:"id"`
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	BankTransactionID uuid.UUID   `json:"bank_transaction_id"`
+	CreatedByUserID   pgtype.UUID `json:"created_by_user_id"`
+	DatedOn           pgtype.Date `json:"dated_on"`
+	Description       pgtype.Text `json:"description"`
+	Type              string      `json:"type"`
+	// This explanation's portion of the transaction, signed minor units (pence). Σ of a transaction's live explanations = its amount_minor when fully explained.
+	GrossValueMinor int64 `json:"gross_value_minor"`
+	// CoA account (categories) this posts to. NULL for entity-link types (Transfer / Invoice Receipt / Bill Payment / …), whose account comes from the linked entity.
+	CategoryID            pgtype.UUID `json:"category_id"`
+	SalesTaxStatus        string      `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	// TRUE = a guessed/auto explanation pending human approval; drives the parent transaction's status = for_approval (see recompute trigger).
+	MarkedForReview  bool               `json:"marked_for_review"`
+	ChequeNumber     pgtype.Text        `json:"cheque_number"`
+	ReceiptReference pgtype.Text        `json:"receipt_reference"`
+	DeletedAt        pgtype.Timestamptz `json:"deleted_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}

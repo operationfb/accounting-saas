@@ -258,6 +258,111 @@ func (q *Queries) CreateBankTransaction(ctx context.Context, arg CreateBankTrans
 	return i, err
 }
 
+const createExplanation = `-- name: CreateExplanation :one
+
+INSERT INTO bank_transaction_explanations (
+    organisation_id, bank_transaction_id, created_by_user_id, dated_on, description,
+    type, gross_value_minor, category_id,
+    sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax,
+    ec_status, place_of_supply,
+    transfer_bank_account_id, paid_user_id,
+    marked_for_review, cheque_number, receipt_reference
+) VALUES (
+    $1,  $2,  $3,  $4,  $5,
+    $6,  $7,  $8,
+    $9,  $10, $11, $12,
+    $13, $14,
+    $15, $16,
+    $17, $18, $19
+)
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+`
+
+type CreateExplanationParams struct {
+	OrganisationID        uuid.UUID   `json:"organisation_id"`
+	BankTransactionID     uuid.UUID   `json:"bank_transaction_id"`
+	CreatedByUserID       pgtype.UUID `json:"created_by_user_id"`
+	DatedOn               pgtype.Date `json:"dated_on"`
+	Description           pgtype.Text `json:"description"`
+	Type                  string      `json:"type"`
+	GrossValueMinor       int64       `json:"gross_value_minor"`
+	CategoryID            pgtype.UUID `json:"category_id"`
+	SalesTaxStatus        string      `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	MarkedForReview       bool        `json:"marked_for_review"`
+	ChequeNumber          pgtype.Text `json:"cheque_number"`
+	ReceiptReference      pgtype.Text `json:"receipt_reference"`
+}
+
+// =============================================================================
+// BANK TRANSACTION EXPLANATIONS (the reconcile record)
+// A transaction can have MANY explanations (splitting). On every insert/update/
+// delete the recompute_bank_transaction_explained_state() trigger refreshes the
+// parent bank_transaction's unexplained_amount_minor + status — so these queries
+// never touch those columns themselves. Org-scoped + soft-deleted throughout.
+// =============================================================================
+// -----------------------------------------------------------------------------
+// CreateExplanation — add one explanation (a whole transaction or a split portion).
+// gross_value_minor is SIGNED (+ in / - out). category_id is NULL for entity-link
+// types; the entity-link / VAT fields are set as the chosen type requires. :one.
+// -----------------------------------------------------------------------------
+func (q *Queries) CreateExplanation(ctx context.Context, arg CreateExplanationParams) (BankTransactionExplanation, error) {
+	row := q.db.QueryRow(ctx, createExplanation,
+		arg.OrganisationID,
+		arg.BankTransactionID,
+		arg.CreatedByUserID,
+		arg.DatedOn,
+		arg.Description,
+		arg.Type,
+		arg.GrossValueMinor,
+		arg.CategoryID,
+		arg.SalesTaxStatus,
+		arg.SalesTaxRateID,
+		arg.SalesTaxValueMinor,
+		arg.IsManualSalesTax,
+		arg.EcStatus,
+		arg.PlaceOfSupply,
+		arg.TransferBankAccountID,
+		arg.PaidUserID,
+		arg.MarkedForReview,
+		arg.ChequeNumber,
+		arg.ReceiptReference,
+	)
+	var i BankTransactionExplanation
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.BankTransactionID,
+		&i.CreatedByUserID,
+		&i.DatedOn,
+		&i.Description,
+		&i.Type,
+		&i.GrossValueMinor,
+		&i.CategoryID,
+		&i.SalesTaxStatus,
+		&i.SalesTaxRateID,
+		&i.SalesTaxValueMinor,
+		&i.IsManualSalesTax,
+		&i.EcStatus,
+		&i.PlaceOfSupply,
+		&i.TransferBankAccountID,
+		&i.PaidUserID,
+		&i.MarkedForReview,
+		&i.ChequeNumber,
+		&i.ReceiptReference,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getBankAccount = `-- name: GetBankAccount :one
 SELECT
     a.id, a.organisation_id, a.created_by_user_id, a.name, a.currency, a.status, a.is_personal, a.is_primary, a.bank_name, a.account_number, a.sort_code, a.routing_number, a.bank_account_type, a.iban, a.bic, a.show_on_invoices, a.opening_balance_minor, a.opening_balance_date, a.guess_explanations, a.deleted_at, a.created_at, a.updated_at,
@@ -427,6 +532,52 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 		&i.Source,
 		&i.TransactionType,
 		&i.ExternalID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getExplanation = `-- name: GetExplanation :one
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+`
+
+type GetExplanationParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// GetExplanation — one explanation by id, org-scoped, live only. :one.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetExplanation(ctx context.Context, arg GetExplanationParams) (BankTransactionExplanation, error) {
+	row := q.db.QueryRow(ctx, getExplanation, arg.ID, arg.OrganisationID)
+	var i BankTransactionExplanation
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.BankTransactionID,
+		&i.CreatedByUserID,
+		&i.DatedOn,
+		&i.Description,
+		&i.Type,
+		&i.GrossValueMinor,
+		&i.CategoryID,
+		&i.SalesTaxStatus,
+		&i.SalesTaxRateID,
+		&i.SalesTaxValueMinor,
+		&i.IsManualSalesTax,
+		&i.EcStatus,
+		&i.PlaceOfSupply,
+		&i.TransferBankAccountID,
+		&i.PaidUserID,
+		&i.MarkedForReview,
+		&i.ChequeNumber,
+		&i.ReceiptReference,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -685,6 +836,67 @@ func (q *Queries) ListBankTransactions(ctx context.Context, arg ListBankTransact
 	return items, nil
 }
 
+const listExplanationsForTransaction = `-- name: ListExplanationsForTransaction :many
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+WHERE bank_transaction_id = $1
+  AND organisation_id     = $2
+  AND deleted_at IS NULL
+ORDER BY created_at ASC, id ASC
+`
+
+type ListExplanationsForTransactionParams struct {
+	BankTransactionID uuid.UUID `json:"bank_transaction_id"`
+	OrganisationID    uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// ListExplanationsForTransaction — a transaction's live explanations, oldest
+// first. Backs the per-transaction explain panel. Org-scoped. :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListExplanationsForTransactionParams) ([]BankTransactionExplanation, error) {
+	rows, err := q.db.Query(ctx, listExplanationsForTransaction, arg.BankTransactionID, arg.OrganisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BankTransactionExplanation
+	for rows.Next() {
+		var i BankTransactionExplanation
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.BankTransactionID,
+			&i.CreatedByUserID,
+			&i.DatedOn,
+			&i.Description,
+			&i.Type,
+			&i.GrossValueMinor,
+			&i.CategoryID,
+			&i.SalesTaxStatus,
+			&i.SalesTaxRateID,
+			&i.SalesTaxValueMinor,
+			&i.IsManualSalesTax,
+			&i.EcStatus,
+			&i.PlaceOfSupply,
+			&i.TransferBankAccountID,
+			&i.PaidUserID,
+			&i.MarkedForReview,
+			&i.ChequeNumber,
+			&i.ReceiptReference,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteBankAccount = `-- name: SoftDeleteBankAccount :exec
 UPDATE bank_accounts SET
     deleted_at = now(),
@@ -731,6 +943,29 @@ type SoftDeleteBankTransactionParams struct {
 // -----------------------------------------------------------------------------
 func (q *Queries) SoftDeleteBankTransaction(ctx context.Context, arg SoftDeleteBankTransactionParams) error {
 	_, err := q.db.Exec(ctx, softDeleteBankTransaction, arg.ID, arg.OrganisationID)
+	return err
+}
+
+const softDeleteExplanation = `-- name: SoftDeleteExplanation :exec
+UPDATE bank_transaction_explanations SET
+    deleted_at = now()
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+`
+
+type SoftDeleteExplanationParams struct {
+	ID             uuid.UUID `json:"id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// SoftDeleteExplanation — remove one explanation (un-explain part of a line).
+// The recompute trigger bumps the parent back toward 'unexplained'. Org-scoped.
+// :exec. Idempotent — an already-deleted row matches nothing.
+// -----------------------------------------------------------------------------
+func (q *Queries) SoftDeleteExplanation(ctx context.Context, arg SoftDeleteExplanationParams) error {
+	_, err := q.db.Exec(ctx, softDeleteExplanation, arg.ID, arg.OrganisationID)
 	return err
 }
 
@@ -914,6 +1149,106 @@ func (q *Queries) UpdateBankTransaction(ctx context.Context, arg UpdateBankTrans
 		&i.Source,
 		&i.TransactionType,
 		&i.ExternalID,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateExplanation = `-- name: UpdateExplanation :one
+UPDATE bank_transaction_explanations SET
+    dated_on                 = $3,
+    description              = $4,
+    type                     = $5,
+    gross_value_minor        = $6,
+    category_id              = $7,
+    sales_tax_status         = $8,
+    sales_tax_rate_id        = $9,
+    sales_tax_value_minor    = $10,
+    is_manual_sales_tax      = $11,
+    ec_status                = $12,
+    place_of_supply          = $13,
+    transfer_bank_account_id = $14,
+    paid_user_id             = $15,
+    marked_for_review        = $16,
+    cheque_number            = $17,
+    receipt_reference        = $18
+WHERE id              = $1
+  AND organisation_id = $2
+  AND deleted_at IS NULL
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+`
+
+type UpdateExplanationParams struct {
+	ID                    uuid.UUID   `json:"id"`
+	OrganisationID        uuid.UUID   `json:"organisation_id"`
+	DatedOn               pgtype.Date `json:"dated_on"`
+	Description           pgtype.Text `json:"description"`
+	Type                  string      `json:"type"`
+	GrossValueMinor       int64       `json:"gross_value_minor"`
+	CategoryID            pgtype.UUID `json:"category_id"`
+	SalesTaxStatus        string      `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	MarkedForReview       bool        `json:"marked_for_review"`
+	ChequeNumber          pgtype.Text `json:"cheque_number"`
+	ReceiptReference      pgtype.Text `json:"receipt_reference"`
+}
+
+// -----------------------------------------------------------------------------
+// UpdateExplanation — edit a live explanation (re-categorise, fix amount/VAT,
+// confirm a guess). bank_transaction_id is NOT editable (no re-parenting). The
+// recompute trigger refreshes the parent afterwards. Org-scoped. :one.
+// -----------------------------------------------------------------------------
+func (q *Queries) UpdateExplanation(ctx context.Context, arg UpdateExplanationParams) (BankTransactionExplanation, error) {
+	row := q.db.QueryRow(ctx, updateExplanation,
+		arg.ID,
+		arg.OrganisationID,
+		arg.DatedOn,
+		arg.Description,
+		arg.Type,
+		arg.GrossValueMinor,
+		arg.CategoryID,
+		arg.SalesTaxStatus,
+		arg.SalesTaxRateID,
+		arg.SalesTaxValueMinor,
+		arg.IsManualSalesTax,
+		arg.EcStatus,
+		arg.PlaceOfSupply,
+		arg.TransferBankAccountID,
+		arg.PaidUserID,
+		arg.MarkedForReview,
+		arg.ChequeNumber,
+		arg.ReceiptReference,
+	)
+	var i BankTransactionExplanation
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.BankTransactionID,
+		&i.CreatedByUserID,
+		&i.DatedOn,
+		&i.Description,
+		&i.Type,
+		&i.GrossValueMinor,
+		&i.CategoryID,
+		&i.SalesTaxStatus,
+		&i.SalesTaxRateID,
+		&i.SalesTaxValueMinor,
+		&i.IsManualSalesTax,
+		&i.EcStatus,
+		&i.PlaceOfSupply,
+		&i.TransferBankAccountID,
+		&i.PaidUserID,
+		&i.MarkedForReview,
+		&i.ChequeNumber,
+		&i.ReceiptReference,
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

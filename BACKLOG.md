@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-21_
+_Last updated: 2026-06-23_
 
 ## Auth & authorization
 
@@ -200,18 +200,11 @@ _Last updated: 2026-06-21_
 
 The data layer, the bank-ACCOUNT service/API (`internal/banking`, the
 `/api/v1/bank-accounts` CRUD), the account list + entry/edit views, and the
-read-only TRANSACTION (statement) view (`GET /:id/transactions` +
-`BankAccountTransactionsView`) have landed. What remains is transaction WRITE +
-the reconciliation/feed richness:
+read-only TRANSACTION (statement) view, manual transaction entry (add/edit/delete
+views + the "More ▾" menu with delete-account), and CSV statement import
+(`POST /:id/transactions/import` + `BankStatementImportView`) have landed. What
+remains is the reconciliation/feed richness:
 
-- **Delete-account UI.** The `DELETE /api/v1/bank-accounts/:id` endpoint exists
-  (soft delete, owner/admin) but no SPA affordance calls it yet — mirrors
-  Projects. A natural home is the transaction view's inert **"More ▾"** menu (and
-  the inert **"Upload statement"** button maps to statement upload below).
-  _Files: `web/src/views/BankAccountTransactionsView.vue`, `BankAccountEntryView.vue`._
-- **Manual transaction entry.** Add/edit/delete a transaction (the `CreateBankTransaction`
-  / `SoftDeleteBankTransaction` queries exist; needs service methods + endpoints + a
-  form/modal). The "Manually added" tab already surfaces `source='manual'` rows.
 - **Transaction-view richness (deferred from the statement view).** Period filter
   (brought-forward = balance at period start), search, real server-side pagination
   (v1 loads all rows), bulk-checkbox actions, and the account-switcher dropdown.
@@ -219,13 +212,41 @@ the reconciliation/feed richness:
   `source = 'feed'`, deduping on `external_id` via the existing partial unique
   index + `GetBankTransactionByExternalID`. This is the planned FCA Open Banking
   integration. _Files: new ingestion code, `db/queries/banking.sql`._
-- **Statement upload (CSV / OFX import).** Manual statement import →
-  `source = 'statement'`.
-- **Transaction reconciliation / "explain".** Link a transaction to an expense /
-  invoice / category and drive the Explained / Unexplained / For-approval tabs +
-  the "Guess explanations" engine. Today `status` / `source` are plain
-  classification columns with no link-to-record FK. _Files: `db/schema/banking_schema.sql`
-  (a future `explained_*` / link table), `db/queries/banking.sql`._
+- **Statement upload — OFX/QFX import.** CSV import landed (`source = 'statement'`,
+  synthetic-hash `external_id` dedupe). OFX/QFX needs an OFX parser (a new dependency);
+  it would dedupe on the bank's FITID via the same `external_id` index. _File:
+  `internal/banking/statement_import.go`._
+- **Transaction reconciliation / "explain" — DATA LAYER landed; service + UI remain.**
+  The data layer is built: a per-org Chart of Accounts (`categories`), the 18
+  `transaction_types`, the `transaction_type_categories` mapping (every category per
+  type, branched by `company_type`, sourced from the FreeAgent workbook), and the
+  `bank_transaction_explanations` record with a recompute trigger driving
+  `bank_transactions.unexplained_amount_minor` + `status`. Still to do:
+  - **Explain service + UI.** The per-type explain form (Type picker →
+    category/entity/VAT via `ListCategoriesForType`), VAT computation
+    (`money.ComputeFixedVAT` + `categories.default_vat`), the split UI, and the
+    "Guess explanations" engine. Drives the Explained / Unexplained / For-approval tabs.
+    _Files: new `internal/banking` service methods + handlers, `db/queries/banking.sql`
+    (the explanation CRUD exists), `db/queries/categories.sql`._
+  - **Double-entry ledger / posting engine.** "Which account per type-category pair"
+    is currently reference metadata only — no journal lines are posted. A future ledger
+    posts balanced debits/credits across nominals (incl. the per-entity sub-accounts
+    750-x bank / 900-x user / 602-x asset that are represented by entity links today).
+  - **Future-entity explanation links.** `BILL_PAYMENT` / `INVOICE_RECEIPT` /
+    `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds) are valid `type`s now but carry no
+    dedicated link — add `paid_invoice_id` / `paid_bill_id` / … to
+    `bank_transaction_explanations` when those modules land. Likewise a capital-asset
+    register (Purchase/Disposal) and `project_id` + rebilling.
+  - **`expense_categories` → `categories` unification.** Two category tables coexist
+    (different code schemes: our `365 Travel` vs FreeAgent `254`). Merge into one CoA,
+    mapping the expenses module + `supplier_category_map` + OCR across.
+  - **`second_sales_tax` / foreign-currency value** on explanations (FreeAgent has
+    both; omitted from the v1 record).
+  - **Seed review (Money IN/OUT tabs "as-is").** Confirm the codes seeded verbatim from
+    the tabs where they differed from the detailed CoA sheets: user accounts 904 (sheet:
+    Employer NI) / 905 (Employer Pension) / 908 (Expense Payment) / 907 (Drawings); 682
+    vs 685 Other Debtors; 670 Share Premium; 604 disposal; 824 VAT OSS; 056; 797.
+    _File: `db/seeds/transaction_type_categories.sql`, `db/seeds/categories.sql`._
 - **Multi-currency balance display.** Accounts can be GBP / USD / EUR; the list's
   total balance vs the org `native_currency` needs conversion (depends on the
   `minor_unit`-aware money work in the Currencies backlog).
