@@ -46,10 +46,9 @@ type Querier interface {
 	// come from the authenticated token in the (future) service layer, never from the
 	// request body.
 	//
-	// The header's STATUS and PAID value are mutated by their own dedicated queries
-	// (UpdateBillStatus / UpdateBillPaidValue), NOT by UpdateBill — so a field edit
-	// can't accidentally clobber the lifecycle or the payment, mirroring how invoices
-	// and the expenses module keep status transitions separate from field edits.
+	// There is no status lifecycle: a bill is editable/deletable while UNPAID. The PAID
+	// value is mutated only by its own dedicated query (UpdateBillPaidValue — the banking
+	// reconciliation seam), NOT by UpdateBill, so a field edit can't clobber the payment.
 	// =============================================================================
 	// =============================================================================
 	// BILL  (the record — header + single spending line)
@@ -59,9 +58,8 @@ type Querier interface {
 	// Inserts a bill and returns the full row via RETURNING * (so the caller gets the
 	// generated id, defaults and the computed due_value_minor without a second
 	// round-trip). The single spending line is flat on the row: category_id +
-	// amounts_include_vat + vat_rate_bps + the net/sales_tax/total the service
-	// computed. paid_value_minor defaults to 0 and status to 'DRAFT', so neither is
-	// supplied here (they have their own update queries).
+	// vat_rate_id/vat_rate_bps + the net/sales_tax/total the service computed.
+	// paid_value_minor defaults to 0 (written later by banking), so it isn't supplied here.
 	// -----------------------------------------------------------------------------
 	CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error)
 	// =============================================================================
@@ -171,12 +169,11 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	// UpdateBill  (the "update" — editable header + single-line body)
 	// Full update of the caller-editable fields (PUT semantics). Deliberately does
-	// NOT touch status or paid_value_minor — those have their own queries — nor
-	// organisation_id / created_by_user_id. net/sales_tax/total ARE updated here
-	// because they are recomputed by the service from the (edited) single line on
-	// every save. updated_at is set explicitly in addition to the trigger
-	// (belt-and-suspenders). Whether a bill is editable in its current status is a
-	// service-layer guard.
+	// NOT touch paid_value_minor (banking owns it) nor organisation_id /
+	// created_by_user_id. net/sales_tax/total ARE updated here because they are
+	// recomputed by the service from the (edited) single line on every save.
+	// updated_at is set explicitly in addition to the trigger (belt-and-suspenders).
+	// Whether a bill is editable (unpaid) is a service-layer guard.
 	// -----------------------------------------------------------------------------
 	UpdateBill(ctx context.Context, arg UpdateBillParams) (Bill, error)
 	// -----------------------------------------------------------------------------
@@ -191,20 +188,12 @@ type Querier interface {
 	UpdateBillAttachmentOCRStatus(ctx context.Context, arg UpdateBillAttachmentOCRStatusParams) (BillAttachment, error)
 	// -----------------------------------------------------------------------------
 	// UpdateBillPaidValue
-	// Sets the amount settled against the bill. Anticipates the payments /
-	// reconciliation path (deferred — see BACKLOG); paid_value_minor drives the
-	// DERIVED Paid/Overpaid/Overdue display status, and due_value_minor recomputes
-	// from it automatically.
+	// Sets the amount settled against the bill. This is the BANKING module's seam —
+	// reconciliation writes paid_value_minor here (the bills service never does).
+	// It drives the derived Unpaid/Part paid/Paid display + whether the bill is
+	// still editable/deletable, and due_value_minor recomputes from it automatically.
 	// -----------------------------------------------------------------------------
 	UpdateBillPaidValue(ctx context.Context, arg UpdateBillPaidValueParams) (Bill, error)
-	// -----------------------------------------------------------------------------
-	// UpdateBillStatus
-	// Moves the stored lifecycle (DRAFT|OPEN|WRITTEN_OFF). A single query suffices
-	// because the minimal header has no per-transition timestamp columns to set
-	// (unlike the expenses approval machine). Legal-transition checking is a
-	// service guard; the DB CHECK only constrains the value set.
-	// -----------------------------------------------------------------------------
-	UpdateBillStatus(ctx context.Context, arg UpdateBillStatusParams) (Bill, error)
 }
 
 var _ Querier = (*Queries)(nil)

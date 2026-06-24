@@ -167,7 +167,7 @@ function submit(addAnother: boolean) {
       <template v-if="editItem">
         <button
           type="button"
-          class="mr-3 font-semibold text-fa-blue hover:underline disabled:opacity-50"
+          class="mr-3 font-semibold text-fa-green hover:underline disabled:opacity-50"
           :disabled="saving"
           @click="emit('update:visible', false)"
         >
@@ -187,7 +187,7 @@ function submit(addAnother: boolean) {
         />
         <button
           type="button"
-          class="ml-3 font-semibold text-fa-blue hover:underline disabled:opacity-50"
+          class="ml-3 font-semibold text-fa-green hover:underline disabled:opacity-50"
           :disabled="saving"
           @click="emit('update:visible', false)"
         >

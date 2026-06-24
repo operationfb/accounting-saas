@@ -45,6 +45,7 @@ var rootAllowlist = map[string]bool{
 	"attachment_service_test.go":   true,
 	"banking_service_test.go":      true,
 	"banking_test.go":              true,
+	"bill_service_test.go":         true,
 	"contact_service_test.go":      true,
 	"email_inbox_test.go":          true,
 	"events_test.go":               true,
@@ -63,6 +64,7 @@ var rootAllowlist = map[string]bool{
 	"supplier_category_test.go":    true,
 	"user_service_test.go":         true,
 	"vat_rates_test.go":            true,
+	"vat_settings_test.go":         true,
 }
 
 func TestRootPackageIsWiringOnly(t *testing.T) {

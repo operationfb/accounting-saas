@@ -9,8 +9,7 @@
 -- additions the FreeAgent "New Bill" screen shows: a supplier CONTACT, a DUE
 -- date, free-text COMMENTS, a hire-purchase flag, and a project link.
 --
--- This is the MINIMAL first cut (DATA LAYER ONLY — no service/handler/frontend
--- yet), exactly like the invoices module was introduced. Two tables:
+-- Two tables:
 --   - bills            — the record (header + the single spending line, flat)
 --   - bill_attachments — the supplier-invoice files (metadata; bytes go to GCS)
 --
@@ -19,7 +18,7 @@
 --   ONE FLAT, SINGLE-LINE ROW (NOT header + line-items).
 --   The "Bill Contents" on the form is ONE spending category + total + VAT rate,
 --   so — like an expense — the body collapses straight onto the row (category_id,
---   vat_rate_bps, the *_value_minor totals). A multi-line bill_items child table
+--   vat_rate_id/bps, the *_value_minor totals). A multi-line bill_items child table
 --   is deferred until a real multi-category bill is needed (see BACKLOG).
 --
 --   SPENDING CATEGORY → THE CHART OF ACCOUNTS (categories), NOT expense_categories.
@@ -36,20 +35,22 @@
 --   note / refund, per the form note) — there is deliberately no positivity CHECK.
 --   NEVER float/numeric for amounts that do arithmetic.
 --
---   VAT BOTH WAYS (amounts_include_vat).
---   The form's "Bill totals will be entered: Including VAT / Excluding VAT" radio
---   is stored as amounts_include_vat. The (future) service computes the split with
---   money.ComputeFixedVAT (EXTRACT, when Including VAT) or money.AddOnVAT (ADD ON
---   TOP, when Excluding VAT) and persists net/sales_tax/total either way. The
---   form's "Auto" VAT rate is resolved to a concrete vat_rate_bps in the service
---   (from the category's default_vat) before it is stored.
+--   VAT — THE EXPENSES PATTERN (a picked rate; extract OR a manual amount).
+--   The amount entered is the VAT-INCLUSIVE total (like an expense). vat_rate_id is
+--   the picked vat_rates row (NULL = no VAT). A FIXED-RATIO rate has its VAT EXTRACTED
+--   from the inclusive total (money.ExtractVAT); a NON-fixed-ratio ("manual") rate —
+--   e.g. when Smart Upload supplies a figure — takes sales_tax_value_minor from the
+--   client as-is. The service then stores net = total − vat. vat_rate_bps is a snapshot
+--   of the rate. (This mirrors the expenses resolveVAT; there is no Including/Excluding
+--   radio and no "Auto" — both were dropped in favour of expenses parity.)
 --
---   STATUS IS THE STORED LIFECYCLE ONLY; THE DISPLAY STATUS IS DERIVED.
---   Like invoices, we store only the explicit states (DRAFT, OPEN, WRITTEN_OFF);
---   the payment-derived display (Open / Overdue / Paid / Overpaid) is computed at
---   read time from due_on + total_value_minor + paid_value_minor, so it never goes
---   stale. paid_value_minor exists precisely so that derivation has something to
---   read against (the reconciliation path that writes it is deferred — see BACKLOG).
+--   NO LIFECYCLE — EDIT/DELETE WHILE UNPAID.
+--   There is no status column / state machine. A bill is created and can be edited or
+--   deleted while it is UNPAID (paid_value_minor = 0); once a payment lands it locks.
+--   paid_value_minor is written by the BANKING module (reconciliation), not the bills
+--   service; due_value_minor (generated = total − paid) and a derived Unpaid / Part
+--   paid / Paid / Overdue label are computed at read time. (paid stays 0 until banking
+--   wires it — see BACKLOG.)
 --
 --   NO AUTO-NUMBERING (unlike invoices).
 --   A bill's `reference` is the SUPPLIER'S invoice number — we record it, we don't
@@ -68,8 +69,8 @@
 --   Generates into its own sqlc package (db/bills). Applied AFTER schema.sql,
 --   auth_schema.sql, contacts_schema.sql, categories_schema.sql and
 --   projects_schema.sql, so set_updated_at(), organisations, users, currencies,
---   contacts, categories and projects all already exist — the foreign keys below
---   are therefore declared INLINE (no deferred ALTER).
+--   vat_rates, contacts, categories and projects all already exist — the foreign keys
+--   below are therefore declared INLINE (no deferred ALTER).
 -- =============================================================================
 
 
@@ -109,38 +110,26 @@ CREATE TABLE bills (
     -- "Spending Category": a CoA nominal account. The ListBillCategories query
     -- filters the picker to the spending subset (cost of sales / admin / assets).
     category_id             UUID NOT NULL REFERENCES categories(id),
-    -- The "Including VAT / Excluding VAT" radio. Drives whether the service
-    -- EXTRACTS VAT from the total (TRUE) or ADDS it on top of the net (FALSE);
-    -- either way net/sales_tax/total below are all persisted.
-    amounts_include_vat     BOOLEAN NOT NULL DEFAULT TRUE,
-    -- Resolved VAT rate in basis points (2000 = 20.00%, 500 = 5%, 0 = zero/no VAT),
-    -- consistent with vat_rates.rate_bps. The form's "Auto" is resolved to a
-    -- concrete value in the service (from categories.default_vat) before storing.
-    vat_rate_bps            INTEGER NOT NULL DEFAULT 0,
+    -- VAT — the EXPENSES pattern. The entered amount is the VAT-INCLUSIVE total.
+    -- vat_rate_id is the picked vat_rates row (NULL = no VAT selected); a fixed-ratio
+    -- rate has its VAT EXTRACTED from the total, a non-fixed-ratio ("manual") rate
+    -- takes sales_tax_value_minor from the client. vat_rate_bps is a rate snapshot.
+    vat_rate_id             UUID REFERENCES vat_rates(id),  -- NULL = no VAT rate selected
+    vat_rate_bps            INTEGER,                        -- snapshot of the rate in bps (NULL = none)
 
     -- -------------------------------------------------------------------------
     -- Money (all BIGINT minor units / pence). Negative allowed = bill credit note.
-    -- For a single-line bill the service computes net/sales_tax/total from the one
-    -- line (total = "Total Price (including VAT)") and writes them here.
+    -- The entered amount is the VAT-inclusive total; the service stores net = total −
+    -- VAT (the VAT being extracted from a fixed-ratio rate, or the manual amount).
     -- -------------------------------------------------------------------------
-    net_value_minor         BIGINT NOT NULL DEFAULT 0,      -- ex-VAT
+    net_value_minor         BIGINT NOT NULL DEFAULT 0,      -- ex-VAT (= total − VAT)
     sales_tax_value_minor   BIGINT NOT NULL DEFAULT 0,      -- VAT amount
-    total_value_minor       BIGINT NOT NULL DEFAULT 0,      -- gross = net + VAT
-    paid_value_minor        BIGINT NOT NULL DEFAULT 0,      -- amount settled so far (drives derived Paid/Overdue)
+    total_value_minor       BIGINT NOT NULL DEFAULT 0,      -- gross = the entered "Total Price (including VAT)"
+    paid_value_minor        BIGINT NOT NULL DEFAULT 0,      -- amount settled so far (written by banking; drives editable/deletable)
 
-    -- Outstanding amount. GENERATED so the database keeps it exactly = total - paid
+    -- Outstanding amount. GENERATED so the database keeps it exactly = total − paid
     -- with no chance of drift; it is read-only (never written directly).
     due_value_minor         BIGINT GENERATED ALWAYS AS (total_value_minor - paid_value_minor) STORED,
-
-    -- -------------------------------------------------------------------------
-    -- Status — the STORED lifecycle only (display status is derived; see header note)
-    --   DRAFT       — being entered, not yet a confirmed payable
-    --   OPEN        — a live payable (the company owes it)
-    --   WRITTEN_OFF — given up on / no longer payable
-    -- VARCHAR + CHECK matches the enum style on invoices.status / expenses.status.
-    -- -------------------------------------------------------------------------
-    status                  VARCHAR(20) NOT NULL DEFAULT 'DRAFT'
-                            CHECK (status IN ('DRAFT','OPEN','WRITTEN_OFF')),
 
     -- -------------------------------------------------------------------------
     -- Project link (optional) — "Link to Project". A real FK (the projects table
@@ -173,7 +162,7 @@ CREATE INDEX idx_bills_org_project ON bills (organisation_id, project_id)
 -- bill_attachments
 -- The supplier-invoice files attached to a bill (PDF/image). A direct clone of
 -- expense_attachments: the file BYTES live in object storage (GCS); this table
--- holds the metadata + the storage key. bill_id CASCADE-deletes with the bill
+-- holds the metadata and the storage key. bill_id CASCADE-deletes with the bill
 -- (a hard delete; a soft delete of the bill leaves them, reached via the parent).
 -- organisation_id is DENORMALISED (no FK, like expense_attachments) for org-scoped
 -- attachment queries without joining the parent.
@@ -242,15 +231,15 @@ CREATE TRIGGER trg_bill_attachments_updated_at
 -- =============================================================================
 -- COMMENTS
 -- =============================================================================
-COMMENT ON TABLE  bills IS 'Accounts-payable bills (supplier invoices) an organisation owes. Org-scoped, soft-deleted. Single flat spending line (like an expense). Payable twin of invoices. Models the FreeAgent New Bill screen (minimal first cut).';
+COMMENT ON TABLE  bills IS 'Accounts-payable bills (supplier invoices) an organisation owes. Org-scoped, soft-deleted. Single flat spending line (like an expense). Payable twin of invoices. No status lifecycle: editable/deletable while unpaid.';
 COMMENT ON COLUMN bills.contact_id IS 'The SUPPLIER (a contact) the bill is owed to. Required.';
 COMMENT ON COLUMN bills.reference IS 'The SUPPLIER''S invoice number. App-required, but NOT auto-numbered (unlike invoices.reference) and NOT unique in this cut.';
 COMMENT ON COLUMN bills.category_id IS 'Spending Category = a CoA (categories) nominal account. The picker is filtered to spending accounts by ListBillCategories.';
-COMMENT ON COLUMN bills.amounts_include_vat IS 'The Including/Excluding-VAT radio. TRUE = service EXTRACTS VAT from the total (money.ComputeFixedVAT); FALSE = ADDS it on top of the net (money.AddOnVAT).';
-COMMENT ON COLUMN bills.vat_rate_bps IS 'Resolved VAT rate in basis points (2000 = 20%). The form''s "Auto" is resolved from categories.default_vat in the service before storing.';
-COMMENT ON COLUMN bills.total_value_minor IS 'Gross total (net + VAT) in minor units (pence). BIGINT because a bill total can exceed the int32 ceiling. Negative = bill credit note (refund).';
+COMMENT ON COLUMN bills.vat_rate_id IS 'The picked vat_rates row (NULL = no VAT). Fixed-ratio → VAT extracted from the inclusive total; non-fixed-ratio ("manual") → sales_tax_value_minor taken from the client. Mirrors the expenses VAT pattern.';
+COMMENT ON COLUMN bills.vat_rate_bps IS 'Snapshot of the chosen rate in basis points (2000 = 20%); NULL when no rate is selected.';
+COMMENT ON COLUMN bills.total_value_minor IS 'Gross total (the entered VAT-inclusive "Total Price") in minor units (pence). BIGINT because a bill total can exceed the int32 ceiling. Negative = bill credit note (refund).';
+COMMENT ON COLUMN bills.paid_value_minor IS 'Amount settled so far, written by the BANKING module (reconciliation) — read-only to the bills service. A bill with paid > 0 cannot be edited or deleted.';
 COMMENT ON COLUMN bills.due_value_minor IS 'Outstanding amount = total_value_minor - paid_value_minor. GENERATED/STORED so the DB keeps it correct; read-only.';
-COMMENT ON COLUMN bills.status IS 'STORED lifecycle only: DRAFT|OPEN|WRITTEN_OFF. The display status (Open/Overdue/Paid/Overpaid) is DERIVED in the service from due_on + total_value_minor + paid_value_minor.';
 COMMENT ON COLUMN bills.project_id IS 'Optional "Link to Project". A real FK to projects(id) (unlike expenses.project_id, which is a bare UUID).';
 COMMENT ON TABLE  bill_attachments IS 'Supplier-invoice files for a bill (metadata; bytes in GCS). Clone of expense_attachments. Child of bills (ON DELETE CASCADE). ocr_* columns are ready for the deferred bill Smart-Capture pipeline.';
 COMMENT ON COLUMN bill_attachments.storage_path IS 'GCS object key (never a signed URL — those are short-lived and generated on demand).';

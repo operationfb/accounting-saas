@@ -13,12 +13,15 @@ import ProjectEntryView from '@/views/ProjectEntryView.vue'
 import InvoiceListView from '@/views/InvoiceListView.vue'
 import InvoiceEntryView from '@/views/InvoiceEntryView.vue'
 import InvoiceDetailView from '@/views/InvoiceDetailView.vue'
+import BillListView from '@/views/BillListView.vue'
+import BillEntryView from '@/views/BillEntryView.vue'
 import BankAccountListView from '@/views/BankAccountListView.vue'
 import BankAccountEntryView from '@/views/BankAccountEntryView.vue'
 import BankAccountTransactionsView from '@/views/BankAccountTransactionsView.vue'
 import BankTransactionEntryView from '@/views/BankTransactionEntryView.vue'
 import BankStatementImportView from '@/views/BankStatementImportView.vue'
 import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
+import VatSettingsView from '@/views/VatSettingsView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -45,6 +48,11 @@ const router = createRouter({
     { path: '/invoices/new', name: 'invoice-new', component: InvoiceEntryView, meta: { requiresAuth: true, title: 'Invoices' } },
     { path: '/invoices/:id', name: 'invoice-detail', component: InvoiceDetailView, meta: { requiresAuth: true, title: 'Invoices' } },
     { path: '/invoices/:id/edit', name: 'invoice-edit', component: InvoiceEntryView, meta: { requiresAuth: true, title: 'Invoices' } },
+    // Bills (accounts payable). Two views: the list + a dual-mode create/edit form
+    // (no read-only detail). /bills/new is declared BEFORE /bills/:id/edit.
+    { path: '/bills', name: 'bills', component: BillListView, meta: { requiresAuth: true, title: 'Bills' } },
+    { path: '/bills/new', name: 'bill-new', component: BillEntryView, meta: { requiresAuth: true, title: 'Bills' } },
+    { path: '/bills/:id/edit', name: 'bill-edit', component: BillEntryView, meta: { requiresAuth: true, title: 'Bills' } },
     { path: '/bank-accounts', name: 'bank-accounts', component: BankAccountListView, meta: { requiresAuth: true, title: 'Banking' } },
     { path: '/bank-accounts/new', name: 'bank-account-new', component: BankAccountEntryView, meta: { requiresAuth: true, title: 'Banking' } },
     { path: '/bank-accounts/:id', name: 'bank-account-transactions', component: BankAccountTransactionsView, meta: { requiresAuth: true, title: 'Banking' } },
@@ -59,6 +67,9 @@ const router = createRouter({
     // The organisation's own "Company Details" — a singleton settings screen
     // (the org comes from the token, so there's no id in the path).
     { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },
+    // The organisation's VAT registration settings — likewise a singleton (the org
+    // comes from the token). Read by any active member; edited by owner/admin.
+    { path: '/vat-registration', name: 'vat-registration', component: VatSettingsView, meta: { requiresAuth: true, title: 'Settings' } },
     // The signed-in user's own "My Details" — likewise a singleton (the user
     // comes from the token). Every user may edit their own profile.
     { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },

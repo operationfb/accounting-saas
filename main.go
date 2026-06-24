@@ -30,6 +30,7 @@ import (
 	// After running `sqlc generate`, the generated files live here.
 	"github.com/operationfb/accounting-saas/db/auth"
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbbills "github.com/operationfb/accounting-saas/db/bills"
 	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
@@ -40,6 +41,7 @@ import (
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
+	bills "github.com/operationfb/accounting-saas/internal/bills"
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
@@ -56,6 +58,7 @@ import (
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
+	vat "github.com/operationfb/accounting-saas/internal/vat"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -161,6 +164,13 @@ func main() {
 	// Details settings screen). Read by any active member; edit by owner/admin.
 	// Reuses the shared authQueries. Self-registers its routes after NewServer.
 	organisationSvc := organisation.NewService(authQueries)
+
+	// VAT: read/update the caller's own VAT registration settings (the "UK VAT
+	// Registration" screen). Read by any active member; edit by owner/admin. The
+	// settings live on the organisations table, so it reuses the shared authQueries
+	// (the calculation engine + return screens land in this package later).
+	// Self-registers /api/v1/vat/* after NewServer.
+	vatSvc := vat.NewService(authQueries)
 
 	// User profile: read/update the caller's own "My Details" (first/last name; the
 	// login email is read-only). Always self-scoped via the token, so no role check.
@@ -423,6 +433,13 @@ func main() {
 	// per-type category picker), a thin read-only service over the categories queries.
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
+	// Bills: accounts-payable supplier invoices (the payable twin of invoices). Like
+	// invoices it validates its contact against the org; it also validates the spending
+	// category + VAT rate (the categories querier, which also serves GetVatRate) and the
+	// optional project link. Self-registers /api/v1/bills + /api/v1/bill-categories.
+	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, contactQueries, projectQueries, categoryQueries)
+	bills.NewHandler(billSvc).RegisterRoutes(server.Router(), tokenMaker)
+
 	// Auth (login + password reset, PUBLIC routes) + the user profile, plus Contacts
 	// + Projects + Members + Organisation — each self-registering on the shared engine.
 	authHandler.RegisterRoutes(server.Router())
@@ -433,6 +450,7 @@ func main() {
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
+	vat.NewHandler(vatSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

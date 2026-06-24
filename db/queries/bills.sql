@@ -16,10 +16,9 @@
 -- come from the authenticated token in the (future) service layer, never from the
 -- request body.
 --
--- The header's STATUS and PAID value are mutated by their own dedicated queries
--- (UpdateBillStatus / UpdateBillPaidValue), NOT by UpdateBill — so a field edit
--- can't accidentally clobber the lifecycle or the payment, mirroring how invoices
--- and the expenses module keep status transitions separate from field edits.
+-- There is no status lifecycle: a bill is editable/deletable while UNPAID. The PAID
+-- value is mutated only by its own dedicated query (UpdateBillPaidValue — the banking
+-- reconciliation seam), NOT by UpdateBill, so a field edit can't clobber the payment.
 -- =============================================================================
 
 
@@ -32,9 +31,8 @@
 -- Inserts a bill and returns the full row via RETURNING * (so the caller gets the
 -- generated id, defaults and the computed due_value_minor without a second
 -- round-trip). The single spending line is flat on the row: category_id +
--- amounts_include_vat + vat_rate_bps + the net/sales_tax/total the service
--- computed. paid_value_minor defaults to 0 and status to 'DRAFT', so neither is
--- supplied here (they have their own update queries).
+-- vat_rate_id/vat_rate_bps + the net/sales_tax/total the service computed.
+-- paid_value_minor defaults to 0 (written later by banking), so it isn't supplied here.
 -- -----------------------------------------------------------------------------
 -- name: CreateBill :one
 INSERT INTO bills (
@@ -48,7 +46,7 @@ INSERT INTO bills (
     comments,
     is_hire_purchase,
     category_id,
-    amounts_include_vat,
+    vat_rate_id,
     vat_rate_bps,
     net_value_minor,
     sales_tax_value_minor,
@@ -65,8 +63,8 @@ INSERT INTO bills (
     $8,   -- comments              TEXT (nullable)
     $9,   -- is_hire_purchase      BOOLEAN
     $10,  -- category_id           UUID (CoA spending account)
-    $11,  -- amounts_include_vat   BOOLEAN (the Incl/Excl-VAT radio)
-    $12,  -- vat_rate_bps          INTEGER (resolved VAT rate, basis points)
+    $11,  -- vat_rate_id           UUID (nullable — the picked vat_rates row)
+    $12,  -- vat_rate_bps          INTEGER (nullable — rate snapshot in bps)
     $13,  -- net_value_minor       BIGINT (ex-VAT, pence)
     $14,  -- sales_tax_value_minor BIGINT (VAT, pence)
     $15,  -- total_value_minor     BIGINT (gross, pence)
@@ -115,12 +113,11 @@ ORDER BY dated_on DESC, created_at DESC;
 -- -----------------------------------------------------------------------------
 -- UpdateBill  (the "update" — editable header + single-line body)
 -- Full update of the caller-editable fields (PUT semantics). Deliberately does
--- NOT touch status or paid_value_minor — those have their own queries — nor
--- organisation_id / created_by_user_id. net/sales_tax/total ARE updated here
--- because they are recomputed by the service from the (edited) single line on
--- every save. updated_at is set explicitly in addition to the trigger
--- (belt-and-suspenders). Whether a bill is editable in its current status is a
--- service-layer guard.
+-- NOT touch paid_value_minor (banking owns it) nor organisation_id /
+-- created_by_user_id. net/sales_tax/total ARE updated here because they are
+-- recomputed by the service from the (edited) single line on every save.
+-- updated_at is set explicitly in addition to the trigger (belt-and-suspenders).
+-- Whether a bill is editable (unpaid) is a service-layer guard.
 -- -----------------------------------------------------------------------------
 -- name: UpdateBill :one
 UPDATE bills SET
@@ -132,7 +129,7 @@ UPDATE bills SET
     comments              = $8,
     is_hire_purchase      = $9,
     category_id           = $10,
-    amounts_include_vat   = $11,
+    vat_rate_id           = $11,
     vat_rate_bps          = $12,
     net_value_minor       = $13,
     sales_tax_value_minor = $14,
@@ -146,28 +143,11 @@ RETURNING *;
 
 
 -- -----------------------------------------------------------------------------
--- UpdateBillStatus
--- Moves the stored lifecycle (DRAFT|OPEN|WRITTEN_OFF). A single query suffices
--- because the minimal header has no per-transition timestamp columns to set
--- (unlike the expenses approval machine). Legal-transition checking is a
--- service guard; the DB CHECK only constrains the value set.
--- -----------------------------------------------------------------------------
--- name: UpdateBillStatus :one
-UPDATE bills SET
-    status     = $3,
-    updated_at = now()
-WHERE id              = $1
-  AND organisation_id = $2
-  AND deleted_at IS NULL
-RETURNING *;
-
-
--- -----------------------------------------------------------------------------
 -- UpdateBillPaidValue
--- Sets the amount settled against the bill. Anticipates the payments /
--- reconciliation path (deferred — see BACKLOG); paid_value_minor drives the
--- DERIVED Paid/Overpaid/Overdue display status, and due_value_minor recomputes
--- from it automatically.
+-- Sets the amount settled against the bill. This is the BANKING module's seam —
+-- reconciliation writes paid_value_minor here (the bills service never does).
+-- It drives the derived Unpaid/Part paid/Paid display + whether the bill is
+-- still editable/deletable, and due_value_minor recomputes from it automatically.
 -- -----------------------------------------------------------------------------
 -- name: UpdateBillPaidValue :one
 UPDATE bills SET

@@ -75,11 +75,20 @@ type Organisation struct {
 	Postcode             pgtype.Text `json:"postcode"`
 	// HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.
 	Utr pgtype.Text `json:"utr"`
-	// VAT Registration Number. Format: GB + 9 digits. NULL if not VAT-registered.
+	// VAT Registration Number, stored as the bare 9 digits (no GB prefix) — the form input and the HMRC MTD {vrn} path segment. NULL if not VAT-registered.
 	Vrn                     pgtype.Text `json:"vrn"`
 	PayeReference           pgtype.Text `json:"paye_reference"`
 	AccountsOfficeReference pgtype.Text `json:"accounts_office_reference"`
 	IsMtdVatEnrolled        bool        `json:"is_mtd_vat_enrolled"`
+	VatRegistered           bool        `json:"vat_registered"`
+	VatUsesNonStandardRates bool        `json:"vat_uses_non_standard_rates"`
+	VatEffectiveDate        pgtype.Date `json:"vat_effective_date"`
+	VatFirstReturnPeriodEnd pgtype.Date `json:"vat_first_return_period_end"`
+	VatReturnFrequency      pgtype.Text `json:"vat_return_frequency"`
+	VatAccountingBasis      pgtype.Text `json:"vat_accounting_basis"`
+	VatFlatRateScheme       bool        `json:"vat_flat_rate_scheme"`
+	VatFlatRateBps          pgtype.Int4 `json:"vat_flat_rate_bps"`
+	VatPreRegExpenseMonths  pgtype.Int4 `json:"vat_pre_reg_expense_months"`
 	BusinessPhone           pgtype.Text `json:"business_phone"`
 	ContactEmail            pgtype.Text `json:"contact_email"`
 	ContactPhone            pgtype.Text `json:"contact_phone"`

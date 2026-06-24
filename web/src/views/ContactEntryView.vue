@@ -448,7 +448,7 @@ async function confirmDelete() {
             @click="submit(true)"
           />
         </template>
-        <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancel">Cancel</button>
+        <button type="button" class="font-semibold text-fa-green hover:underline" @click="cancel">Cancel</button>
 
         <!-- Delete: edit mode only, and only when the contact is not in use.
              Pushed to the right (ml-auto) to separate it from the primary actions. -->

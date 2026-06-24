@@ -75,7 +75,7 @@ INSERT INTO bills (
     comments,
     is_hire_purchase,
     category_id,
-    amounts_include_vat,
+    vat_rate_id,
     vat_rate_bps,
     net_value_minor,
     sales_tax_value_minor,
@@ -92,14 +92,14 @@ INSERT INTO bills (
     $8,   -- comments              TEXT (nullable)
     $9,   -- is_hire_purchase      BOOLEAN
     $10,  -- category_id           UUID (CoA spending account)
-    $11,  -- amounts_include_vat   BOOLEAN (the Incl/Excl-VAT radio)
-    $12,  -- vat_rate_bps          INTEGER (resolved VAT rate, basis points)
+    $11,  -- vat_rate_id           UUID (nullable — the picked vat_rates row)
+    $12,  -- vat_rate_bps          INTEGER (nullable — rate snapshot in bps)
     $13,  -- net_value_minor       BIGINT (ex-VAT, pence)
     $14,  -- sales_tax_value_minor BIGINT (VAT, pence)
     $15,  -- total_value_minor     BIGINT (gross, pence)
     $16   -- project_id            UUID (nullable "Link to Project")
 )
-RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at
 `
 
 type CreateBillParams struct {
@@ -113,8 +113,8 @@ type CreateBillParams struct {
 	Comments           pgtype.Text `json:"comments"`
 	IsHirePurchase     bool        `json:"is_hire_purchase"`
 	CategoryID         uuid.UUID   `json:"category_id"`
-	AmountsIncludeVat  bool        `json:"amounts_include_vat"`
-	VatRateBps         int32       `json:"vat_rate_bps"`
+	VatRateID          pgtype.UUID `json:"vat_rate_id"`
+	VatRateBps         pgtype.Int4 `json:"vat_rate_bps"`
 	NetValueMinor      int64       `json:"net_value_minor"`
 	SalesTaxValueMinor int64       `json:"sales_tax_value_minor"`
 	TotalValueMinor    int64       `json:"total_value_minor"`
@@ -140,10 +140,9 @@ type CreateBillParams struct {
 // come from the authenticated token in the (future) service layer, never from the
 // request body.
 //
-// The header's STATUS and PAID value are mutated by their own dedicated queries
-// (UpdateBillStatus / UpdateBillPaidValue), NOT by UpdateBill — so a field edit
-// can't accidentally clobber the lifecycle or the payment, mirroring how invoices
-// and the expenses module keep status transitions separate from field edits.
+// There is no status lifecycle: a bill is editable/deletable while UNPAID. The PAID
+// value is mutated only by its own dedicated query (UpdateBillPaidValue — the banking
+// reconciliation seam), NOT by UpdateBill, so a field edit can't clobber the payment.
 // =============================================================================
 // =============================================================================
 // BILL  (the record — header + single spending line)
@@ -153,9 +152,8 @@ type CreateBillParams struct {
 // Inserts a bill and returns the full row via RETURNING * (so the caller gets the
 // generated id, defaults and the computed due_value_minor without a second
 // round-trip). The single spending line is flat on the row: category_id +
-// amounts_include_vat + vat_rate_bps + the net/sales_tax/total the service
-// computed. paid_value_minor defaults to 0 and status to 'DRAFT', so neither is
-// supplied here (they have their own update queries).
+// vat_rate_id/vat_rate_bps + the net/sales_tax/total the service computed.
+// paid_value_minor defaults to 0 (written later by banking), so it isn't supplied here.
 // -----------------------------------------------------------------------------
 func (q *Queries) CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error) {
 	row := q.db.QueryRow(ctx, createBill,
@@ -169,7 +167,7 @@ func (q *Queries) CreateBill(ctx context.Context, arg CreateBillParams) (Bill, e
 		arg.Comments,
 		arg.IsHirePurchase,
 		arg.CategoryID,
-		arg.AmountsIncludeVat,
+		arg.VatRateID,
 		arg.VatRateBps,
 		arg.NetValueMinor,
 		arg.SalesTaxValueMinor,
@@ -189,14 +187,13 @@ func (q *Queries) CreateBill(ctx context.Context, arg CreateBillParams) (Bill, e
 		&i.Comments,
 		&i.IsHirePurchase,
 		&i.CategoryID,
-		&i.AmountsIncludeVat,
+		&i.VatRateID,
 		&i.VatRateBps,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
 		&i.TotalValueMinor,
 		&i.PaidValueMinor,
 		&i.DueValueMinor,
-		&i.Status,
 		&i.ProjectID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -354,7 +351,7 @@ func (q *Queries) FindDuplicateBillReceipt(ctx context.Context, arg FindDuplicat
 }
 
 const getBill = `-- name: GetBill :one
-SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at FROM bills
+SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at FROM bills
 WHERE id              = $1   -- bill UUID
   AND organisation_id = $2   -- tenant scope — never skip this
   AND deleted_at IS NULL
@@ -386,14 +383,13 @@ func (q *Queries) GetBill(ctx context.Context, arg GetBillParams) (Bill, error) 
 		&i.Comments,
 		&i.IsHirePurchase,
 		&i.CategoryID,
-		&i.AmountsIncludeVat,
+		&i.VatRateID,
 		&i.VatRateBps,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
 		&i.TotalValueMinor,
 		&i.PaidValueMinor,
 		&i.DueValueMinor,
-		&i.Status,
 		&i.ProjectID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -556,7 +552,7 @@ func (q *Queries) ListBillCategories(ctx context.Context, organisationID uuid.UU
 const listBills = `-- name: ListBills :many
 
 
-SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at FROM bills
+SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at FROM bills
 WHERE organisation_id = $1
   AND deleted_at IS NULL
 ORDER BY dated_on DESC, created_at DESC
@@ -588,14 +584,13 @@ func (q *Queries) ListBills(ctx context.Context, organisationID uuid.UUID) ([]Bi
 			&i.Comments,
 			&i.IsHirePurchase,
 			&i.CategoryID,
-			&i.AmountsIncludeVat,
+			&i.VatRateID,
 			&i.VatRateBps,
 			&i.NetValueMinor,
 			&i.SalesTaxValueMinor,
 			&i.TotalValueMinor,
 			&i.PaidValueMinor,
 			&i.DueValueMinor,
-			&i.Status,
 			&i.ProjectID,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -612,7 +607,7 @@ func (q *Queries) ListBills(ctx context.Context, organisationID uuid.UUID) ([]Bi
 }
 
 const listBillsByContact = `-- name: ListBillsByContact :many
-SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at FROM bills
+SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at FROM bills
 WHERE organisation_id = $1
   AND contact_id      = $2
   AND deleted_at IS NULL
@@ -650,14 +645,13 @@ func (q *Queries) ListBillsByContact(ctx context.Context, arg ListBillsByContact
 			&i.Comments,
 			&i.IsHirePurchase,
 			&i.CategoryID,
-			&i.AmountsIncludeVat,
+			&i.VatRateID,
 			&i.VatRateBps,
 			&i.NetValueMinor,
 			&i.SalesTaxValueMinor,
 			&i.TotalValueMinor,
 			&i.PaidValueMinor,
 			&i.DueValueMinor,
-			&i.Status,
 			&i.ProjectID,
 			&i.DeletedAt,
 			&i.CreatedAt,
@@ -783,7 +777,7 @@ UPDATE bills SET
     comments              = $8,
     is_hire_purchase      = $9,
     category_id           = $10,
-    amounts_include_vat   = $11,
+    vat_rate_id           = $11,
     vat_rate_bps          = $12,
     net_value_minor       = $13,
     sales_tax_value_minor = $14,
@@ -793,7 +787,7 @@ UPDATE bills SET
 WHERE id              = $1   -- bill UUID
   AND organisation_id = $2   -- tenant scope
   AND deleted_at IS NULL     -- can't update a deleted bill
-RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at
 `
 
 type UpdateBillParams struct {
@@ -807,8 +801,8 @@ type UpdateBillParams struct {
 	Comments           pgtype.Text `json:"comments"`
 	IsHirePurchase     bool        `json:"is_hire_purchase"`
 	CategoryID         uuid.UUID   `json:"category_id"`
-	AmountsIncludeVat  bool        `json:"amounts_include_vat"`
-	VatRateBps         int32       `json:"vat_rate_bps"`
+	VatRateID          pgtype.UUID `json:"vat_rate_id"`
+	VatRateBps         pgtype.Int4 `json:"vat_rate_bps"`
 	NetValueMinor      int64       `json:"net_value_minor"`
 	SalesTaxValueMinor int64       `json:"sales_tax_value_minor"`
 	TotalValueMinor    int64       `json:"total_value_minor"`
@@ -818,12 +812,11 @@ type UpdateBillParams struct {
 // -----------------------------------------------------------------------------
 // UpdateBill  (the "update" — editable header + single-line body)
 // Full update of the caller-editable fields (PUT semantics). Deliberately does
-// NOT touch status or paid_value_minor — those have their own queries — nor
-// organisation_id / created_by_user_id. net/sales_tax/total ARE updated here
-// because they are recomputed by the service from the (edited) single line on
-// every save. updated_at is set explicitly in addition to the trigger
-// (belt-and-suspenders). Whether a bill is editable in its current status is a
-// service-layer guard.
+// NOT touch paid_value_minor (banking owns it) nor organisation_id /
+// created_by_user_id. net/sales_tax/total ARE updated here because they are
+// recomputed by the service from the (edited) single line on every save.
+// updated_at is set explicitly in addition to the trigger (belt-and-suspenders).
+// Whether a bill is editable (unpaid) is a service-layer guard.
 // -----------------------------------------------------------------------------
 func (q *Queries) UpdateBill(ctx context.Context, arg UpdateBillParams) (Bill, error) {
 	row := q.db.QueryRow(ctx, updateBill,
@@ -837,7 +830,7 @@ func (q *Queries) UpdateBill(ctx context.Context, arg UpdateBillParams) (Bill, e
 		arg.Comments,
 		arg.IsHirePurchase,
 		arg.CategoryID,
-		arg.AmountsIncludeVat,
+		arg.VatRateID,
 		arg.VatRateBps,
 		arg.NetValueMinor,
 		arg.SalesTaxValueMinor,
@@ -857,14 +850,13 @@ func (q *Queries) UpdateBill(ctx context.Context, arg UpdateBillParams) (Bill, e
 		&i.Comments,
 		&i.IsHirePurchase,
 		&i.CategoryID,
-		&i.AmountsIncludeVat,
+		&i.VatRateID,
 		&i.VatRateBps,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
 		&i.TotalValueMinor,
 		&i.PaidValueMinor,
 		&i.DueValueMinor,
-		&i.Status,
 		&i.ProjectID,
 		&i.DeletedAt,
 		&i.CreatedAt,
@@ -941,7 +933,7 @@ UPDATE bills SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at
 `
 
 type UpdateBillPaidValueParams struct {
@@ -952,10 +944,10 @@ type UpdateBillPaidValueParams struct {
 
 // -----------------------------------------------------------------------------
 // UpdateBillPaidValue
-// Sets the amount settled against the bill. Anticipates the payments /
-// reconciliation path (deferred — see BACKLOG); paid_value_minor drives the
-// DERIVED Paid/Overpaid/Overdue display status, and due_value_minor recomputes
-// from it automatically.
+// Sets the amount settled against the bill. This is the BANKING module's seam —
+// reconciliation writes paid_value_minor here (the bills service never does).
+// It drives the derived Unpaid/Part paid/Paid display + whether the bill is
+// still editable/deletable, and due_value_minor recomputes from it automatically.
 // -----------------------------------------------------------------------------
 func (q *Queries) UpdateBillPaidValue(ctx context.Context, arg UpdateBillPaidValueParams) (Bill, error) {
 	row := q.db.QueryRow(ctx, updateBillPaidValue, arg.ID, arg.OrganisationID, arg.PaidValueMinor)
@@ -972,68 +964,13 @@ func (q *Queries) UpdateBillPaidValue(ctx context.Context, arg UpdateBillPaidVal
 		&i.Comments,
 		&i.IsHirePurchase,
 		&i.CategoryID,
-		&i.AmountsIncludeVat,
+		&i.VatRateID,
 		&i.VatRateBps,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
 		&i.TotalValueMinor,
 		&i.PaidValueMinor,
 		&i.DueValueMinor,
-		&i.Status,
-		&i.ProjectID,
-		&i.DeletedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateBillStatus = `-- name: UpdateBillStatus :one
-UPDATE bills SET
-    status     = $3,
-    updated_at = now()
-WHERE id              = $1
-  AND organisation_id = $2
-  AND deleted_at IS NULL
-RETURNING id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, amounts_include_vat, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, status, project_id, deleted_at, created_at, updated_at
-`
-
-type UpdateBillStatusParams struct {
-	ID             uuid.UUID `json:"id"`
-	OrganisationID uuid.UUID `json:"organisation_id"`
-	Status         string    `json:"status"`
-}
-
-// -----------------------------------------------------------------------------
-// UpdateBillStatus
-// Moves the stored lifecycle (DRAFT|OPEN|WRITTEN_OFF). A single query suffices
-// because the minimal header has no per-transition timestamp columns to set
-// (unlike the expenses approval machine). Legal-transition checking is a
-// service guard; the DB CHECK only constrains the value set.
-// -----------------------------------------------------------------------------
-func (q *Queries) UpdateBillStatus(ctx context.Context, arg UpdateBillStatusParams) (Bill, error) {
-	row := q.db.QueryRow(ctx, updateBillStatus, arg.ID, arg.OrganisationID, arg.Status)
-	var i Bill
-	err := row.Scan(
-		&i.ID,
-		&i.OrganisationID,
-		&i.CreatedByUserID,
-		&i.ContactID,
-		&i.Reference,
-		&i.DatedOn,
-		&i.DueOn,
-		&i.Currency,
-		&i.Comments,
-		&i.IsHirePurchase,
-		&i.CategoryID,
-		&i.AmountsIncludeVat,
-		&i.VatRateBps,
-		&i.NetValueMinor,
-		&i.SalesTaxValueMinor,
-		&i.TotalValueMinor,
-		&i.PaidValueMinor,
-		&i.DueValueMinor,
-		&i.Status,
 		&i.ProjectID,
 		&i.DeletedAt,
 		&i.CreatedAt,

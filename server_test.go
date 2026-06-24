@@ -46,6 +46,7 @@ import (
 
 	"github.com/operationfb/accounting-saas/db/auth"
 	dbbanking "github.com/operationfb/accounting-saas/db/banking"
+	dbbills "github.com/operationfb/accounting-saas/db/bills"
 	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
@@ -55,6 +56,7 @@ import (
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
+	bills "github.com/operationfb/accounting-saas/internal/bills"
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
@@ -69,6 +71,7 @@ import (
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
+	vat "github.com/operationfb/accounting-saas/internal/vat"
 	"github.com/operationfb/accounting-saas/token"
 )
 
@@ -202,6 +205,7 @@ func newTestServer(t *testing.T) *testServer {
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool))
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
+	vatSvc := vat.NewService(authQueries)
 	userSvc := userauth.NewService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
@@ -237,6 +241,10 @@ func newTestServer(t *testing.T) *testServer {
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
+	// Bills: build + register like the per-domain handlers above (mirrors main.go).
+	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, dbcontacts.New(pool), projectsdb.New(pool), categoryQueries)
+	bills.NewHandler(billSvc).RegisterRoutes(server.Router(), tokenMaker)
+
 	// Contacts + Projects + Organisation (Company Details): build + register like the
 	// per-domain handlers above. Contacts + Organisation are exposed on the harness
 	// for direct-call tests; Projects has no dedicated test, so only its routes are
@@ -248,6 +256,7 @@ func newTestServer(t *testing.T) *testServer {
 	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
+	vat.NewHandler(vatSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	return &testServer{
 		server:              server,

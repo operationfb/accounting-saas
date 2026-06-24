@@ -916,7 +916,7 @@ async function onSmartFilePicked(e: Event) {
             option-label="label"
             option-value="value"
             option-disabled="disabled"
-            class="w-full sm:w-40"
+            class="w-full sm:w-72"
           />
         </FormRow>
 
@@ -1064,7 +1064,7 @@ async function onSmartFilePicked(e: Event) {
             @click="submit(true)"
           />
         </template>
-        <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancel">
+        <button type="button" class="font-semibold text-fa-green hover:underline" @click="cancel">
           Cancel
         </button>
       </div>

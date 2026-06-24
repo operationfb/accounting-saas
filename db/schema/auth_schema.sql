@@ -99,9 +99,11 @@ CREATE TABLE organisations (
     -- form's "Corporation Tax Reference" (a.k.a. COTAX reference).
     utr                     VARCHAR(20),
 
-    -- VAT Registration Number. Format: GB + 9 digits (e.g. 'GB123456789').
-    -- NULL if the business is not VAT-registered.
-    -- When present, this is passed to HMRC MTD VAT API calls.
+    -- VAT Registration Number. Stored as the BARE 9 digits (e.g. '123456789'),
+    -- no 'GB' prefix — that is exactly what HMRC's MTD VAT API expects as the {vrn}
+    -- path segment, and what the VAT Registration form shows. NULL if the business
+    -- is not VAT-registered. Edited on the VAT Registration screen (the VAT module),
+    -- not Company Details — the Company Details PUT preserves it unchanged.
     vrn                     VARCHAR(20),
 
     -- PAYE employer reference (e.g. '120/RF11544') and the linked Accounts Office
@@ -113,6 +115,53 @@ CREATE TABLE organisations (
     -- Whether this organisation is enrolled in MTD for VAT.
     -- Drives whether we show the VAT Return submission workflow.
     is_mtd_vat_enrolled     BOOLEAN     NOT NULL DEFAULT FALSE,
+
+    -- -------------------------------------------------------------------------
+    -- VAT registration settings (the "UK VAT Registration" screen, FreeAgent-style)
+    -- Captured at the organisation level; the VAT-return calculation engine reads
+    -- these (the accounting basis picks the calc path; the dates + frequency anchor
+    -- the locally-generated period schedule). All nullable / defaulted because a
+    -- not-yet-registered org has none of them. `vrn` (above) is the registration
+    -- number for this same screen.
+    -- -------------------------------------------------------------------------
+    -- "Are you VAT Registered?" — a simple yes/no. DISTINCT from is_mtd_vat_enrolled
+    -- above: that is about filing DIGITALLY via MTD; this is the registration itself.
+    vat_registered              BOOLEAN     NOT NULL DEFAULT FALSE,
+
+    -- "Do you need to use VAT rates other than standard UK ones?" (e.g. VAT MOSS or
+    -- the domestic reverse charge). Stored now; the special-rate handling is deferred.
+    vat_uses_non_standard_rates BOOLEAN     NOT NULL DEFAULT FALSE,
+
+    -- Dates copied from the HMRC VAT registration certificate.
+    --   vat_effective_date          — "Effective Date of VAT Registration" (when VAT
+    --                                  liability began).
+    --   vat_first_return_period_end — the end date of the FIRST VAT return; anchors
+    --                                  the period schedule the return engine generates.
+    vat_effective_date              DATE,
+    vat_first_return_period_end     DATE,
+
+    -- "Frequency of returns". CHECK mirrors the dropdown options.
+    vat_return_frequency        VARCHAR(20)
+                                CHECK (vat_return_frequency IS NULL OR vat_return_frequency IN
+                                      ('monthly','quarterly','annually')),
+
+    -- "VAT Accounting Basis" — invoice (accrual) vs cash. Selects which calculation
+    -- path the return engine uses (both are supported).
+    vat_accounting_basis        VARCHAR(20)
+                                CHECK (vat_accounting_basis IS NULL OR vat_accounting_basis IN
+                                      ('invoice','cash')),
+
+    -- "Are you on the Flat Rate Scheme?" plus the flat-rate percentage stored as
+    -- basis points (e.g. 10.5% = 1050), matching the bps convention used for every
+    -- other rate in the schema. The flat-rate CALCULATION is deferred (see BACKLOG).
+    vat_flat_rate_scheme        BOOLEAN     NOT NULL DEFAULT FALSE,
+    vat_flat_rate_bps           INTEGER,
+
+    -- "Include pre-registration expenses from" — how far back to pull purchases into
+    -- the FIRST return, in MONTHS (NULL = don't include; 6 = last 6 months, for
+    -- services; 48 = last 4 years, for goods still held). HMRC's pre-registration
+    -- rules. The inclusion CALCULATION is deferred; this only records the choice.
+    vat_pre_reg_expense_months  INTEGER,
 
     -- -------------------------------------------------------------------------
     -- Company contact details & business profile (Company Details screen)
@@ -195,7 +244,7 @@ CREATE INDEX idx_organisations_slug ON organisations (slug) WHERE slug IS NOT NU
 
 -- Comments
 COMMENT ON TABLE organisations IS 'Tenant entity. One row per registered business. All other tables point to this via organisation_id.';
-COMMENT ON COLUMN organisations.vrn IS 'VAT Registration Number. Format: GB + 9 digits. NULL if not VAT-registered.';
+COMMENT ON COLUMN organisations.vrn IS 'VAT Registration Number, stored as the bare 9 digits (no GB prefix) — the form input and the HMRC MTD {vrn} path segment. NULL if not VAT-registered.';
 COMMENT ON COLUMN organisations.utr IS 'HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.';
 COMMENT ON COLUMN organisations.country_code IS 'ISO 3166-1 alpha-2 country the org belongs to (e.g. GB). Selects the applicable vat_rates, which are keyed by the same country_code. NOT NULL, defaults to GB.';
 COMMENT ON COLUMN organisations.mtd_access_token IS 'HMRC MTD OAuth access token. TODO: encrypt at rest before production.';

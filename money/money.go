@@ -111,6 +111,26 @@ func ComputeFixedVAT(grossMinor, rateBps int32) int32 {
 	return int32(v.IntPart())
 }
 
+// ExtractVAT returns the VAT *contained in* a VAT-INCLUSIVE int64 gross — the int64
+// twin of ComputeFixedVAT (which is int32, sized for a single expense). Bills store
+// BIGINT totals, so the extraction must be int64 too:
+//
+//	vat = gross × rate_bps / (10000 + rate_bps)   (the HMRC VAT fraction, half-up)
+//
+// It is the INVERSE of AddOnVAT (which ADDS rate/10000 on top of a net). The
+// denominator is always ≥ 10000, so a 0% rate safely yields 0; negative grosses
+// (bill credit notes) round half away from zero like the rest.
+// Example: £120.00 (12000p) incl. 20% → 12000 × 2000 / 12000 = 2000p = £20.00.
+func ExtractVAT(grossMinor int64, rateBps int32) int64 {
+	return decimal.NewFromInt(grossMinor).
+		Mul(decimal.NewFromInt(int64(rateBps))).
+		// Denominator is 10000 + rate_bps (NOT 10000): the gross is VAT-inclusive,
+		// so we extract the VAT fraction rather than add the rate on top.
+		Div(decimal.NewFromInt(int64(10000) + int64(rateBps))).
+		Round(0). // whole pence, half away from zero
+		IntPart()
+}
+
 // AddOnVAT returns the VAT charged ON TOP of a VAT-EXCLUSIVE net amount, for a rate
 // held in basis points:
 //

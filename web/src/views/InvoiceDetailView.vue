@@ -493,7 +493,7 @@ function backToList() {
         </table>
 
         <div v-if="isDraft" class="mt-3">
-          <Button label="Add invoice item" icon="pi pi-plus" severity="success" @click="openAddItem" />
+          <Button label="Add invoice item" icon="pi pi-plus" @click="openAddItem" />
         </div>
 
         <!-- Footer: payment details + other info -->

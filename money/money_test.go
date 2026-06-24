@@ -118,6 +118,31 @@ func TestComputeFixedVAT(t *testing.T) {
 	}
 }
 
+// TestExtractVAT covers the int64 twin of ComputeFixedVAT — extracting VAT from a
+// VAT-inclusive gross, sized for BIGINT bill totals (and signed for credit notes).
+func TestExtractVAT(t *testing.T) {
+	cases := []struct {
+		name    string
+		gross   int64
+		rateBps int32
+		want    int64
+	}{
+		{"20% of £120 inclusive (1/6)", 12000, 2000, 2000},
+		{"5% of £105 inclusive", 10500, 500, 500},
+		{"zero rate yields zero", 5000, 0, 0},
+		{"rounds half-up", 999, 2000, 167},                       // 999*2000/12000 = 166.5 → 167
+		{"beyond int32 range", 30_000_000_000, 2000, 5_000_000_000}, // 30e9 incl 20% → 5e9
+		{"negative (credit note)", -12000, 2000, -2000},          // half away from zero
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ExtractVAT(c.gross, c.rateBps); got != c.want {
+				t.Errorf("ExtractVAT(%d, %d) = %d, want %d", c.gross, c.rateBps, got, c.want)
+			}
+		})
+	}
+}
+
 func TestClampToInt32(t *testing.T) {
 	const maxI32 int64 = 1<<31 - 1
 	const minI32 int64 = -(1 << 31)

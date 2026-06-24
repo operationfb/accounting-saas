@@ -4,7 +4,6 @@
 // Change Password, Logout).
 import { computed, ref } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
-import kontalaLogo from '@/assets/kontala-logo.png'
 import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
 import { useAuthStore } from '@/stores/auth'
@@ -40,7 +39,7 @@ const navItems: NavItem[] = [
   { label: 'Contacts', caret: false, to: '/contacts' },
   { label: 'Projects', caret: false, to: '/projects' },
   { label: 'Invoices', caret: false, to: '/invoices' },
-  // { label: 'Bills', caret: false },
+  { label: 'Bills', caret: false, to: '/bills' },
   { label: 'Expenses', caret: false, to: '/expenses' },
   { label: 'Banking', caret: false, to: '/bank-accounts' },
   // { label: 'Taxes', caret: true },
@@ -52,6 +51,7 @@ const accountMenu = ref()
 // Computed so the owner/admin-only Integrations item can be included by role.
 const accountItems = computed<MenuItem[]>(() => [
   { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
+  { label: 'VAT Registration', icon: 'pi pi-percentage', command: () => router.push('/vat-registration') },
   { label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') },
   // Managing integrations (FreeAgent, …) is owner/admin only — hidden otherwise.
   ...(auth.isOrgAdmin
@@ -64,6 +64,8 @@ const accountItems = computed<MenuItem[]>(() => [
       ]
     : []),
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
+  // Set the destructive sign-out apart from the navigation items with a divider.
+  { separator: true },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },
 ])
 
@@ -88,8 +90,8 @@ function changePassword() {
 <template>
   <header class="relative bg-fa-nav text-white">
     <nav class="mx-auto flex h-[46px] max-w-[1200px] items-stretch justify-between px-4">
-      <!-- Logo + mobile hamburger grouped on the left -->
-      <div class="flex items-center gap-1">
+      <!-- Mobile hamburger + desktop nav items, grouped flush-left -->
+      <div class="flex items-stretch">
         <!-- Hamburger: phones only -->
         <button
           type="button"
@@ -100,31 +102,22 @@ function changePassword() {
           <i :class="isMobileMenuOpen ? 'pi pi-times' : 'pi pi-bars'" />
         </button>
 
-        <!-- Logo: always visible, links to main app page -->
-        <RouterLink to="/expenses" class="flex items-center">
-          <img
-            :src="kontalaLogo"
-            alt="Kontala"
-            class="h-[22px] w-auto select-none brightness-0 invert"
-          />
-        </RouterLink>
+        <!-- Desktop nav items: hidden on phones, visible on sm+ -->
+        <ul class="hidden sm:flex items-stretch gap-0.5">
+          <li v-for="item in navItems" :key="item.label" class="flex items-stretch">
+            <!-- Items with a `to` render as a real <RouterLink>; the rest are inert. -->
+            <component
+              :is="item.to ? RouterLink : 'span'"
+              :to="item.to"
+              class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium hover:bg-fa-nav-active"
+              :class="{ 'bg-fa-nav-active': isActive(item) }"
+            >
+              {{ item.label }}
+              <i v-if="item.caret" class="pi pi-angle-down text-[11px] opacity-[0.85]" />
+            </component>
+          </li>
+        </ul>
       </div>
-
-      <!-- Desktop nav items: hidden on phones, visible on sm+ -->
-      <ul class="hidden sm:flex items-stretch gap-0.5">
-        <li v-for="item in navItems" :key="item.label" class="flex items-stretch">
-          <!-- Items with a `to` render as a real <RouterLink>; the rest are inert. -->
-          <component
-            :is="item.to ? RouterLink : 'span'"
-            :to="item.to"
-            class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium hover:bg-fa-nav-active"
-            :class="{ 'bg-fa-nav-active': isActive(item) }"
-          >
-            {{ item.label }}
-            <i v-if="item.caret" class="pi pi-angle-down text-[11px] opacity-[0.85]" />
-          </component>
-        </li>
-      </ul>
 
       <div class="flex items-center gap-1.5">
         <button
@@ -147,7 +140,7 @@ function changePassword() {
         <button
           id="account-menu-button"
           type="button"
-          class="inline-flex h-[34px] items-center gap-1.5 rounded px-2 text-[13px] font-semibold uppercase text-white hover:bg-fa-nav-active"
+          class="inline-flex h-[34px] items-center gap-1.5 rounded px-2 text-[13px] font-normal capitalize text-white hover:bg-fa-nav-active"
           aria-haspopup="true"
           aria-controls="account-menu"
           @click="toggleAccountMenu"

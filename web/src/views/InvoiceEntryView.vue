@@ -345,7 +345,7 @@ function addNewContact() {
           :loading="submitting"
           @click="submit"
         />
-        <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancel">Cancel</button>
+        <button type="button" class="font-semibold text-fa-green hover:underline" @click="cancel">Cancel</button>
       </div>
     </template>
   </AppLayout>

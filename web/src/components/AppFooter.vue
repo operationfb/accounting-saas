@@ -15,7 +15,7 @@ const links = ['Support', 'Knowledge Base', 'Privacy', 'Cookie Notice']
           v-for="link in links"
           :key="link"
           href="#"
-          class="text-[13px] text-fa-blue hover:underline"
+          class="text-[13px] text-fa-green hover:underline"
           >{{ link }}</a
         >
       </nav>

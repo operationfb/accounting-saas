@@ -17,8 +17,8 @@
   --color-fa-bg: #f5f9ff; /* pale-blue page background (login) */
   --color-fa-nav: #002d63; /* top navigation bar */
   --color-fa-nav-active: #004aaa; /* active/hovered nav item */
-  --color-fa-green: #79cc6e; /* primary action */
-  --color-fa-green-hover: #69bf5e;
+  --color-fa-green: #2d6a4f; /* Kontala k-green — primary action / success accent */
+  --color-fa-green-hover: #245a42; /* Kontala k-green-dark */
   --color-fa-blue: #004aaa; /* links / brand */
   --color-fa-text: #181a1b; /* default text */
   --color-fa-muted: #6b7785; /* secondary text */
@@ -53,4 +53,19 @@
 
 .p-select-option {
   padding-left: 1.5rem !important;
+}
+
+/* Account dropdown (the top-right account menu). The popup teleports to <body>,
+   so these must be global; scoped to #account-menu so the other <Menu> popups keep
+   the tighter global row spacing. Goal: smaller item labels + roomier rows (more
+   line spacing). The name/email header (the #start slot) is left as-is. */
+#account-menu .p-menu-item-link {
+  padding-top: 0.55rem !important;
+  padding-bottom: 0.55rem !important;
+}
+#account-menu .p-menu-item-label {
+  font-size: 0.8125rem !important; /* ~13px — smaller than the 16px default */
+}
+#account-menu .p-menu-item-icon {
+  font-size: 0.875rem !important; /* keep the icon proportional to the smaller label */
 }

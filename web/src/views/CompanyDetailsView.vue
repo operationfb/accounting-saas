@@ -427,7 +427,7 @@ function cancel() {
 
       <div v-if="canEdit" class="flex items-center gap-3 py-2 pb-6">
         <Button label="Save changes" :loading="submitting" @click="submit" />
-        <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancel">
+        <button type="button" class="font-semibold text-fa-green hover:underline" @click="cancel">
           Cancel
         </button>
       </div>

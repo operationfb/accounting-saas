@@ -246,6 +246,17 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	UpdateOrganisation(ctx context.Context, arg UpdateOrganisationParams) (Organisation, error)
 	// -----------------------------------------------------------------------------
+	// UpdateOrganisationVatSettings
+	// Writes ONLY the VAT-registration columns shown on the "UK VAT Registration"
+	// screen (owned by the VAT module). Kept separate from UpdateOrganisation so the
+	// two settings forms never clobber each other's columns: this one leaves the
+	// Company Details fields (name, address, contact, …) untouched, and Company
+	// Details leaves these untouched. vrn lives on both screens conceptually but is
+	// written here (Company Details preserves it). Returns the full row so the service
+	// can build its response.
+	// -----------------------------------------------------------------------------
+	UpdateOrganisationVatSettings(ctx context.Context, arg UpdateOrganisationVatSettingsParams) (Organisation, error)
+	// -----------------------------------------------------------------------------
 	// UpdateUser
 	// Updates editable profile fields only. Credentials, verification state and
 	// security counters have their own dedicated queries below. Returns the updated

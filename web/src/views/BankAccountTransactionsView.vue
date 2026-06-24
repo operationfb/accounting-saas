@@ -846,7 +846,7 @@ async function removeEditing() {
                             <div class="col-start-2 mt-1 flex items-center gap-3">
                               <Button :label="editingId ? 'Save changes' : 'Add'" :loading="saving" @click="submitForm" />
                               <Button v-if="editingId" label="Remove" severity="danger" outlined @click="removeEditing" />
-                              <button type="button" class="font-semibold text-fa-blue hover:underline" @click="cancelForm">Cancel</button>
+                              <button type="button" class="font-semibold text-fa-green hover:underline" @click="cancelForm">Cancel</button>
                             </div>
                           </div>
                           <p v-if="formError" class="mt-2 text-sm text-[#c0392b]">{{ formError }}</p>

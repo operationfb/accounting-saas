@@ -349,6 +349,34 @@ RETURNING *;
 
 
 -- -----------------------------------------------------------------------------
+-- UpdateOrganisationVatSettings
+-- Writes ONLY the VAT-registration columns shown on the "UK VAT Registration"
+-- screen (owned by the VAT module). Kept separate from UpdateOrganisation so the
+-- two settings forms never clobber each other's columns: this one leaves the
+-- Company Details fields (name, address, contact, …) untouched, and Company
+-- Details leaves these untouched. vrn lives on both screens conceptually but is
+-- written here (Company Details preserves it). Returns the full row so the service
+-- can build its response.
+-- -----------------------------------------------------------------------------
+-- name: UpdateOrganisationVatSettings :one
+UPDATE organisations SET
+    vrn                          = $2,
+    vat_registered               = $3,
+    vat_uses_non_standard_rates  = $4,
+    vat_effective_date           = $5,
+    vat_first_return_period_end  = $6,
+    vat_return_frequency         = $7,
+    vat_accounting_basis         = $8,
+    vat_flat_rate_scheme         = $9,
+    vat_flat_rate_bps            = $10,
+    vat_pre_reg_expense_months   = $11,
+    updated_at                   = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+RETURNING *;
+
+
+-- -----------------------------------------------------------------------------
 -- SoftDeleteOrganisation
 -- Soft-deletes a tenant: sets deleted_at and flips is_active off.
 -- -----------------------------------------------------------------------------

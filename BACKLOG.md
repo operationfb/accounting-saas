@@ -211,34 +211,37 @@ MINIMAL cut. Deferred:
 
 ## Bills (accounts payable)
 
-The DATALAYER ONLY landed (2026-06-24): `db/schema/bills_schema.sql` (`bills` + `bill_attachments`),
-`db/queries/bills.sql`, the generated `db/bills` package, and the `bills` sqlc block. A bill is the
-payable twin of an invoice, modelled on the FreeAgent New Bill screen — a SINGLE flat spending line
-(like an expense): supplier `contact_id`, supplier `reference` (no auto-numbering), `dated_on` /
-`due_on`, `category_id` → CoA `categories` (picker filtered to spending accounts by
-`ListBillCategories`), `amounts_include_vat`, BIGINT-pence net/sales_tax/total/paid + generated
-`due_value_minor`, stored `status` (DRAFT|OPEN|WRITTEN_OFF), `comments`, `is_hire_purchase`,
-optional `project_id`. No service/handler/frontend yet. Deferred:
+The DATALAYER + BACKEND landed (2026-06-24). Datalayer: `db/schema/bills_schema.sql` (`bills` +
+`bill_attachments`), `db/queries/bills.sql`, the generated `db/bills` package. Backend: `internal/bills`
+(`Service` + `Handler` + DTOs), self-registering `/api/v1/bills` (CRUD) + `/api/v1/bill-categories`,
+wired in `main.go`. A bill is the payable twin of an invoice, modelled on the FreeAgent New Bill screen
+— a SINGLE flat spending line (like an expense): supplier `contact_id`, supplier `reference` (no
+auto-numbering), `dated_on` / `due_on`, `category_id` → CoA `categories` (picker filtered to spending
+accounts), BIGINT-pence net/sales_tax/total/paid + generated `due_value_minor`, `comments`,
+`is_hire_purchase`, optional `project_id`. VAT follows the EXPENSES pattern (`vat_rate_id` +
+`is_fixed_ratio` extract via the new `money.ExtractVAT`, or a manual `vat_amount`); there is NO status
+lifecycle (a bill is editable/deletable only while unpaid) and `paid_value_minor` is the banking
+module's to write. Tested in `bill_service_test.go` + `money/money_test.go` (`ExtractVAT`). Deferred:
 
-- **`internal/bills` service + handler + Vue frontend (the next cut).** CRUD + org-scoped auth +
-  editability guards; the Incl/Excl-VAT math (`money.ComputeFixedVAT` to EXTRACT vs `money.AddOnVAT`
-  to ADD ON TOP) and "Auto" VAT resolution from `categories.default_vat`; the derived display status
-  (Open/Overdue/Paid/Overpaid from `due_on` + `total` + `paid`); attachment upload. _Files: new
-  `internal/bills`, `main.go`._
-- **Bill Smart Capture / OCR.** `bill_attachments.ocr_*` columns + queries exist, but the GCS upload
-  + Document AI + skeleton-draft pipeline isn't wired (mirrors the expenses capture path). _Files:
-  `internal/attachments`-style bill service, `internal/ocr`, `internal/storage`._
-- **Payments / reconciliation → `paid_value_minor`.** Nothing populates it yet (defaults 0, so a bill
-  always derives as Open/Overdue, never Paid). Wire from the banking `BILL_PAYMENT` explanation link
-  (see the banking backlog's "future-entity explanation links" — add `paid_bill_id` to
-  `bank_transaction_explanations`); add `paid_on` / `written_off_date` columns then (and stamp them
-  via per-transition status queries). _Files: schema, `db/queries/bills.sql`, banking._
+- **SPA bill form** (`web/`) — list + create/edit + the supplier / spending-category / VAT-rate pickers
+  (reuses the existing `GET /api/v1/vat-rates` and the new `GET /api/v1/bill-categories`). Not built yet.
+- **Bill attachments service** (GCS upload + Smart Capture / OCR). `bill_attachments.ocr_*` columns +
+  queries exist, but the upload + Document AI + skeleton-draft pipeline isn't wired (mirrors the
+  expenses capture path). _Files: an `internal/attachments`-style bill service, `internal/ocr`, `internal/storage`._
+- **Banking writes `paid_value_minor`.** Nothing populates it yet (defaults 0, so a bill always derives
+  as Unpaid/Overdue, never Paid, and is always editable/deletable). Wire from the banking `BILL_PAYMENT`
+  explanation link (see the banking backlog's "future-entity explanation links" — add `paid_bill_id` to
+  `bank_transaction_explanations`); add a `paid_on` column then. `UpdateBillPaidValue` is the seam.
+  _Files: schema, `db/queries/bills.sql`, banking._
 - **Wire `ContactHasBills` into the contacts in-use guard.** The datalayer query exists but is unused;
   inject the bills querier into `contacts.NewService` and OR it into the existing
   `ContactHasProjects` / `ContactHasInvoices` check so a contact with bills can't be soft-deleted and
   reports `in_use=true`. _Files: `internal/contacts/service.go`, `main.go`._
-- **`reference` uniqueness.** Not enforced in v1 (a supplier number isn't ours). If desired, add a
-  partial unique index on `(organisation_id, contact_id, reference)`. _File: `db/schema/bills_schema.sql`._
+- **Including/Excluding-VAT entry mode.** Dropped in favour of expenses-style inclusive-only entry. If a
+  net-entry mode is wanted, re-add an `amounts_include_vat` flag + use `money.AddOnVAT`. _Files:
+  `db/schema/bills_schema.sql`, `internal/bills/service.go`._
+- **`reference` uniqueness.** Not enforced (a supplier number isn't ours). If desired, add a partial
+  unique index on `(organisation_id, contact_id, reference)`. _File: `db/schema/bills_schema.sql`._
 - **Multi-line bills** (`bill_items` child table, like `invoice_items`) for bills that split across
   several spending categories; **supplier→category learning** for bills (a `learn_supplier_category()`
   analogue); **hire-purchase agreement** entity + instalment schedule behind `is_hire_purchase`;

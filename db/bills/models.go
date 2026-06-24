@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Accounts-payable bills (supplier invoices) an organisation owes. Org-scoped, soft-deleted. Single flat spending line (like an expense). Payable twin of invoices. Models the FreeAgent New Bill screen (minimal first cut).
+// Accounts-payable bills (supplier invoices) an organisation owes. Org-scoped, soft-deleted. Single flat spending line (like an expense). Payable twin of invoices. No status lifecycle: editable/deletable while unpaid.
 type Bill struct {
 	ID              uuid.UUID `json:"id"`
 	OrganisationID  uuid.UUID `json:"organisation_id"`
@@ -25,19 +25,18 @@ type Bill struct {
 	IsHirePurchase bool        `json:"is_hire_purchase"`
 	// Spending Category = a CoA (categories) nominal account. The picker is filtered to spending accounts by ListBillCategories.
 	CategoryID uuid.UUID `json:"category_id"`
-	// The Including/Excluding-VAT radio. TRUE = service EXTRACTS VAT from the total (money.ComputeFixedVAT); FALSE = ADDS it on top of the net (money.AddOnVAT).
-	AmountsIncludeVat bool `json:"amounts_include_vat"`
-	// Resolved VAT rate in basis points (2000 = 20%). The form's "Auto" is resolved from categories.default_vat in the service before storing.
-	VatRateBps         int32 `json:"vat_rate_bps"`
-	NetValueMinor      int64 `json:"net_value_minor"`
-	SalesTaxValueMinor int64 `json:"sales_tax_value_minor"`
-	// Gross total (net + VAT) in minor units (pence). BIGINT because a bill total can exceed the int32 ceiling. Negative = bill credit note (refund).
+	// The picked vat_rates row (NULL = no VAT). Fixed-ratio → VAT extracted from the inclusive total; non-fixed-ratio ("manual") → sales_tax_value_minor taken from the client. Mirrors the expenses VAT pattern.
+	VatRateID pgtype.UUID `json:"vat_rate_id"`
+	// Snapshot of the chosen rate in basis points (2000 = 20%); NULL when no rate is selected.
+	VatRateBps         pgtype.Int4 `json:"vat_rate_bps"`
+	NetValueMinor      int64       `json:"net_value_minor"`
+	SalesTaxValueMinor int64       `json:"sales_tax_value_minor"`
+	// Gross total (the entered VAT-inclusive "Total Price") in minor units (pence). BIGINT because a bill total can exceed the int32 ceiling. Negative = bill credit note (refund).
 	TotalValueMinor int64 `json:"total_value_minor"`
-	PaidValueMinor  int64 `json:"paid_value_minor"`
+	// Amount settled so far, written by the BANKING module (reconciliation) — read-only to the bills service. A bill with paid > 0 cannot be edited or deleted.
+	PaidValueMinor int64 `json:"paid_value_minor"`
 	// Outstanding amount = total_value_minor - paid_value_minor. GENERATED/STORED so the DB keeps it correct; read-only.
 	DueValueMinor pgtype.Int8 `json:"due_value_minor"`
-	// STORED lifecycle only: DRAFT|OPEN|WRITTEN_OFF. The display status (Open/Overdue/Paid/Overpaid) is DERIVED in the service from due_on + total_value_minor + paid_value_minor.
-	Status string `json:"status"`
 	// Optional "Link to Project". A real FK to projects(id) (unlike expenses.project_id, which is a bare UUID).
 	ProjectID pgtype.UUID        `json:"project_id"`
 	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
