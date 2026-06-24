@@ -170,10 +170,9 @@ func (s *Service) CreateInvoice(
 			return kernel.ErrInternal(err)
 		}
 
-		// Advance the org's global invoice counter, but only when this invoice used
-		// the suggested next number (bumpInvoiceCounter is a no-op for a custom or
-		// out-of-sequence reference — see BumpInvoiceNumber's guard).
-		if err := bumpInvoiceCounter(ctx, tx, authOrgID, ref); err != nil {
+		// Raise the org's invoice-counter floor past this number (when the reference
+		// is numeric) so the next suggestion always advances and never reuses it.
+		if err := raiseInvoiceCounter(ctx, tx, authOrgID, ref); err != nil {
 			return err
 		}
 
@@ -264,14 +263,26 @@ func (s *Service) NextInvoiceReference(ctx context.Context, authUserID, authOrgI
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return "", err
 	}
-	n, err := s.authQueries.GetNextInvoiceNumber(ctx, authOrgID)
+	// The suggestion is the greater of (a) the stored counter floor and (b) one more
+	// than the highest numeric reference already in use — so it always advances and
+	// never re-suggests a taken number, even if the stored counter has drifted below
+	// the references actually in use.
+	floor, err := s.authQueries.GetNextInvoiceNumber(ctx, authOrgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", kernel.ErrNotFound("organisation", authOrgID.String())
 		}
 		return "", kernel.ErrInternal(err)
 	}
-	return formatInvoiceNumber(n), nil
+	maxRef, err := s.queries.MaxNumericInvoiceReference(ctx, authOrgID)
+	if err != nil {
+		return "", kernel.ErrInternal(err)
+	}
+	next := floor
+	if maxRef+1 > next {
+		next = maxRef + 1
+	}
+	return formatInvoiceNumber(next), nil
 }
 
 // =============================================================================
@@ -733,19 +744,20 @@ func formatInvoiceNumber(n int32) string {
 	return fmt.Sprintf("%03d", n)
 }
 
-// bumpInvoiceCounter advances the org's invoice counter when the just-created
-// invoice used the suggested next number. It parses the reference as an integer
-// ("001" → 1); a non-numeric / custom reference leaves the counter alone.
-// BumpInvoiceNumber's WHERE-guard only moves the counter when it still equals the
-// used number, so this is safe to call unconditionally inside the create tx.
-func bumpInvoiceCounter(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, reference string) error {
+// raiseInvoiceCounter advances the org's invoice-counter floor to one PAST the
+// just-used numeric reference, so the next suggestion stays monotonic — a number is
+// never re-suggested once used, even after the invoice is deleted. It parses the
+// reference as an integer ("001" → 1); a non-numeric / custom reference leaves the
+// counter alone. GREATEST (in RaiseInvoiceNumber) only ever moves the floor UP, so
+// this is safe to call unconditionally and under concurrency.
+func raiseInvoiceCounter(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, reference string) error {
 	n, err := strconv.Atoi(strings.TrimSpace(reference))
 	if err != nil || n < 1 {
 		return nil // custom / out-of-sequence reference — don't move the counter
 	}
-	if err := auth.New(tx).BumpInvoiceNumber(ctx, auth.BumpInvoiceNumberParams{
-		ID:                orgID,
-		NextInvoiceNumber: int32(n),
+	if err := auth.New(tx).RaiseInvoiceNumber(ctx, auth.RaiseInvoiceNumberParams{
+		ID:      orgID,
+		AtLeast: int32(n) + 1,
 	}); err != nil {
 		return kernel.ErrInternal(err)
 	}

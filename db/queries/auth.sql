@@ -281,18 +281,18 @@ WHERE id = $1
 
 
 -- -----------------------------------------------------------------------------
--- BumpInvoiceNumber
--- Advances the org's invoice counter by one, but ONLY when it still equals the
--- number that was just used ($2). That guard means a manual / out-of-sequence
--- reference never moves the counter, and two concurrent creates can't
--- double-advance it (the second's WHERE no longer matches). :exec — a no-op when
--- nothing matches.
+-- RaiseInvoiceNumber
+-- Raises the org's invoice counter so it is AT LEAST `at_least` — the floor below
+-- which the next-reference suggestion never drops. Called on create with
+-- (used number + 1), so the counter advances MONOTONICALLY (a number is never
+-- re-suggested once used, even after the invoice is deleted). GREATEST makes it
+-- idempotent, concurrency-safe, and immune to out-of-order references — it can only
+-- ever move the counter UP. :exec.
 -- -----------------------------------------------------------------------------
--- name: BumpInvoiceNumber :exec
+-- name: RaiseInvoiceNumber :exec
 UPDATE organisations SET
-    next_invoice_number = next_invoice_number + 1
-WHERE id = $1
-  AND next_invoice_number = $2
+    next_invoice_number = GREATEST(next_invoice_number, sqlc.arg(at_least))
+WHERE id = sqlc.arg(id)
   AND deleted_at IS NULL;
 
 

@@ -19,15 +19,6 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	AcceptInvite(ctx context.Context, inviteToken pgtype.Text) (OrganisationMembership, error)
 	// -----------------------------------------------------------------------------
-	// BumpInvoiceNumber
-	// Advances the org's invoice counter by one, but ONLY when it still equals the
-	// number that was just used ($2). That guard means a manual / out-of-sequence
-	// reference never moves the counter, and two concurrent creates can't
-	// double-advance it (the second's WHERE no longer matches). :exec — a no-op when
-	// nothing matches.
-	// -----------------------------------------------------------------------------
-	BumpInvoiceNumber(ctx context.Context, arg BumpInvoiceNumberParams) error
-	// -----------------------------------------------------------------------------
 	// CreateInvitedMembership
 	// Creates a pending ('invited') membership and records the invite token, send
 	// time and inviting admin. The invitee accepts via AcceptInvite.
@@ -179,6 +170,16 @@ type Querier interface {
 	// The application computes locked_until (e.g. now() + 15 minutes).
 	// -----------------------------------------------------------------------------
 	LockUser(ctx context.Context, arg LockUserParams) error
+	// -----------------------------------------------------------------------------
+	// RaiseInvoiceNumber
+	// Raises the org's invoice counter so it is AT LEAST `at_least` — the floor below
+	// which the next-reference suggestion never drops. Called on create with
+	// (used number + 1), so the counter advances MONOTONICALLY (a number is never
+	// re-suggested once used, even after the invoice is deleted). GREATEST makes it
+	// idempotent, concurrency-safe, and immune to out-of-order references — it can only
+	// ever move the counter UP. :exec.
+	// -----------------------------------------------------------------------------
+	RaiseInvoiceNumber(ctx context.Context, arg RaiseInvoiceNumberParams) error
 	// -----------------------------------------------------------------------------
 	// RecordSuccessfulLogin
 	// Called after a password check passes: stamps the login, records the source

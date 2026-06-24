@@ -517,3 +517,56 @@ sql:
               type: "RawMessage"
           - db_type: "pg_catalog.numeric"
             go_type: "string"
+
+  # ===========================================================================
+  # BILLS MODULE
+  # Generates the data layer for the bills + bill_attachments tables into package
+  # `bills` at db/bills — the accounts-payable twin of the invoices module.
+  #
+  # All SIX schema files are loaded in dependency order because bills_schema.sql
+  # references objects from earlier files:
+  #   - set_updated_at() trigger function + currencies  (schema.sql)
+  #   - organisations / users tables                    (auth_schema.sql)
+  #   - contacts table        (contact_id FK)           (contacts_schema.sql)
+  #   - categories table      (category_id FK)          (categories_schema.sql)
+  #   - projects table        (project_id FK)           (projects_schema.sql)
+  # omit_unused_structs keeps all prior-domain structs out of db/bills — only the
+  # Bill + BillAttachment structs (and the ListBillCategories row) are emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
+      - "db/schema/categories_schema.sql"
+      - "db/schema/projects_schema.sql"
+      - "db/schema/bills_schema.sql"
+
+    queries: "db/queries/bills.sql"
+
+    gen:
+      go:
+        package: "bills"
+        out: "db/bills"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep the prior domains' structs (loaded only to satisfy FK deps) out of
+        # db/bills — emit only what bills.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"

@@ -509,6 +509,48 @@ func TestInvoiceAutoNumber(t *testing.T) {
 	}
 }
 
+// TestInvoiceAutoNumber_SelfHeals reproduces the drift bug: a numeric reference is
+// in use but the org's stored counter is BEHIND it (e.g. a reference created
+// out-of-band, or one the old increment-on-exact-match logic failed to advance).
+// The suggestion must jump to one PAST the highest used number, never re-suggesting
+// a taken one.
+func TestInvoiceAutoNumber_SelfHeals(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	orgB, userB := newOrgWithOwner(t, ts)
+	authB := bearer(t, ts, userB, orgB)
+	contactB := createContactAs(t, ts, userB, orgB)
+
+	// Seed an invoice with reference '005' directly, WITHOUT bumping the counter —
+	// the fresh org's counter stays at its default 1, so it has drifted behind '005'.
+	var invID string
+	if err := ts.pool.QueryRow(context.Background(),
+		`INSERT INTO invoices (organisation_id, created_by_user_id, contact_id, dated_on, reference)
+		 VALUES ($1, $2, $3, $4, '005') RETURNING id`,
+		orgB, userB, contactB, today()).Scan(&invID); err != nil {
+		t.Fatalf("seed drifted invoice: %v", err)
+	}
+	cleanupInvoice(t, ts, invID)
+
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/invoices/next-reference", nil)
+	req.Header.Set("Authorization", authB)
+	ts.server.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("next-reference: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Reference string `json:"reference"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode next-reference: %v", err)
+	}
+	if resp.Reference != "006" {
+		t.Errorf("self-heal: next-reference got %q, want 006 (one past the existing 005)", resp.Reference)
+	}
+}
+
 // =============================================================================
 // UPDATE
 // =============================================================================

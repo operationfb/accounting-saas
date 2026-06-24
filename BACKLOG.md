@@ -4,7 +4,7 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-23_
+_Last updated: 2026-06-24_
 
 ## Auth & authorization
 
@@ -172,12 +172,13 @@ MINIMAL cut. Deferred:
   status buttons (the backend already supports them); and the **Paid** tracker step (needs the
   payments feature).
 - **Per-PROJECT invoice sequence.** Org-level auto-numbering landed (2026-06-24): a
-  `next_invoice_number` counter on `organisations`, `GET /api/v1/invoices/next-reference` (the
-  zero-padded next number, pre-filled on the create form), and an increment-on-use rule (creating an
-  invoice with the suggested number advances the counter; a custom reference doesn't). `reference`
-  is now REQUIRED + unique per org. Still deferred: honouring `projects.project_invoice_sequence` so
-  a project can use its OWN number sequence instead of the org-wide one. _Files: `internal/invoices`,
-  the projects domain._
+  `next_invoice_number` counter floor on `organisations` + `GET /api/v1/invoices/next-reference`
+  (the zero-padded next number, pre-filled on the create form). The suggestion is **self-healing** —
+  `GREATEST(counter floor, highest numeric reference in use + 1)` — so it can't get stuck behind the
+  references actually in use; on create a numeric reference raises the floor (monotonic `GREATEST`,
+  so numbers are never reused). `reference` is now REQUIRED + unique per org. Still deferred:
+  honouring `projects.project_invoice_sequence` so a project can use its OWN number sequence instead
+  of the org-wide one. _Files: `internal/invoices`, the projects domain._
 - **Payments / reconciliation → `paid_value_minor`.** Nothing populates `paid_value_minor` yet
   (defaults 0, so a SENT invoice always derives as Open/Overdue, never Paid). Wire it from the
   banking `INVOICE_RECEIPT` explanation link (see the banking backlog's "future-entity explanation
@@ -204,6 +205,45 @@ MINIMAL cut. Deferred:
 - **Invoice audit log.** No history table yet (same gap as the unwired `expense_audit_log`).
 - **Turn `expenses.rebilled_invoice_id` into a real FK** to `invoices(id)` now that the table
   exists (it's a bare UUID today). _File: `db/schema/schema.sql`._
+
+## Bills (accounts payable)
+
+The DATALAYER ONLY landed (2026-06-24): `db/schema/bills_schema.sql` (`bills` + `bill_attachments`),
+`db/queries/bills.sql`, the generated `db/bills` package, and the `bills` sqlc block. A bill is the
+payable twin of an invoice, modelled on the FreeAgent New Bill screen — a SINGLE flat spending line
+(like an expense): supplier `contact_id`, supplier `reference` (no auto-numbering), `dated_on` /
+`due_on`, `category_id` → CoA `categories` (picker filtered to spending accounts by
+`ListBillCategories`), `amounts_include_vat`, BIGINT-pence net/sales_tax/total/paid + generated
+`due_value_minor`, stored `status` (DRAFT|OPEN|WRITTEN_OFF), `comments`, `is_hire_purchase`,
+optional `project_id`. No service/handler/frontend yet. Deferred:
+
+- **`internal/bills` service + handler + Vue frontend (the next cut).** CRUD + org-scoped auth +
+  editability guards; the Incl/Excl-VAT math (`money.ComputeFixedVAT` to EXTRACT vs `money.AddOnVAT`
+  to ADD ON TOP) and "Auto" VAT resolution from `categories.default_vat`; the derived display status
+  (Open/Overdue/Paid/Overpaid from `due_on` + `total` + `paid`); attachment upload. _Files: new
+  `internal/bills`, `main.go`._
+- **Bill Smart Capture / OCR.** `bill_attachments.ocr_*` columns + queries exist, but the GCS upload
+  + Document AI + skeleton-draft pipeline isn't wired (mirrors the expenses capture path). _Files:
+  `internal/attachments`-style bill service, `internal/ocr`, `internal/storage`._
+- **Payments / reconciliation → `paid_value_minor`.** Nothing populates it yet (defaults 0, so a bill
+  always derives as Open/Overdue, never Paid). Wire from the banking `BILL_PAYMENT` explanation link
+  (see the banking backlog's "future-entity explanation links" — add `paid_bill_id` to
+  `bank_transaction_explanations`); add `paid_on` / `written_off_date` columns then (and stamp them
+  via per-transition status queries). _Files: schema, `db/queries/bills.sql`, banking._
+- **Wire `ContactHasBills` into the contacts in-use guard.** The datalayer query exists but is unused;
+  inject the bills querier into `contacts.NewService` and OR it into the existing
+  `ContactHasProjects` / `ContactHasInvoices` check so a contact with bills can't be soft-deleted and
+  reports `in_use=true`. _Files: `internal/contacts/service.go`, `main.go`._
+- **`reference` uniqueness.** Not enforced in v1 (a supplier number isn't ours). If desired, add a
+  partial unique index on `(organisation_id, contact_id, reference)`. _File: `db/schema/bills_schema.sql`._
+- **Multi-line bills** (`bill_items` child table, like `invoice_items`) for bills that split across
+  several spending categories; **supplier→category learning** for bills (a `learn_supplier_category()`
+  analogue); **hire-purchase agreement** entity + instalment schedule behind `is_hire_purchase`;
+  and **multi-currency** (`exchange_rate` + native-currency totals). _File: `db/schema/bills_schema.sql`._
+- **Revisit the `ListBillCategories` filter** (`account_type IN COST_OF_SALES/ADMIN_EXPENSE/CAPITAL_ASSET`)
+  when `expense_categories` and `categories` are unified, so bills and the expense form share one
+  spending-account list. _Files: `db/queries/bills.sql`, the categories unification._
+- **Bill audit log.** No history table yet (same gap as the unwired `expense_audit_log`).
 
 ## Organisation / Company details
 

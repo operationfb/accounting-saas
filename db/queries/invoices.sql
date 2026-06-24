@@ -204,6 +204,23 @@ SELECT EXISTS (
 ) AS has_invoices;
 
 
+-- -----------------------------------------------------------------------------
+-- MaxNumericInvoiceReference
+-- The highest PURELY-NUMERIC reference currently in use among the org's LIVE
+-- invoices (e.g. '001','002' → 2), or 0 if none. The service suggests one MORE than
+-- this (clamped to the org's counter floor) as the next reference, so a fresh
+-- suggestion can never collide with an existing number — even if the stored counter
+-- has drifted. The `~ '^[0-9]{1,8}$'` filter skips non-numeric references ('INV-1',
+-- …) and caps the digits so the ::integer cast can't overflow.
+-- -----------------------------------------------------------------------------
+-- name: MaxNumericInvoiceReference :one
+SELECT COALESCE(MAX(reference::integer), 0)::integer AS max_reference
+FROM invoices
+WHERE organisation_id = $1
+  AND deleted_at IS NULL
+  AND reference ~ '^[0-9]{1,8}$';
+
+
 -- =============================================================================
 -- INVOICE LINE ITEMS
 -- =============================================================================

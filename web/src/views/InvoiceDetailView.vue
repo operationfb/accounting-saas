@@ -348,7 +348,7 @@ function backToList() {
             <span
               v-else
               class="h-2 w-2 rounded-full"
-              :class="isStepActive(s.key) ? 'bg-fa-green' : stepAction(s.key) ? 'bg-fa-blue' : 'bg-transparent'"
+              :class="isStepActive(s.key) ? 'bg-fa-green' : 'bg-transparent'"
             />
           </span>
           <span

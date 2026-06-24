@@ -49,32 +49,6 @@ func (q *Queries) AcceptInvite(ctx context.Context, inviteToken pgtype.Text) (Or
 	return i, err
 }
 
-const bumpInvoiceNumber = `-- name: BumpInvoiceNumber :exec
-UPDATE organisations SET
-    next_invoice_number = next_invoice_number + 1
-WHERE id = $1
-  AND next_invoice_number = $2
-  AND deleted_at IS NULL
-`
-
-type BumpInvoiceNumberParams struct {
-	ID                uuid.UUID `json:"id"`
-	NextInvoiceNumber int32     `json:"next_invoice_number"`
-}
-
-// -----------------------------------------------------------------------------
-// BumpInvoiceNumber
-// Advances the org's invoice counter by one, but ONLY when it still equals the
-// number that was just used ($2). That guard means a manual / out-of-sequence
-// reference never moves the counter, and two concurrent creates can't
-// double-advance it (the second's WHERE no longer matches). :exec — a no-op when
-// nothing matches.
-// -----------------------------------------------------------------------------
-func (q *Queries) BumpInvoiceNumber(ctx context.Context, arg BumpInvoiceNumberParams) error {
-	_, err := q.db.Exec(ctx, bumpInvoiceNumber, arg.ID, arg.NextInvoiceNumber)
-	return err
-}
-
 const createInvitedMembership = `-- name: CreateInvitedMembership :one
 INSERT INTO organisation_memberships (
     organisation_id,
@@ -1003,6 +977,32 @@ type LockUserParams struct {
 // -----------------------------------------------------------------------------
 func (q *Queries) LockUser(ctx context.Context, arg LockUserParams) error {
 	_, err := q.db.Exec(ctx, lockUser, arg.ID, arg.LockedUntil)
+	return err
+}
+
+const raiseInvoiceNumber = `-- name: RaiseInvoiceNumber :exec
+UPDATE organisations SET
+    next_invoice_number = GREATEST(next_invoice_number, $1)
+WHERE id = $2
+  AND deleted_at IS NULL
+`
+
+type RaiseInvoiceNumberParams struct {
+	AtLeast int32     `json:"at_least"`
+	ID      uuid.UUID `json:"id"`
+}
+
+// -----------------------------------------------------------------------------
+// RaiseInvoiceNumber
+// Raises the org's invoice counter so it is AT LEAST `at_least` — the floor below
+// which the next-reference suggestion never drops. Called on create with
+// (used number + 1), so the counter advances MONOTONICALLY (a number is never
+// re-suggested once used, even after the invoice is deleted). GREATEST makes it
+// idempotent, concurrency-safe, and immune to out-of-order references — it can only
+// ever move the counter UP. :exec.
+// -----------------------------------------------------------------------------
+func (q *Queries) RaiseInvoiceNumber(ctx context.Context, arg RaiseInvoiceNumberParams) error {
+	_, err := q.db.Exec(ctx, raiseInvoiceNumber, arg.AtLeast, arg.ID)
 	return err
 }
 
