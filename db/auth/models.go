@@ -96,12 +96,13 @@ type Organisation struct {
 	StripeSubscriptionID pgtype.Text        `json:"stripe_subscription_id"`
 	NativeCurrency       string             `json:"native_currency"`
 	// ISO 3166-1 alpha-2 country the org belongs to (e.g. GB). Selects the applicable vat_rates, which are keyed by the same country_code. NOT NULL, defaults to GB.
-	CountryCode string             `json:"country_code"`
-	Timezone    string             `json:"timezone"`
-	IsActive    bool               `json:"is_active"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
+	CountryCode       string             `json:"country_code"`
+	Timezone          string             `json:"timezone"`
+	NextInvoiceNumber int32              `json:"next_invoice_number"`
+	IsActive          bool               `json:"is_active"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt         pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type OrganisationMembership struct {

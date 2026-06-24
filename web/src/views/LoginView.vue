@@ -9,7 +9,7 @@ import Button from 'primevue/button'
 import { useAuthStore } from '@/stores/auth'
 import type { ApiError } from '@/lib/api'
 // Imported (not in /public) so Vite fingerprints the file for cache-busting.
-import kontalaLogo from '@/assets/kontala-logo.png'
+import kontalaLogo from '@/assets/kontala-logo-green.png'
 
 const router = useRouter()
 const route = useRoute()

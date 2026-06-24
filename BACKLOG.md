@@ -169,12 +169,15 @@ MINIMAL cut. Deferred:
   `web/src/types/invoice.ts`, `web/src/lib/invoiceStatus.ts`, router + `AppTopBar`._ Deferred UI: the
   FreeAgent fields with no backend column (line **Units**/`item_type`, "**add to price list**",
   invoice **Additional text**/comments, **project** link); the **schedule / write-off / refund**
-  status buttons (the backend already supports them); a **reference auto-number** prefill; and the
-  **Paid** tracker step (needs the payments feature).
-- **Reference auto-numbering.** `reference` is free/nullable today (unique per org via
-  `uq_invoices_reference`). Add a per-org sequence generator, honouring
-  `projects.project_invoice_sequence` (a project may use its own number sequence). _Files:
-  `db/queries/invoices.sql`, `internal/invoices`._
+  status buttons (the backend already supports them); and the **Paid** tracker step (needs the
+  payments feature).
+- **Per-PROJECT invoice sequence.** Org-level auto-numbering landed (2026-06-24): a
+  `next_invoice_number` counter on `organisations`, `GET /api/v1/invoices/next-reference` (the
+  zero-padded next number, pre-filled on the create form), and an increment-on-use rule (creating an
+  invoice with the suggested number advances the counter; a custom reference doesn't). `reference`
+  is now REQUIRED + unique per org. Still deferred: honouring `projects.project_invoice_sequence` so
+  a project can use its OWN number sequence instead of the org-wide one. _Files: `internal/invoices`,
+  the projects domain._
 - **Payments / reconciliation → `paid_value_minor`.** Nothing populates `paid_value_minor` yet
   (defaults 0, so a SENT invoice always derives as Open/Overdue, never Paid). Wire it from the
   banking `INVOICE_RECEIPT` explanation link (see the banking backlog's "future-entity explanation

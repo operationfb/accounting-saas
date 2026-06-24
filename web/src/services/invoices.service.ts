@@ -21,6 +21,14 @@ export async function getInvoice(id: string): Promise<Invoice> {
   return GetInvoiceResponseSchema.parse(data).invoice
 }
 
+// GET /api/v1/invoices/next-reference — the suggested reference for a NEW invoice
+// (the org's next sequential number, e.g. "001"). The create form pre-fills it; the
+// user may overwrite it.
+export async function getNextInvoiceReference(): Promise<string> {
+  const data = await apiFetch<{ reference?: string }>('/invoices/next-reference', { method: 'GET' })
+  return data?.reference ?? ''
+}
+
 // POST /api/v1/invoices — create an invoice (starts DRAFT). Returns the created
 // invoice; the caller navigates to its detail with the id.
 export async function createInvoice(payload: CreateInvoiceRequest): Promise<Invoice> {

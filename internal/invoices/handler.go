@@ -33,13 +33,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 	g := r.Group("/api/v1/invoices")
 	g.Use(kernel.AuthMiddleware(tokenMaker))
 	{
-		// GET    /api/v1/invoices          → list the org's invoices (no line items)
-		// POST   /api/v1/invoices          → create a DRAFT invoice (+ line items)
-		// GET    /api/v1/invoices/:id      → fetch one invoice + its line items
-		// PUT    /api/v1/invoices/:id      → full update incl. lines (DRAFT only)
-		// DELETE /api/v1/invoices/:id      → soft-delete (DRAFT only)
-		// POST   /api/v1/invoices/:id/status → drive the status lifecycle
+		// GET    /api/v1/invoices                → list the org's invoices (no line items)
+		// GET    /api/v1/invoices/next-reference  → suggested reference for a new invoice
+		// POST   /api/v1/invoices                → create a DRAFT invoice (+ line items)
+		// GET    /api/v1/invoices/:id            → fetch one invoice + its line items
+		// PUT    /api/v1/invoices/:id            → full update incl. lines (DRAFT only)
+		// DELETE /api/v1/invoices/:id            → soft-delete (DRAFT only)
+		// POST   /api/v1/invoices/:id/status     → drive the status lifecycle
 		g.GET("", h.ListInvoices)
+		// Static route declared before the /:id wildcard so "next-reference" isn't
+		// captured as an id (Gin gives static segments priority, cf. /expenses/inbox).
+		g.GET("/next-reference", h.NextReference)
 		g.POST("", h.CreateInvoice)
 		g.GET("/:id", h.GetInvoice)
 		g.PUT("/:id", h.UpdateInvoice)
@@ -56,6 +60,18 @@ func (h *Handler) ListInvoices(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"invoices": list})
+}
+
+// NextReference handles GET /api/v1/invoices/next-reference — the suggested
+// reference for a new invoice (the org's next sequential number, e.g. "001"). The
+// create form pre-fills it; the user may overwrite it.
+func (h *Handler) NextReference(c *gin.Context) {
+	ref, err := h.svc.NextInvoiceReference(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"reference": ref})
 }
 
 // CreateInvoice handles POST /api/v1/invoices. Returns 201 Created.

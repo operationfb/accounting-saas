@@ -87,7 +87,7 @@ export interface CreateInvoiceRequest {
   contact_id: string
   dated_on: string // "YYYY-MM-DD"
   due_on?: string // "YYYY-MM-DD"
-  reference?: string
+  reference: string // required (auto-numbered, user-overridable)
   currency?: string
   items: InvoiceItemRequest[]
 }

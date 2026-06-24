@@ -168,6 +168,17 @@ CREATE TABLE organisations (
     timezone                VARCHAR(60) NOT NULL DEFAULT 'Europe/London',
 
     -- -------------------------------------------------------------------------
+    -- Invoicing
+    -- -------------------------------------------------------------------------
+    -- The next sequential number for this org's "global" invoice sequence
+    -- (FreeAgent-style). The invoices module pre-fills a new invoice's reference
+    -- with this value, zero-padded (1 → '001'), and advances it by one when an
+    -- invoice is created USING the suggested number. A manual override does NOT
+    -- advance the counter unless it equals the current number — so accepting the
+    -- default keeps a clean run while custom references are still allowed.
+    next_invoice_number     INTEGER     NOT NULL DEFAULT 1,
+
+    -- -------------------------------------------------------------------------
     -- Lifecycle
     -- -------------------------------------------------------------------------
     is_active               BOOLEAN     NOT NULL DEFAULT TRUE,

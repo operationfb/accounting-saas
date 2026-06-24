@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,6 +123,11 @@ func (s *Service) CreateInvoice(
 		return nil, err
 	}
 
+	ref, err := validateReference(req.Reference)
+	if err != nil {
+		return nil, err
+	}
+
 	contactID, err := uuid.Parse(req.ContactID)
 	if err != nil {
 		return nil, kernel.ErrValidation("contact_id is not a valid UUID", err)
@@ -154,11 +160,21 @@ func (s *Service) CreateInvoice(
 			ContactID:       contactID,
 			DatedOn:         datedOn,
 			DueOn:           dueOn,
-			Reference:       kernel.NullText(req.Reference),
+			Reference:       pgtype.Text{String: ref, Valid: true},
 			Currency:        normaliseCurrency(req.Currency),
 		})
 		if err != nil {
+			if kernel.IsUniqueViolation(err) {
+				return kernel.ErrConflict("an invoice with reference " + ref + " already exists")
+			}
 			return kernel.ErrInternal(err)
+		}
+
+		// Advance the org's global invoice counter, but only when this invoice used
+		// the suggested next number (bumpInvoiceCounter is a no-op for a custom or
+		// out-of-sequence reference — see BumpInvoiceNumber's guard).
+		if err := bumpInvoiceCounter(ctx, tx, authOrgID, ref); err != nil {
+			return err
 		}
 
 		if err := insertLines(ctx, qtx, inv.ID, authOrgID, lines); err != nil {
@@ -238,6 +254,27 @@ func (s *Service) ListInvoices(
 }
 
 // =============================================================================
+// NEXT REFERENCE (invoice auto-numbering)
+// =============================================================================
+
+// NextInvoiceReference returns the suggested reference for a NEW invoice — the
+// org's next sequential invoice number, zero-padded (1 → "001"). The create form
+// pre-fills it; the user may overwrite it. Any active member may read it.
+func (s *Service) NextInvoiceReference(ctx context.Context, authUserID, authOrgID uuid.UUID) (string, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return "", err
+	}
+	n, err := s.authQueries.GetNextInvoiceNumber(ctx, authOrgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", kernel.ErrNotFound("organisation", authOrgID.String())
+		}
+		return "", kernel.ErrInternal(err)
+	}
+	return formatInvoiceNumber(n), nil
+}
+
+// =============================================================================
 // UPDATE
 // =============================================================================
 
@@ -263,6 +300,10 @@ func (s *Service) UpdateInvoice(
 	}
 
 	// Validate the request up-front (these are 400/422s independent of DB state).
+	ref, err := validateReference(req.Reference)
+	if err != nil {
+		return nil, err
+	}
 	contactID, err := uuid.Parse(req.ContactID)
 	if err != nil {
 		return nil, kernel.ErrValidation("contact_id is not a valid UUID", err)
@@ -307,9 +348,12 @@ func (s *Service) UpdateInvoice(
 			ContactID:      contactID,
 			DatedOn:        datedOn,
 			DueOn:          dueOn,
-			Reference:      kernel.NullText(req.Reference),
+			Reference:      pgtype.Text{String: ref, Valid: true},
 			Currency:       normaliseCurrency(req.Currency),
 		}); err != nil {
+			if kernel.IsUniqueViolation(err) {
+				return kernel.ErrConflict("an invoice with reference " + ref + " already exists")
+			}
 			return kernel.ErrInternal(err)
 		}
 
@@ -666,6 +710,46 @@ func normaliseCurrency(c string) string {
 		return "GBP"
 	}
 	return c
+}
+
+// validateReference trims the (now required) invoice reference and rejects an empty
+// / whitespace-only value (422). The handler's `required` binding already rejects a
+// missing/empty field as a 400; this guards a whitespace-only one and the
+// service-direct callers.
+func validateReference(raw string) (string, error) {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return "", kernel.ErrValidation("reference is required", nil)
+	}
+	return ref, nil
+}
+
+// formatInvoiceNumber renders the org's invoice counter as a zero-padded reference:
+// 1 → "001", 42 → "042", 1000 → "1000" (minimum width 3).
+func formatInvoiceNumber(n int32) string {
+	if n < 1 {
+		n = 1
+	}
+	return fmt.Sprintf("%03d", n)
+}
+
+// bumpInvoiceCounter advances the org's invoice counter when the just-created
+// invoice used the suggested next number. It parses the reference as an integer
+// ("001" → 1); a non-numeric / custom reference leaves the counter alone.
+// BumpInvoiceNumber's WHERE-guard only moves the counter when it still equals the
+// used number, so this is safe to call unconditionally inside the create tx.
+func bumpInvoiceCounter(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, reference string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(reference))
+	if err != nil || n < 1 {
+		return nil // custom / out-of-sequence reference — don't move the counter
+	}
+	if err := auth.New(tx).BumpInvoiceNumber(ctx, auth.BumpInvoiceNumberParams{
+		ID:                orgID,
+		NextInvoiceNumber: int32(n),
+	}); err != nil {
+		return kernel.ErrInternal(err)
+	}
+	return nil
 }
 
 // normaliseDecimalString trims trailing zeros from a numeric string for display

@@ -26,7 +26,7 @@ type CreateInvoiceRequest struct {
 	ContactID string               `json:"contact_id" binding:"required,uuid"`
 	DatedOn   string               `json:"dated_on" binding:"required"` // YYYY-MM-DD
 	DueOn     *string              `json:"due_on"`                      // YYYY-MM-DD, optional
-	Reference *string              `json:"reference"`
+	Reference string               `json:"reference" binding:"required"`
 	Currency  string               `json:"currency" binding:"omitempty,len=3"` // ISO 4217; default GBP
 	Items     []InvoiceItemRequest `json:"items"`
 }
@@ -38,7 +38,7 @@ type UpdateInvoiceRequest struct {
 	ContactID string               `json:"contact_id" binding:"required,uuid"`
 	DatedOn   string               `json:"dated_on" binding:"required"`
 	DueOn     *string              `json:"due_on"`
-	Reference *string              `json:"reference"`
+	Reference string               `json:"reference" binding:"required"`
 	Currency  string               `json:"currency" binding:"omitempty,len=3"`
 	Items     []InvoiceItemRequest `json:"items"`
 }

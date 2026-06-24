@@ -49,6 +49,32 @@ func (q *Queries) AcceptInvite(ctx context.Context, inviteToken pgtype.Text) (Or
 	return i, err
 }
 
+const bumpInvoiceNumber = `-- name: BumpInvoiceNumber :exec
+UPDATE organisations SET
+    next_invoice_number = next_invoice_number + 1
+WHERE id = $1
+  AND next_invoice_number = $2
+  AND deleted_at IS NULL
+`
+
+type BumpInvoiceNumberParams struct {
+	ID                uuid.UUID `json:"id"`
+	NextInvoiceNumber int32     `json:"next_invoice_number"`
+}
+
+// -----------------------------------------------------------------------------
+// BumpInvoiceNumber
+// Advances the org's invoice counter by one, but ONLY when it still equals the
+// number that was just used ($2). That guard means a manual / out-of-sequence
+// reference never moves the counter, and two concurrent creates can't
+// double-advance it (the second's WHERE no longer matches). :exec — a no-op when
+// nothing matches.
+// -----------------------------------------------------------------------------
+func (q *Queries) BumpInvoiceNumber(ctx context.Context, arg BumpInvoiceNumberParams) error {
+	_, err := q.db.Exec(ctx, bumpInvoiceNumber, arg.ID, arg.NextInvoiceNumber)
+	return err
+}
+
 const createInvitedMembership = `-- name: CreateInvitedMembership :one
 INSERT INTO organisation_memberships (
     organisation_id,
@@ -185,7 +211,7 @@ INSERT INTO organisations (
     $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
     $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateOrganisationParams struct {
@@ -249,6 +275,7 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.NativeCurrency,
 		&i.CountryCode,
 		&i.Timezone,
+		&i.NextInvoiceNumber,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -456,8 +483,27 @@ func (q *Queries) GetMembershipByInviteToken(ctx context.Context, inviteToken pg
 	return i, err
 }
 
+const getNextInvoiceNumber = `-- name: GetNextInvoiceNumber :one
+SELECT next_invoice_number FROM organisations
+WHERE id = $1
+  AND deleted_at IS NULL
+`
+
+// -----------------------------------------------------------------------------
+// GetNextInvoiceNumber
+// The next sequential number for the org's "global" invoice sequence. The
+// invoices module formats it zero-padded (1 → '001') to pre-fill a new invoice's
+// reference field.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetNextInvoiceNumber(ctx context.Context, id uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, getNextInvoiceNumber, id)
+	var next_invoice_number int32
+	err := row.Scan(&next_invoice_number)
+	return next_invoice_number, err
+}
+
 const getOrganisation = `-- name: GetOrganisation :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -504,6 +550,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.NativeCurrency,
 		&i.CountryCode,
 		&i.Timezone,
+		&i.NextInvoiceNumber,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -513,7 +560,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 }
 
 const getOrganisationBySlug = `-- name: GetOrganisationBySlug :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE slug = $1
   AND deleted_at IS NULL
 `
@@ -561,6 +608,7 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.NativeCurrency,
 		&i.CountryCode,
 		&i.Timezone,
+		&i.NextInvoiceNumber,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -816,7 +864,7 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 
 const listOrganisationsForUser = `-- name: ListOrganisationsForUser :many
 SELECT
-    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.is_mtd_vat_enrolled, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.is_active, o.created_at, o.updated_at, o.deleted_at,
+    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.is_mtd_vat_enrolled, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.next_invoice_number, o.is_active, o.created_at, o.updated_at, o.deleted_at,
     m.role
 FROM organisations o
 JOIN organisation_memberships m ON m.organisation_id = o.id
@@ -861,6 +909,7 @@ type ListOrganisationsForUserRow struct {
 	NativeCurrency          string             `json:"native_currency"`
 	CountryCode             string             `json:"country_code"`
 	Timezone                string             `json:"timezone"`
+	NextInvoiceNumber       int32              `json:"next_invoice_number"`
 	IsActive                bool               `json:"is_active"`
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
@@ -918,6 +967,7 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.NativeCurrency,
 			&i.CountryCode,
 			&i.Timezone,
+			&i.NextInvoiceNumber,
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1204,7 +1254,7 @@ UPDATE organisations SET
     updated_at                = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationParams struct {
@@ -1308,6 +1358,7 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.NativeCurrency,
 		&i.CountryCode,
 		&i.Timezone,
+		&i.NextInvoiceNumber,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,

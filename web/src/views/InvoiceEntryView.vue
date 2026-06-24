@@ -23,7 +23,12 @@ import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import FormRow from '@/components/FormRow.vue'
-import { getInvoice, createInvoice, updateInvoice } from '@/services/invoices.service'
+import {
+  getInvoice,
+  createInvoice,
+  updateInvoice,
+  getNextInvoiceReference,
+} from '@/services/invoices.service'
 import { listContacts } from '@/services/contacts.service'
 import { listCurrencies } from '@/services/currencies.service'
 import { buildCurrencyOptions } from '@/lib/currency'
@@ -130,10 +135,22 @@ async function loadForEdit() {
   }
 }
 
+// In create mode, pre-fill the reference with the org's next sequential invoice
+// number (e.g. "001"); the user may overwrite it. Best-effort — a failure just
+// leaves the field blank for the user to fill.
+async function loadNextReference() {
+  try {
+    form.reference = await getNextInvoiceReference()
+  } catch {
+    /* non-fatal: leave the reference blank */
+  }
+}
+
 onMounted(() => {
   loadContacts()
   loadCurrencies()
   if (isEdit) loadForEdit()
+  else loadNextReference()
 })
 
 // --- validation ---
@@ -141,6 +158,7 @@ const errors = reactive<Record<string, string>>({})
 function validate(): boolean {
   for (const k of Object.keys(errors)) delete errors[k]
   if (!form.contactId) errors.contactId = 'Choose a contact for this invoice.'
+  if (!form.reference.trim()) errors.reference = 'Enter an invoice reference.'
   if (!form.invoiceDate) errors.invoiceDate = 'Pick an invoice date.'
   return Object.keys(errors).length === 0
 }
@@ -170,12 +188,11 @@ function buildPayload(): CreateInvoiceRequest {
   const datedOn = toISODate(form.invoiceDate as Date)
   const terms = Number(form.paymentTerms)
   const dueOn = toISODate(addDays(form.invoiceDate as Date, Number.isFinite(terms) ? terms : 0))
-  const reference = form.reference.trim()
   return {
     contact_id: form.contactId,
     dated_on: datedOn,
     due_on: dueOn,
-    reference: reference === '' ? undefined : reference,
+    reference: form.reference.trim(),
     currency: form.currency,
     // Create: no lines yet (added on the detail view). Edit: preserve existing.
     items: isEdit ? toItemRequests(existingItems.value) : [],
@@ -276,8 +293,16 @@ function addNewContact() {
 
       <!-- 2. Details -->
       <FaCard title="Details" note="Required fields *">
-        <FormRow label="Invoice reference" label-for="reference">
-          <InputText id="reference" v-model="form.reference" class="w-56" placeholder="e.g. 001" />
+        <FormRow label="Invoice reference" label-for="reference" required>
+          <InputText
+            id="reference"
+            v-model="form.reference"
+            class="w-56"
+            placeholder="e.g. 001"
+            :invalid="!!errors.reference"
+          />
+          <p class="text-xs text-fa-muted">Auto-numbered from your invoice sequence — you can change it.</p>
+          <p v-if="errors.reference" class="text-xs text-[#c0392b]">{{ errors.reference }}</p>
         </FormRow>
 
         <FormRow label="Invoice date" label-for="invoice-date" required>

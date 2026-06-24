@@ -4,6 +4,7 @@
 // Change Password, Logout).
 import { computed, ref } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
+import kontalaLogo from '@/assets/kontala-logo.png'
 import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
 import { useAuthStore } from '@/stores/auth'
@@ -87,15 +88,27 @@ function changePassword() {
 <template>
   <header class="relative bg-fa-nav text-white">
     <nav class="mx-auto flex h-[46px] max-w-[1200px] items-stretch justify-between px-4">
-      <!-- Hamburger button: visible only on phones (hidden on sm+) -->
-      <button
-        type="button"
-        class="block sm:hidden inline-flex h-[46px] w-[34px] items-center justify-center text-white"
-        aria-label="Toggle navigation menu"
-        @click="toggleMobileMenu"
-      >
-        <i :class="isMobileMenuOpen ? 'pi pi-times' : 'pi pi-bars'" />
-      </button>
+      <!-- Logo + mobile hamburger grouped on the left -->
+      <div class="flex items-center gap-1">
+        <!-- Hamburger: phones only -->
+        <button
+          type="button"
+          class="block sm:hidden inline-flex h-[46px] w-[34px] items-center justify-center text-white"
+          aria-label="Toggle navigation menu"
+          @click="toggleMobileMenu"
+        >
+          <i :class="isMobileMenuOpen ? 'pi pi-times' : 'pi pi-bars'" />
+        </button>
+
+        <!-- Logo: always visible, links to main app page -->
+        <RouterLink to="/expenses" class="flex items-center">
+          <img
+            :src="kontalaLogo"
+            alt="Kontala"
+            class="h-[22px] w-auto select-none brightness-0 invert"
+          />
+        </RouterLink>
+      </div>
 
       <!-- Desktop nav items: hidden on phones, visible on sm+ -->
       <ul class="hidden sm:flex items-stretch gap-0.5">

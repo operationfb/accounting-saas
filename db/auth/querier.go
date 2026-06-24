@@ -19,6 +19,15 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	AcceptInvite(ctx context.Context, inviteToken pgtype.Text) (OrganisationMembership, error)
 	// -----------------------------------------------------------------------------
+	// BumpInvoiceNumber
+	// Advances the org's invoice counter by one, but ONLY when it still equals the
+	// number that was just used ($2). That guard means a manual / out-of-sequence
+	// reference never moves the counter, and two concurrent creates can't
+	// double-advance it (the second's WHERE no longer matches). :exec — a no-op when
+	// nothing matches.
+	// -----------------------------------------------------------------------------
+	BumpInvoiceNumber(ctx context.Context, arg BumpInvoiceNumberParams) error
+	// -----------------------------------------------------------------------------
 	// CreateInvitedMembership
 	// Creates a pending ('invited') membership and records the invite token, send
 	// time and inviting admin. The invitee accepts via AcceptInvite.
@@ -102,6 +111,13 @@ type Querier interface {
 	// Resolves a pending membership from its invite token (idx_memberships_invite_token).
 	// -----------------------------------------------------------------------------
 	GetMembershipByInviteToken(ctx context.Context, inviteToken pgtype.Text) (OrganisationMembership, error)
+	// -----------------------------------------------------------------------------
+	// GetNextInvoiceNumber
+	// The next sequential number for the org's "global" invoice sequence. The
+	// invoices module formats it zero-padded (1 → '001') to pre-fill a new invoice's
+	// reference field.
+	// -----------------------------------------------------------------------------
+	GetNextInvoiceNumber(ctx context.Context, id uuid.UUID) (int32, error)
 	// -----------------------------------------------------------------------------
 	// GetOrganisation
 	// Fetch a tenant by id. Soft-deleted organisations are invisible.

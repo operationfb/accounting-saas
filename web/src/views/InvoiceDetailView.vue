@@ -87,8 +87,11 @@ const currencySymbol = computed(() => (currency.value === 'GBP' ? '£' : currenc
 
 // VAT picker options for the modal: value is the percentage string the API wants
 // (rate_bps/100, e.g. 2000 → "20"), which round-trips with the line's stored rate.
+// Manual (is_fixed_ratio=false) rates are excluded — invoices use fixed add-on VAT only.
 const vatOptions = computed(() =>
-  vatRates.value.map((r) => ({ label: `${r.name} (${r.rate})`, value: String(r.rate_bps / 100) })),
+  vatRates.value
+    .filter((r) => r.is_fixed_ratio)
+    .map((r) => ({ label: `${r.name} (${r.rate})`, value: String(r.rate_bps / 100) })),
 )
 
 // --- Draft → Sent → Paid tracker ---
@@ -108,6 +111,19 @@ function isStepActive(key: string): boolean {
 }
 function isStepDone(key: string): boolean {
   return activeIndex.value >= 0 && activeIndex.value > stepOrder[key]
+}
+// Returns the status action to run when a tracker step is clicked, or null if it's not interactive.
+// Draft state → "Sent" step is clickable (issue); Sent state → "Draft" step is clickable (reopen).
+function stepAction(key: string): 'issue' | 'reopen' | null {
+  if (key === 'sent' && isDraft.value) return 'issue'
+  if (key === 'draft' && invoice.value?.status === 'SENT') return 'reopen'
+  return null
+}
+// Dynamic label: interactive steps get an action label; others keep their static label.
+function stepLabel(s: { key: string; label: string }): string {
+  if (s.key === 'sent' && isDraft.value) return 'Mark as Sent'
+  if (s.key === 'draft' && invoice.value?.status === 'SENT') return 'Make Draft'
+  return s.label
 }
 
 // --- contact / org presentation ---
@@ -155,7 +171,7 @@ function headerPayload(itemReqs: InvoiceItemRequest[]): CreateInvoiceRequest {
     contact_id: inv.contact_id,
     dated_on: inv.dated_on,
     due_on: inv.due_on ?? undefined,
-    reference: inv.reference ?? undefined,
+    reference: inv.reference ?? '',
     currency: inv.currency,
     items: itemReqs,
   }
@@ -265,20 +281,6 @@ function backToList() {
       <div class="flex flex-wrap gap-2.5">
         <Button
           v-if="isDraft"
-          label="Mark as sent"
-          icon="pi pi-send"
-          :loading="acting"
-          @click="runStatus('issue')"
-        />
-        <Button
-          v-if="invoice?.status === 'SENT'"
-          label="Back to draft"
-          icon="pi pi-undo"
-          :loading="acting"
-          @click="runStatus('reopen')"
-        />
-        <Button
-          v-if="isDraft"
           label="Edit"
           icon="pi pi-pencil"
           severity="secondary"
@@ -318,28 +320,49 @@ function backToList() {
       class="mb-5 flex items-center gap-3 rounded-[5px] border border-fa-border bg-white px-5 py-3.5"
     >
       <template v-for="(s, i) in steps" :key="s.key">
-        <div class="flex items-center gap-2">
+        <!-- Render as a button when this step has an action, plain div otherwise. -->
+        <component
+          :is="stepAction(s.key) ? 'button' : 'div'"
+          type="button"
+          class="flex items-center gap-2"
+          :class="
+            stepAction(s.key)
+              ? '-mx-1.5 -my-0.5 cursor-pointer rounded px-1.5 py-0.5 transition-colors hover:bg-[#f0f7ff] disabled:opacity-50'
+              : ''
+          "
+          :disabled="stepAction(s.key) ? acting : undefined"
+          @click="() => { const a = stepAction(s.key); if (a) runStatus(a) }"
+        >
           <span
             class="inline-flex h-5 w-5 items-center justify-center rounded-full border-2"
             :class="
               isStepActive(s.key) || isStepDone(s.key)
                 ? 'border-fa-green text-fa-green'
-                : 'border-[#c2c9d1] text-[#c2c9d1]'
+                : stepAction(s.key)
+                  ? 'border-fa-blue text-fa-blue'
+                  : 'border-[#c2c9d1] text-[#c2c9d1]'
             "
           >
-            <i v-if="isStepDone(s.key)" class="pi pi-check text-[10px]" />
+            <i v-if="acting && stepAction(s.key)" class="pi pi-spin pi-spinner text-[10px]" />
+            <i v-else-if="isStepDone(s.key)" class="pi pi-check text-[10px]" />
             <span
               v-else
               class="h-2 w-2 rounded-full"
-              :class="isStepActive(s.key) ? 'bg-fa-green' : 'bg-transparent'"
+              :class="isStepActive(s.key) ? 'bg-fa-green' : stepAction(s.key) ? 'bg-fa-blue' : 'bg-transparent'"
             />
           </span>
           <span
             class="text-sm font-semibold"
-            :class="isStepActive(s.key) ? 'text-fa-text' : 'text-fa-muted'"
-            >{{ s.label }}</span
+            :class="
+              isStepActive(s.key)
+                ? 'text-fa-text'
+                : stepAction(s.key)
+                  ? 'text-fa-blue'
+                  : 'text-fa-muted'
+            "
+            >{{ stepLabel(s) }}</span
           >
-        </div>
+        </component>
         <i v-if="i < steps.length - 1" class="pi pi-angle-right text-[#c2c9d1]" />
       </template>
     </div>

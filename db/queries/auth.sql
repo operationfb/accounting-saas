@@ -269,6 +269,34 @@ WHERE id = $1
 
 
 -- -----------------------------------------------------------------------------
+-- GetNextInvoiceNumber
+-- The next sequential number for the org's "global" invoice sequence. The
+-- invoices module formats it zero-padded (1 → '001') to pre-fill a new invoice's
+-- reference field.
+-- -----------------------------------------------------------------------------
+-- name: GetNextInvoiceNumber :one
+SELECT next_invoice_number FROM organisations
+WHERE id = $1
+  AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- BumpInvoiceNumber
+-- Advances the org's invoice counter by one, but ONLY when it still equals the
+-- number that was just used ($2). That guard means a manual / out-of-sequence
+-- reference never moves the counter, and two concurrent creates can't
+-- double-advance it (the second's WHERE no longer matches). :exec — a no-op when
+-- nothing matches.
+-- -----------------------------------------------------------------------------
+-- name: BumpInvoiceNumber :exec
+UPDATE organisations SET
+    next_invoice_number = next_invoice_number + 1
+WHERE id = $1
+  AND next_invoice_number = $2
+  AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
 -- GetOrganisationBySlug
 -- Resolves a tenant from its slug — used for subdomain / vanity-URL routing
 -- (idx_organisations_slug).
