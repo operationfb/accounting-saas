@@ -31,9 +31,19 @@ import (
 
 	banking "github.com/operationfb/accounting-saas/db/banking"
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
+	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
+)
+
+// Local constants for the Invoice Receipt flow. typeInvoiceReceipt is the
+// transaction_types code; invoiceStatusSent mirrors invoices.status = 'SENT' (only a
+// sent invoice can be paid). Kept local so the banking package doesn't import the
+// internal/invoices package just for two strings.
+const (
+	typeInvoiceReceipt = "INVOICE_RECEIPT"
+	invoiceStatusSent  = "SENT"
 )
 
 // =============================================================================
@@ -50,6 +60,7 @@ type CreateExplanationRequest struct {
 	CategoryID            *string `json:"category_id"`               // category types + user payments
 	TransferBankAccountID *string `json:"transfer_bank_account_id"`  // transfers
 	PaidUserID            *string `json:"paid_user_id"`              // user payments
+	PaidInvoiceID         *string `json:"paid_invoice_id"`           // invoice receipts
 	VATRateID             *string `json:"vat_rate_id"`               // optional
 	VATAmount             *string `json:"vat_amount"`                // manual (non-fixed) rate only
 	Description           *string `json:"description"`
@@ -70,6 +81,8 @@ type ExplanationResponse struct {
 	TransferAccountName   *string `json:"transfer_account_name,omitempty"`
 	PaidUserID            *string `json:"paid_user_id,omitempty"`
 	PaidUserName          *string `json:"paid_user_name,omitempty"`
+	PaidInvoiceID         *string `json:"paid_invoice_id,omitempty"`
+	InvoiceReference      *string `json:"invoice_reference,omitempty"`
 	VATRateID             *string `json:"vat_rate_id,omitempty"`
 	VATRate               *string `json:"vat_rate,omitempty"` // e.g. "20%"
 	VATValue              string  `json:"vat_value"`          // pounds
@@ -130,8 +143,18 @@ func (s *Service) CreateExplanation(ctx context.Context, authUserID, authOrgID u
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.queries.CreateExplanation(ctx, params); err != nil {
-		return nil, kernel.ErrInternal(err)
+	// Write the explanation and (for an invoice receipt) re-sync the invoice's paid
+	// value in ONE transaction, so invoices.paid_value_minor can never drift from the
+	// explanations that drive it.
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.queries.WithTx(tx)
+		if _, err := qtx.CreateExplanation(ctx, params); err != nil {
+			return kernel.ErrInternal(err)
+		}
+		return s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, params.PaidInvoiceID)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return s.buildExplanationsResponse(ctx, authOrgID, txnUUID)
 }
@@ -157,36 +180,56 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 	if err != nil {
 		return nil, err
 	}
-	// Editing: the old portion is "given back" before the over-explain check.
-	old := existing.GrossValueMinor
-	params, err := s.resolveExplanationFields(ctx, authUserID, authOrgID, accountUUID, txn, req, &old)
+	// Editing: existing is passed through so its old portion is "given back" before the
+	// over-explain check AND the invoice overpayment cap.
+	params, err := s.resolveExplanationFields(ctx, authUserID, authOrgID, accountUUID, txn, req, &existing)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.queries.UpdateExplanation(ctx, banking.UpdateExplanationParams{
-		ID:                    explUUID,
-		OrganisationID:        authOrgID,
-		DatedOn:               params.DatedOn,
-		Description:           params.Description,
-		Type:                  params.Type,
-		GrossValueMinor:       params.GrossValueMinor,
-		CategoryID:            params.CategoryID,
-		SalesTaxStatus:        params.SalesTaxStatus,
-		SalesTaxRateID:        params.SalesTaxRateID,
-		SalesTaxValueMinor:    params.SalesTaxValueMinor,
-		IsManualSalesTax:      params.IsManualSalesTax,
-		EcStatus:              params.EcStatus,
-		PlaceOfSupply:         params.PlaceOfSupply,
-		TransferBankAccountID: params.TransferBankAccountID,
-		PaidUserID:            params.PaidUserID,
-		MarkedForReview:       params.MarkedForReview,
-		ChequeNumber:          params.ChequeNumber,
-		ReceiptReference:      params.ReceiptReference,
-	}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("explanation", explID)
+	// Update the explanation and re-sync the affected invoice(s) in one transaction.
+	// Re-pointing a receipt (or changing its type away from INVOICE_RECEIPT) must
+	// recompute BOTH the new link and the old one, so paid moves correctly between them.
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.queries.WithTx(tx)
+		itx := s.invoiceQueries.WithTx(tx)
+		if _, err := qtx.UpdateExplanation(ctx, banking.UpdateExplanationParams{
+			ID:                    explUUID,
+			OrganisationID:        authOrgID,
+			DatedOn:               params.DatedOn,
+			Description:           params.Description,
+			Type:                  params.Type,
+			GrossValueMinor:       params.GrossValueMinor,
+			CategoryID:            params.CategoryID,
+			SalesTaxStatus:        params.SalesTaxStatus,
+			SalesTaxRateID:        params.SalesTaxRateID,
+			SalesTaxValueMinor:    params.SalesTaxValueMinor,
+			IsManualSalesTax:      params.IsManualSalesTax,
+			EcStatus:              params.EcStatus,
+			PlaceOfSupply:         params.PlaceOfSupply,
+			TransferBankAccountID: params.TransferBankAccountID,
+			PaidUserID:            params.PaidUserID,
+			PaidInvoiceID:         params.PaidInvoiceID,
+			MarkedForReview:       params.MarkedForReview,
+			ChequeNumber:          params.ChequeNumber,
+			ReceiptReference:      params.ReceiptReference,
+		}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return kernel.ErrNotFound("explanation", explID)
+			}
+			return kernel.ErrInternal(err)
 		}
-		return nil, kernel.ErrInternal(err)
+		if err := s.resyncInvoicePaid(ctx, qtx, itx, authOrgID, params.PaidInvoiceID); err != nil {
+			return err
+		}
+		if existing.PaidInvoiceID.Valid && existing.PaidInvoiceID != params.PaidInvoiceID {
+			if err := s.resyncInvoicePaid(ctx, qtx, itx, authOrgID, existing.PaidInvoiceID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return s.buildExplanationsResponse(ctx, authOrgID, txnUUID)
 }
@@ -207,11 +250,21 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 	if _, err := s.loadTransactionForAccount(ctx, authOrgID, accountUUID, txnUUID); err != nil {
 		return nil, err
 	}
-	if _, err := s.loadExplanationForTxn(ctx, authOrgID, txnUUID, explUUID); err != nil {
+	existing, err := s.loadExplanationForTxn(ctx, authOrgID, txnUUID, explUUID)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.queries.SoftDeleteExplanation(ctx, banking.SoftDeleteExplanationParams{ID: explUUID, OrganisationID: authOrgID}); err != nil {
-		return nil, kernel.ErrInternal(err)
+	// Soft-delete the explanation and, if it settled an invoice, re-sync that invoice's
+	// paid value (it drops by this receipt's portion) in the same transaction.
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.queries.WithTx(tx)
+		if err := qtx.SoftDeleteExplanation(ctx, banking.SoftDeleteExplanationParams{ID: explUUID, OrganisationID: authOrgID}); err != nil {
+			return kernel.ErrInternal(err)
+		}
+		return s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, existing.PaidInvoiceID)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return s.buildExplanationsResponse(ctx, authOrgID, txnUUID)
 }
@@ -222,9 +275,10 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 
 // resolveExplanationFields validates the request against the chosen type and the
 // line, computes the signed gross + VAT, and returns the DB-ready insert params.
-// oldGross is non-nil on UPDATE (the edited portion, returned to the remaining pool
-// before the over-explain check).
-func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgID, accountUUID uuid.UUID, txn banking.BankTransaction, req CreateExplanationRequest, oldGross *int64) (banking.CreateExplanationParams, error) {
+// existing is non-nil on UPDATE (the explanation being edited) — its portion is
+// returned to the remaining pool before the over-explain check, and (for an invoice
+// receipt) before the invoice's overpayment cap.
+func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgID, accountUUID uuid.UUID, txn banking.BankTransaction, req CreateExplanationRequest, existing *banking.BankTransactionExplanation) (banking.CreateExplanationParams, error) {
 	var zero banking.CreateExplanationParams
 
 	// 1. type: must exist, be supported in v1, and match the line's direction.
@@ -265,15 +319,15 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 	if txn.UnexplainedAmountMinor.Valid {
 		remaining = txn.UnexplainedAmountMinor.Int64
 	}
-	if oldGross != nil {
-		remaining += *oldGross // editing: give the old portion back first
+	if existing != nil {
+		remaining += existing.GrossValueMinor // editing: give the old portion back first
 	}
 	if absInt64(grossMinor) > absInt64(remaining) {
 		return zero, kernel.ErrValidation("that's more than the amount left to explain on this transaction", nil)
 	}
 
 	// 4. category / entity, by the type's entity_link.
-	var categoryID, transferAccountID, paidUserID pgtype.UUID
+	var categoryID, transferAccountID, paidUserID, paidInvoiceID pgtype.UUID
 	switch tt.EntityLink {
 	case "BANK_ACCOUNT": // Transfer to/from Another Account
 		transferAccountID, err = s.resolveTransferAccount(ctx, orgID, accountUUID, req.TransferBankAccountID)
@@ -289,6 +343,11 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		if err != nil {
 			return zero, err
 		}
+	case "INVOICE": // Invoice Receipt — settle a sent sales invoice (no category, no VAT)
+		paidInvoiceID, err = s.resolveInvoice(ctx, orgID, req.PaidInvoiceID, grossMinor, existing)
+		if err != nil {
+			return zero, err
+		}
 	default: // NONE, CAPITAL_ASSET → a plain category pick
 		categoryID, err = s.requireOfferedCategory(ctx, orgID, typeCode, req.CategoryID)
 		if err != nil {
@@ -297,10 +356,16 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 	}
 
 	// 5. VAT: optional rate → a fixed rate extracts the VAT from the portion gross;
-	// a manual (non-fixed) rate stores the client-entered amount.
-	vatRateID, vatValueMinor, isManualVAT, err := s.resolveExplanationVAT(ctx, req.VATRateID, req.VATAmount, grossMinor)
-	if err != nil {
-		return zero, err
+	// a manual (non-fixed) rate stores the client-entered amount. An invoice receipt
+	// carries no VAT of its own (the VAT lived on the invoice), so it is skipped.
+	var vatRateID pgtype.UUID
+	var vatValueMinor int64
+	var isManualVAT bool
+	if tt.EntityLink != "INVOICE" {
+		vatRateID, vatValueMinor, isManualVAT, err = s.resolveExplanationVAT(ctx, req.VATRateID, req.VATAmount, grossMinor)
+		if err != nil {
+			return zero, err
+		}
 	}
 
 	// 6. dated_on defaults to the transaction's date.
@@ -328,6 +393,7 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		IsManualSalesTax:      isManualVAT,
 		TransferBankAccountID: transferAccountID,
 		PaidUserID:            paidUserID,
+		PaidInvoiceID:         paidInvoiceID,
 		MarkedForReview:       false,
 	}, nil
 }
@@ -394,6 +460,48 @@ func (s *Service) resolveUser(ctx context.Context, orgID uuid.UUID, userID *stri
 	return pgtype.UUID{Bytes: uID, Valid: true}, nil
 }
 
+// resolveInvoice validates the Invoice Receipt link and returns the invoice's id to
+// store. The invoice must be a live SENT invoice in the caller's org (cross-tenant →
+// 422), and it must still owe money. The receipt portion may not exceed the invoice's
+// OUTSTANDING balance — overpayment is rejected, nudging the user to split the bank
+// line instead (the chosen product rule). On an EDIT, this explanation's own prior
+// portion against the SAME invoice is given back to the outstanding first, so re-saving
+// the same amount isn't falsely rejected (mirrors the over-explain guard's give-back).
+func (s *Service) resolveInvoice(ctx context.Context, orgID uuid.UUID, invoiceID *string, grossMinor int64, existing *banking.BankTransactionExplanation) (pgtype.UUID, error) {
+	if invoiceID == nil || strings.TrimSpace(*invoiceID) == "" {
+		return pgtype.UUID{}, kernel.ErrValidation("paid_invoice_id is required for an invoice receipt", nil)
+	}
+	invUUID, err := uuid.Parse(strings.TrimSpace(*invoiceID))
+	if err != nil {
+		return pgtype.UUID{}, kernel.ErrValidation("paid_invoice_id is not a valid UUID", err)
+	}
+	// Org-scoped fetch (soft-delete aware): a cross-tenant or missing id returns no row.
+	inv, err := s.invoiceQueries.GetInvoice(ctx, invoicesdb.GetInvoiceParams{ID: invUUID, OrganisationID: orgID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return pgtype.UUID{}, kernel.ErrValidation("invoice not found", nil)
+		}
+		return pgtype.UUID{}, kernel.ErrInternal(err)
+	}
+	if inv.Status != invoiceStatusSent {
+		return pgtype.UUID{}, kernel.ErrValidation("only a sent invoice can receive a payment", nil)
+	}
+
+	link := pgtype.UUID{Bytes: invUUID, Valid: true}
+	// Outstanding = total - paid (what the generated due_value_minor column holds).
+	outstanding := inv.TotalValueMinor - inv.PaidValueMinor
+	if existing != nil && existing.Type == typeInvoiceReceipt && existing.PaidInvoiceID == link {
+		outstanding += existing.GrossValueMinor // editing the same invoice: give the old portion back
+	}
+	if outstanding <= 0 {
+		return pgtype.UUID{}, kernel.ErrValidation("that invoice is already fully paid", nil)
+	}
+	if grossMinor > outstanding {
+		return pgtype.UUID{}, kernel.ErrValidation("that's more than the invoice's outstanding balance — split the transaction instead", nil)
+	}
+	return link, nil
+}
+
 // resolveExplanationVAT turns an optional vat_rate_id (+ optional vat_amount) into the
 // stored rate id, VAT value, and the is_manual flag — mirroring expenses.resolveVAT:
 //   - no rate              → (NULL, 0, false)
@@ -444,6 +552,41 @@ func (s *Service) orgCompanyType(ctx context.Context, orgID uuid.UUID) string {
 		return ""
 	}
 	return org.CompanyType.String
+}
+
+// resyncInvoicePaid recomputes ONE invoice's paid_value_minor = Σ(its live
+// INVOICE_RECEIPT explanations) and writes it via UpdateInvoicePaidValue, inside the
+// caller's transaction (qtx/itx are the banking + invoices query sets bound to that
+// tx). A no-op when invoiceID is NULL (the explanation isn't an invoice receipt).
+// Recomputing from the Σ — rather than incrementing — keeps the figure drift-free
+// across split / edit / re-point / delete. Tolerates a vanished invoice (concurrently
+// soft-deleted) so an unrelated edit can't fail on it.
+func (s *Service) resyncInvoicePaid(ctx context.Context, qtx *banking.Queries, itx *invoicesdb.Queries, orgID uuid.UUID, invoiceID pgtype.UUID) error {
+	if !invoiceID.Valid {
+		return nil
+	}
+	sum, err := qtx.SumInvoiceReceiptsForInvoice(ctx, banking.SumInvoiceReceiptsForInvoiceParams{
+		PaidInvoiceID:  invoiceID,
+		OrganisationID: orgID,
+	})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	invUUID, err := uuid.FromBytes(invoiceID.Bytes[:])
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if _, err := itx.UpdateInvoicePaidValue(ctx, invoicesdb.UpdateInvoicePaidValueParams{
+		ID:             invUUID,
+		OrganisationID: orgID,
+		PaidValueMinor: sum,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // invoice no longer live — nothing to update
+		}
+		return kernel.ErrInternal(err)
+	}
+	return nil
 }
 
 // =============================================================================
@@ -533,6 +676,10 @@ func explanationRowToResponse(r banking.ListExplanationsForTransactionDetailedRo
 	if r.PaidUserID.Valid {
 		resp.PaidUserID = uuidPtr(r.PaidUserID)
 		resp.PaidUserName = fullNamePtr(r.PaidUserFirstName, r.PaidUserLastName)
+	}
+	if r.PaidInvoiceID.Valid {
+		resp.PaidInvoiceID = uuidPtr(r.PaidInvoiceID)
+		resp.InvoiceReference = kernel.NullTextToPtr(r.InvoiceReference)
 	}
 	resp.VATRateID = uuidPtr(r.SalesTaxRateID)
 	if r.VatRateBps.Valid {

@@ -43,15 +43,17 @@ func NewService(queries *categoriesdb.Queries, authQueries auth.Querier) *Servic
 }
 
 // SupportedEntityLinks is the v1 explain whitelist: category types (NONE),
-// transfers (BANK_ACCOUNT), user payments (USER), and capital disposal
-// (CAPITAL_ASSET, a category pick for now). The future-entity types
-// (INVOICE/BILL/CREDIT_NOTE/HP) are not explainable until their modules land.
-// Exported so the banking explain service gates on the EXACT same set.
+// transfers (BANK_ACCOUNT), user payments (USER), capital disposal (CAPITAL_ASSET,
+// a category pick for now), and Invoice Receipt (INVOICE — settles a sent sales
+// invoice). The remaining future-entity types (BILL/CREDIT_NOTE/HP) are not
+// explainable until their modules land. Exported so the banking explain service
+// gates on the EXACT same set.
 var SupportedEntityLinks = map[string]bool{
-	"NONE":         true,
-	"BANK_ACCOUNT": true,
-	"USER":         true,
+	"NONE":          true,
+	"BANK_ACCOUNT":  true,
+	"USER":          true,
 	"CAPITAL_ASSET": true,
+	"INVOICE":       true,
 }
 
 // authorize confirms the caller is an active member (delegates to the kernel).

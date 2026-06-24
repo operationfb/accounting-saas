@@ -454,6 +454,61 @@ func (q *Queries) ListInvoicesByContact(ctx context.Context, arg ListInvoicesByC
 	return items, nil
 }
 
+const listOutstandingInvoices = `-- name: ListOutstandingInvoices :many
+SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
+WHERE organisation_id   = $1
+  AND status            = 'SENT'
+  AND due_value_minor   > 0
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC
+`
+
+// -----------------------------------------------------------------------------
+// ListOutstandingInvoices
+// The org's SENT invoices that are NOT fully paid yet (due_value_minor > 0, i.e.
+// still owe money — covers both unpaid and partially-paid). Backs the banking
+// "Invoice Receipt" explanation picker: only a SENT invoice can be settled, and a
+// fully-paid one (due = 0) drops off the list. Oldest first (settle older debts
+// first). Org-scoped + soft-delete-aware.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListOutstandingInvoices(ctx context.Context, organisationID uuid.UUID) ([]Invoice, error) {
+	rows, err := q.db.Query(ctx, listOutstandingInvoices, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Invoice
+	for rows.Next() {
+		var i Invoice
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.CreatedByUserID,
+			&i.ContactID,
+			&i.DatedOn,
+			&i.DueOn,
+			&i.Reference,
+			&i.Currency,
+			&i.Status,
+			&i.NetValueMinor,
+			&i.SalesTaxValueMinor,
+			&i.TotalValueMinor,
+			&i.PaidValueMinor,
+			&i.DueValueMinor,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const maxNumericInvoiceReference = `-- name: MaxNumericInvoiceReference :one
 SELECT COALESCE(MAX(reference::integer), 0)::integer AS max_reference
 FROM invoices

@@ -414,7 +414,9 @@ func main() {
 	// takes the categories query set (the explain reference lookups + VAT). Registers
 	// its own routes on the shared engine (the per-domain pattern).
 	categoryQueries := dbcategories.New(pool)
-	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries))
+	// dbinvoices.New(pool) is the cross-domain dependency for the Invoice Receipt
+	// explanation: validate the target invoice + keep its paid_value_minor in sync.
+	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool)))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its

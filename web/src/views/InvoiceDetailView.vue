@@ -101,9 +101,16 @@ const steps = [
   { key: 'paid', label: 'Paid' },
 ] as const
 const stepOrder: Record<string, number> = { draft: 0, sent: 1, paid: 2 }
-const activeStep = computed(() =>
-  invoice.value ? invoiceStep(invoice.value.status, invoice.value.display_status) : 'draft',
-)
+// Which tracker node the invoice sits at. A fully-paid invoice already maps to 'paid'
+// (via its display_status); a SENT invoice with a PARTIAL payment is promoted to 'paid'
+// too (shown as "Part paid" below) so the bar reflects money received rather than
+// sitting on "Sent". WRITTEN_OFF/REFUNDED stay 'other' (tracker hidden).
+const activeStep = computed(() => {
+  if (!invoice.value) return 'draft'
+  const base = invoiceStep(invoice.value.status, invoice.value.display_status)
+  if (base === 'sent' && hasPayments.value) return 'paid'
+  return base
+})
 // -1 for WRITTEN_OFF/REFUNDED ('other'): the tracker isn't shown for those.
 const activeIndex = computed(() => (activeStep.value === 'other' ? -1 : stepOrder[activeStep.value]))
 function isStepActive(key: string): boolean {
@@ -112,17 +119,29 @@ function isStepActive(key: string): boolean {
 function isStepDone(key: string): boolean {
   return activeIndex.value >= 0 && activeIndex.value > stepOrder[key]
 }
+// A SENT invoice with money recorded against it (a bank Invoice Receipt) is a live,
+// part-paid receivable — the backend refuses to reopen it (409), so don't offer the
+// action. The receipt(s) must be removed first (in the banking explain panel).
+const hasPayments = computed(() => Number(invoice.value?.paid_value ?? '0') > 0)
+const canReopen = computed(() => invoice.value?.status === 'SENT' && !hasPayments.value)
+// Tracker's final node: fully settled (display_status Paid/Overpaid) reads "Paid";
+// some-but-not-all paid reads "Part paid".
+const fullyPaid = computed(
+  () => invoice.value?.display_status === 'Paid' || invoice.value?.display_status === 'Overpaid',
+)
+const partiallyPaid = computed(() => hasPayments.value && !fullyPaid.value)
 // Returns the status action to run when a tracker step is clicked, or null if it's not interactive.
-// Draft state → "Sent" step is clickable (issue); Sent state → "Draft" step is clickable (reopen).
+// Draft state → "Sent" step is clickable (issue); Sent (unpaid) state → "Draft" step is clickable (reopen).
 function stepAction(key: string): 'issue' | 'reopen' | null {
   if (key === 'sent' && isDraft.value) return 'issue'
-  if (key === 'draft' && invoice.value?.status === 'SENT') return 'reopen'
+  if (key === 'draft' && canReopen.value) return 'reopen'
   return null
 }
 // Dynamic label: interactive steps get an action label; others keep their static label.
 function stepLabel(s: { key: string; label: string }): string {
   if (s.key === 'sent' && isDraft.value) return 'Mark as Sent'
-  if (s.key === 'draft' && invoice.value?.status === 'SENT') return 'Make Draft'
+  if (s.key === 'draft' && canReopen.value) return 'Make Draft'
+  if (s.key === 'paid' && partiallyPaid.value) return 'Part paid'
   return s.label
 }
 

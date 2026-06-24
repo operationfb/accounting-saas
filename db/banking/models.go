@@ -83,6 +83,8 @@ type BankTransactionExplanation struct {
 	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
 	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
 	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	// Invoice Receipt only: the sales invoice this receipt settles (NULL for every other type). The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT explanations for the invoice) in the same transaction as the explanation write.
+	PaidInvoiceID pgtype.UUID `json:"paid_invoice_id"`
 	// TRUE = a guessed/auto explanation pending human approval; drives the parent transaction's status = for_approval (see recompute trigger).
 	MarkedForReview  bool               `json:"marked_for_review"`
 	ChequeNumber     pgtype.Text        `json:"cheque_number"`

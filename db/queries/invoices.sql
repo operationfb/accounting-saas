@@ -95,6 +95,23 @@ ORDER BY dated_on DESC, created_at DESC;
 
 
 -- -----------------------------------------------------------------------------
+-- ListOutstandingInvoices
+-- The org's SENT invoices that are NOT fully paid yet (due_value_minor > 0, i.e.
+-- still owe money — covers both unpaid and partially-paid). Backs the banking
+-- "Invoice Receipt" explanation picker: only a SENT invoice can be settled, and a
+-- fully-paid one (due = 0) drops off the list. Oldest first (settle older debts
+-- first). Org-scoped + soft-delete-aware.
+-- -----------------------------------------------------------------------------
+-- name: ListOutstandingInvoices :many
+SELECT * FROM invoices
+WHERE organisation_id   = $1
+  AND status            = 'SENT'
+  AND due_value_minor   > 0
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC;
+
+
+-- -----------------------------------------------------------------------------
 -- UpdateInvoice  (the "update" — editable header fields only)
 -- Full update of the caller-editable header fields (PUT semantics). Deliberately
 -- does NOT touch status or any *_value_minor — those have their own queries.

@@ -233,7 +233,7 @@ func newTestServer(t *testing.T) *testServer {
 	// harness so the service-level tests can call it directly. The explain flow needs
 	// the categories query set; the categories reference endpoints register too.
 	categoryQueries := dbcategories.New(pool)
-	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries)
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool))
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 

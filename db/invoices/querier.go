@@ -104,6 +104,15 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListInvoicesByContact(ctx context.Context, arg ListInvoicesByContactParams) ([]Invoice, error)
 	// -----------------------------------------------------------------------------
+	// ListOutstandingInvoices
+	// The org's SENT invoices that are NOT fully paid yet (due_value_minor > 0, i.e.
+	// still owe money — covers both unpaid and partially-paid). Backs the banking
+	// "Invoice Receipt" explanation picker: only a SENT invoice can be settled, and a
+	// fully-paid one (due = 0) drops off the list. Oldest first (settle older debts
+	// first). Org-scoped + soft-delete-aware.
+	// -----------------------------------------------------------------------------
+	ListOutstandingInvoices(ctx context.Context, organisationID uuid.UUID) ([]Invoice, error)
+	// -----------------------------------------------------------------------------
 	// MaxNumericInvoiceReference
 	// The highest PURELY-NUMERIC reference currently in use among the org's LIVE
 	// invoices (e.g. '001','002' → 2), or 0 if none. The service suggests one MORE than

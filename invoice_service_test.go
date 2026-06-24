@@ -878,3 +878,110 @@ func TestInvoices_TenantIsolation(t *testing.T) {
 		t.Error("org B's list must not contain org A's invoice")
 	}
 }
+
+// TestListOutstandingInvoices covers the picker that backs the banking Invoice
+// Receipt explanation: only SENT, not-fully-paid invoices, org-scoped. Invoices are
+// seeded directly so total/paid/status are exact.
+func TestListOutstandingInvoices(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+	contactID := createContactAs(t, ts, user, org)
+	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org) })
+
+	seed := func(orgIDStr, userIDStr, contact, status string, total, paid int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO invoices (organisation_id, created_by_user_id, contact_id, dated_on, status,
+			        net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, reference)
+			 VALUES ($1,$2,$3,CURRENT_DATE,$4,$5,0,$5,$6,$7) RETURNING id::text`,
+			orgIDStr, userIDStr, contact, status, total, paid, randomRef()).Scan(&id); err != nil {
+			t.Fatalf("seed invoice: %v", err)
+		}
+		return id
+	}
+
+	unpaid := seed(org, user, contactID, "SENT", 10000, 0)
+	partial := seed(org, user, contactID, "SENT", 10000, 4000)
+	fullyPaid := seed(org, user, contactID, "SENT", 10000, 10000)
+	draft := seed(org, user, contactID, "DRAFT", 10000, 0)
+
+	// A SENT-unpaid invoice in ANOTHER org — must never leak into this org's list.
+	otherOrg, otherUser := newOrgWithOwner(t, ts)
+	otherContact := createContactAs(t, ts, otherUser, otherOrg)
+	foreign := seed(otherOrg, otherUser, otherContact, "SENT", 10000, 0)
+	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE id=$1`, foreign) })
+
+	list, err := ts.invoiceService.ListOutstandingInvoices(ctx, userID, orgID)
+	if err != nil {
+		t.Fatalf("list outstanding: %v", err)
+	}
+	got := map[string]bool{}
+	for _, inv := range list {
+		got[inv.ID] = true
+	}
+	if !got[unpaid] || !got[partial] {
+		t.Errorf("outstanding should include unpaid + partially-paid; got %v", got)
+	}
+	if got[fullyPaid] || got[draft] {
+		t.Errorf("outstanding should exclude fully-paid + draft; got %v", got)
+	}
+	if got[foreign] {
+		t.Error("outstanding leaked another org's invoice (multi-tenant breach)")
+	}
+}
+
+// TestReopenGuardWithPayments covers the rule that a SENT invoice with any payment
+// recorded against it (paid_value_minor > 0) cannot be reopened to DRAFT — reopening
+// is the only route back to editing, and an edit could then make paid exceed the total.
+// paid is seeded directly so the guard is exercised at exact unpaid / partial / full
+// values; the end-to-end path (a real bank receipt blocks reopen) is in
+// TestInvoiceReceiptExplain.
+func TestReopenGuardWithPayments(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+	contactID := createContactAs(t, ts, user, org)
+	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org) })
+
+	seedSent := func(total, paid int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO invoices (organisation_id, created_by_user_id, contact_id, dated_on, status,
+			        net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, reference)
+			 VALUES ($1,$2,$3,CURRENT_DATE,'SENT',$4,0,$4,$5,$6) RETURNING id::text`,
+			org, user, contactID, total, paid, randomRef()).Scan(&id); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return id
+	}
+
+	t.Run("reopen succeeds when nothing is paid", func(t *testing.T) {
+		inv := seedSent(10000, 0)
+		out, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen")
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		if out.Status != "DRAFT" {
+			t.Errorf("status after reopen: got %q, want DRAFT", out.Status)
+		}
+	})
+
+	t.Run("reopen is blocked when partially paid", func(t *testing.T) {
+		inv := seedSent(10000, 4000)
+		_, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen")
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+
+	t.Run("reopen is blocked when fully paid", func(t *testing.T) {
+		inv := seedSent(10000, 10000)
+		_, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen")
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+}

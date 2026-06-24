@@ -265,17 +265,17 @@ INSERT INTO bank_transaction_explanations (
     type, gross_value_minor, category_id,
     sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax,
     ec_status, place_of_supply,
-    transfer_bank_account_id, paid_user_id,
+    transfer_bank_account_id, paid_user_id, paid_invoice_id,
     marked_for_review, cheque_number, receipt_reference
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
     $6,  $7,  $8,
     $9,  $10, $11, $12,
     $13, $14,
-    $15, $16,
-    $17, $18, $19
+    $15, $16, $17,
+    $18, $19, $20
 )
-RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
 `
 
 type CreateExplanationParams struct {
@@ -295,6 +295,7 @@ type CreateExplanationParams struct {
 	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
 	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
 	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	PaidInvoiceID         pgtype.UUID `json:"paid_invoice_id"`
 	MarkedForReview       bool        `json:"marked_for_review"`
 	ChequeNumber          pgtype.Text `json:"cheque_number"`
 	ReceiptReference      pgtype.Text `json:"receipt_reference"`
@@ -330,6 +331,7 @@ func (q *Queries) CreateExplanation(ctx context.Context, arg CreateExplanationPa
 		arg.PlaceOfSupply,
 		arg.TransferBankAccountID,
 		arg.PaidUserID,
+		arg.PaidInvoiceID,
 		arg.MarkedForReview,
 		arg.ChequeNumber,
 		arg.ReceiptReference,
@@ -353,6 +355,7 @@ func (q *Queries) CreateExplanation(ctx context.Context, arg CreateExplanationPa
 		&i.PlaceOfSupply,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
+		&i.PaidInvoiceID,
 		&i.MarkedForReview,
 		&i.ChequeNumber,
 		&i.ReceiptReference,
@@ -540,7 +543,7 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 }
 
 const getExplanation = `-- name: GetExplanation :one
-SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
@@ -575,6 +578,7 @@ func (q *Queries) GetExplanation(ctx context.Context, arg GetExplanationParams) 
 		&i.PlaceOfSupply,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
+		&i.PaidInvoiceID,
 		&i.MarkedForReview,
 		&i.ChequeNumber,
 		&i.ReceiptReference,
@@ -860,7 +864,7 @@ func (q *Queries) ListBankTransactions(ctx context.Context, arg ListBankTransact
 }
 
 const listExplanationsForTransaction = `-- name: ListExplanationsForTransaction :many
-SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
 WHERE bank_transaction_id = $1
   AND organisation_id     = $2
   AND deleted_at IS NULL
@@ -903,6 +907,7 @@ func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListEx
 			&i.PlaceOfSupply,
 			&i.TransferBankAccountID,
 			&i.PaidUserID,
+			&i.PaidInvoiceID,
 			&i.MarkedForReview,
 			&i.ChequeNumber,
 			&i.ReceiptReference,
@@ -922,19 +927,21 @@ func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListEx
 
 const listExplanationsForTransactionDetailed = `-- name: ListExplanationsForTransactionDetailed :many
 SELECT
-    e.id, e.organisation_id, e.bank_transaction_id, e.created_by_user_id, e.dated_on, e.description, e.type, e.gross_value_minor, e.category_id, e.sales_tax_status, e.sales_tax_rate_id, e.sales_tax_value_minor, e.is_manual_sales_tax, e.ec_status, e.place_of_supply, e.transfer_bank_account_id, e.paid_user_id, e.marked_for_review, e.cheque_number, e.receipt_reference, e.deleted_at, e.created_at, e.updated_at,
+    e.id, e.organisation_id, e.bank_transaction_id, e.created_by_user_id, e.dated_on, e.description, e.type, e.gross_value_minor, e.category_id, e.sales_tax_status, e.sales_tax_rate_id, e.sales_tax_value_minor, e.is_manual_sales_tax, e.ec_status, e.place_of_supply, e.transfer_bank_account_id, e.paid_user_id, e.paid_invoice_id, e.marked_for_review, e.cheque_number, e.receipt_reference, e.deleted_at, e.created_at, e.updated_at,
     c.name         AS category_name,
     c.nominal_code AS category_nominal_code,
     ta.name        AS transfer_account_name,
     u.first_name   AS paid_user_first_name,
     u.last_name    AS paid_user_last_name,
     vr.name        AS vat_rate_name,
-    vr.rate_bps    AS vat_rate_bps
+    vr.rate_bps    AS vat_rate_bps,
+    inv.reference  AS invoice_reference
 FROM bank_transaction_explanations e
-LEFT JOIN categories    c  ON c.id  = e.category_id
-LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
-LEFT JOIN users         u  ON u.id  = e.paid_user_id
-LEFT JOIN vat_rates     vr ON vr.id = e.sales_tax_rate_id
+LEFT JOIN categories    c   ON c.id   = e.category_id
+LEFT JOIN bank_accounts ta  ON ta.id  = e.transfer_bank_account_id
+LEFT JOIN users         u   ON u.id   = e.paid_user_id
+LEFT JOIN vat_rates     vr  ON vr.id  = e.sales_tax_rate_id
+LEFT JOIN invoices      inv ON inv.id = e.paid_invoice_id
 WHERE e.bank_transaction_id = $1
   AND e.organisation_id     = $2
   AND e.deleted_at IS NULL
@@ -964,6 +971,7 @@ type ListExplanationsForTransactionDetailedRow struct {
 	PlaceOfSupply         pgtype.Text        `json:"place_of_supply"`
 	TransferBankAccountID pgtype.UUID        `json:"transfer_bank_account_id"`
 	PaidUserID            pgtype.UUID        `json:"paid_user_id"`
+	PaidInvoiceID         pgtype.UUID        `json:"paid_invoice_id"`
 	MarkedForReview       bool               `json:"marked_for_review"`
 	ChequeNumber          pgtype.Text        `json:"cheque_number"`
 	ReceiptReference      pgtype.Text        `json:"receipt_reference"`
@@ -977,6 +985,7 @@ type ListExplanationsForTransactionDetailedRow struct {
 	PaidUserLastName      pgtype.Text        `json:"paid_user_last_name"`
 	VatRateName           pgtype.Text        `json:"vat_rate_name"`
 	VatRateBps            pgtype.Int4        `json:"vat_rate_bps"`
+	InvoiceReference      pgtype.Text        `json:"invoice_reference"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1013,6 +1022,7 @@ func (q *Queries) ListExplanationsForTransactionDetailed(ctx context.Context, ar
 			&i.PlaceOfSupply,
 			&i.TransferBankAccountID,
 			&i.PaidUserID,
+			&i.PaidInvoiceID,
 			&i.MarkedForReview,
 			&i.ChequeNumber,
 			&i.ReceiptReference,
@@ -1026,6 +1036,7 @@ func (q *Queries) ListExplanationsForTransactionDetailed(ctx context.Context, ar
 			&i.PaidUserLastName,
 			&i.VatRateName,
 			&i.VatRateBps,
+			&i.InvoiceReference,
 		); err != nil {
 			return nil, err
 		}
@@ -1107,6 +1118,35 @@ type SoftDeleteExplanationParams struct {
 func (q *Queries) SoftDeleteExplanation(ctx context.Context, arg SoftDeleteExplanationParams) error {
 	_, err := q.db.Exec(ctx, softDeleteExplanation, arg.ID, arg.OrganisationID)
 	return err
+}
+
+const sumInvoiceReceiptsForInvoice = `-- name: SumInvoiceReceiptsForInvoice :one
+SELECT COALESCE(SUM(gross_value_minor), 0)::bigint AS total_minor
+FROM bank_transaction_explanations
+WHERE paid_invoice_id  = $1
+  AND organisation_id  = $2
+  AND type             = 'INVOICE_RECEIPT'
+  AND deleted_at IS NULL
+`
+
+type SumInvoiceReceiptsForInvoiceParams struct {
+	PaidInvoiceID  pgtype.UUID `json:"paid_invoice_id"`
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+}
+
+// -----------------------------------------------------------------------------
+// SumInvoiceReceiptsForInvoice — the total settled against ONE invoice by live
+// INVOICE_RECEIPT explanations (the new paid_value_minor for that invoice). The
+// explain service recomputes this inside the same transaction as the explanation
+// write and pushes it onto invoices.paid_value_minor (UpdateInvoicePaidValue), so
+// the figure is drift-free across split/edit/re-point/delete. gross_value_minor is
+// positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
+// -----------------------------------------------------------------------------
+func (q *Queries) SumInvoiceReceiptsForInvoice(ctx context.Context, arg SumInvoiceReceiptsForInvoiceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumInvoiceReceiptsForInvoice, arg.PaidInvoiceID, arg.OrganisationID)
+	var total_minor int64
+	err := row.Scan(&total_minor)
+	return total_minor, err
 }
 
 const unsetPrimaryBankAccounts = `-- name: UnsetPrimaryBankAccounts :exec
@@ -1311,13 +1351,14 @@ UPDATE bank_transaction_explanations SET
     place_of_supply          = $13,
     transfer_bank_account_id = $14,
     paid_user_id             = $15,
-    marked_for_review        = $16,
-    cheque_number            = $17,
-    receipt_reference        = $18
+    paid_invoice_id          = $16,
+    marked_for_review        = $17,
+    cheque_number            = $18,
+    receipt_reference        = $19
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
 `
 
 type UpdateExplanationParams struct {
@@ -1336,6 +1377,7 @@ type UpdateExplanationParams struct {
 	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
 	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
 	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	PaidInvoiceID         pgtype.UUID `json:"paid_invoice_id"`
 	MarkedForReview       bool        `json:"marked_for_review"`
 	ChequeNumber          pgtype.Text `json:"cheque_number"`
 	ReceiptReference      pgtype.Text `json:"receipt_reference"`
@@ -1363,6 +1405,7 @@ func (q *Queries) UpdateExplanation(ctx context.Context, arg UpdateExplanationPa
 		arg.PlaceOfSupply,
 		arg.TransferBankAccountID,
 		arg.PaidUserID,
+		arg.PaidInvoiceID,
 		arg.MarkedForReview,
 		arg.ChequeNumber,
 		arg.ReceiptReference,
@@ -1386,6 +1429,7 @@ func (q *Queries) UpdateExplanation(ctx context.Context, arg UpdateExplanationPa
 		&i.PlaceOfSupply,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
+		&i.PaidInvoiceID,
 		&i.MarkedForReview,
 		&i.ChequeNumber,
 		&i.ReceiptReference,

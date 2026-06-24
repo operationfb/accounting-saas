@@ -41,9 +41,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		// DELETE /api/v1/invoices/:id            → soft-delete (DRAFT only)
 		// POST   /api/v1/invoices/:id/status     → drive the status lifecycle
 		g.GET("", h.ListInvoices)
-		// Static route declared before the /:id wildcard so "next-reference" isn't
-		// captured as an id (Gin gives static segments priority, cf. /expenses/inbox).
+		// Static routes declared before the /:id wildcard so "next-reference" /
+		// "outstanding" aren't captured as an id (Gin gives static segments priority,
+		// cf. /expenses/inbox).
 		g.GET("/next-reference", h.NextReference)
+		// GET /api/v1/invoices/outstanding → SENT, not-fully-paid invoices (the banking
+		// Invoice Receipt picker).
+		g.GET("/outstanding", h.ListOutstandingInvoices)
 		g.POST("", h.CreateInvoice)
 		g.GET("/:id", h.GetInvoice)
 		g.PUT("/:id", h.UpdateInvoice)
@@ -55,6 +59,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 // ListInvoices handles GET /api/v1/invoices.
 func (h *Handler) ListInvoices(c *gin.Context) {
 	list, err := h.svc.ListInvoices(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"invoices": list})
+}
+
+// ListOutstandingInvoices handles GET /api/v1/invoices/outstanding — the org's SENT,
+// not-fully-paid invoices, for the banking Invoice Receipt explanation picker.
+func (h *Handler) ListOutstandingInvoices(c *gin.Context) {
+	list, err := h.svc.ListOutstandingInvoices(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

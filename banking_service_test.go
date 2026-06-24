@@ -979,3 +979,261 @@ func TestExplainService(t *testing.T) {
 		assertAppCode(t, err, kernel.ErrCodeForbidden)
 	})
 }
+
+// =============================================================================
+// Invoice Receipt — explaining a money-IN bank line against a sent sales invoice.
+// Exercises the cross-domain sync (banking explanation → invoices.paid_value_minor),
+// the overpayment cap, and the validation rules. Real Postgres; the invoice is seeded
+// directly so its total + status are exact (no dependence on line-item VAT math).
+// =============================================================================
+func TestInvoiceReceiptExplain(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+	svc := ts.bankingService
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+
+	acc, err := svc.CreateBankAccount(ctx, userID, orgID, bankReq("Main", nil))
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cleanupBankAccount(t, ts, acc.ID)
+	contactID := createContactAs(t, ts, user, org)
+
+	// Registered AFTER the account + contact so LIFO deletes in FK order: explanations
+	// → invoices (here) → contact (createContactAs) → bank_transactions + account.
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(bg, `DELETE FROM invoices WHERE organisation_id=$1`, org)
+	})
+
+	ptr := func(s string) *string { return &s }
+	// newTxn inserts one bank line (signed minor units: + in / - out) on the account.
+	newTxn := func(amountMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source)
+			 VALUES ($1,$2,CURRENT_DATE,$3,'unexplained','manual') RETURNING id::text`, org, acc.ID, amountMinor).Scan(&id); err != nil {
+			t.Fatalf("new txn: %v", err)
+		}
+		return id
+	}
+	// newInvoice seeds a sales invoice with an exact total + status (no VAT, no lines).
+	newInvoice := func(status string, totalMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO invoices (organisation_id, created_by_user_id, contact_id, dated_on, status,
+			        net_value_minor, sales_tax_value_minor, total_value_minor, reference)
+			 VALUES ($1,$2,$3,CURRENT_DATE,$4,$5,0,$5,$6) RETURNING id::text`,
+			org, user, contactID, status, totalMinor, randomRef()).Scan(&id); err != nil {
+			t.Fatalf("seed invoice: %v", err)
+		}
+		return id
+	}
+	paidOf := func(invID string) int64 {
+		var paid int64
+		if err := ts.pool.QueryRow(ctx, `SELECT paid_value_minor FROM invoices WHERE id=$1`, invID).Scan(&paid); err != nil {
+			t.Fatalf("read paid: %v", err)
+		}
+		return paid
+	}
+	displayOf := func(invID string) string {
+		detail, err := ts.invoiceService.GetInvoice(ctx, userID, orgID, invID)
+		if err != nil {
+			t.Fatalf("get invoice: %v", err)
+		}
+		return detail.DisplayStatus
+	}
+	receipt := func(amount string, invID *string) banking.CreateExplanationRequest {
+		return banking.CreateExplanationRequest{Type: "INVOICE_RECEIPT", Amount: amount, PaidInvoiceID: invID}
+	}
+
+	t.Run("full receipt records the payment and derives Paid", func(t *testing.T) {
+		inv := newInvoice("SENT", 20000) // £200 owed
+		txn := newTxn(20000)             // £200 in
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("200.00", ptr(inv)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if resp.Status != "explained" || resp.UnexplainedAmount != "0.00" {
+			t.Errorf("line: status=%q unexplained=%q, want explained / 0.00", resp.Status, resp.UnexplainedAmount)
+		}
+		if got := paidOf(inv); got != 20000 {
+			t.Errorf("paid_value_minor: got %d, want 20000", got)
+		}
+		if got := displayOf(inv); got != "Paid" {
+			t.Errorf("display status: got %q, want Paid", got)
+		}
+		e := resp.Explanations[0]
+		if e.PaidInvoiceID == nil || *e.PaidInvoiceID != inv {
+			t.Errorf("paid_invoice_id not echoed: %+v", e)
+		}
+		if e.CategoryID != nil {
+			t.Errorf("an invoice receipt should carry no category, got %v", *e.CategoryID)
+		}
+	})
+
+	t.Run("partial receipts accumulate; Open until fully paid", func(t *testing.T) {
+		inv := newInvoice("SENT", 10000) // £100 owed
+		if _, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(4000), receipt("40.00", ptr(inv))); err != nil {
+			t.Fatalf("first receipt: %v", err)
+		}
+		if got := paidOf(inv); got != 4000 {
+			t.Errorf("paid after £40: got %d, want 4000", got)
+		}
+		if got := displayOf(inv); got != "Open" {
+			t.Errorf("display after partial: got %q, want Open", got)
+		}
+		if _, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(6000), receipt("60.00", ptr(inv))); err != nil {
+			t.Fatalf("second receipt: %v", err)
+		}
+		if got := paidOf(inv); got != 10000 {
+			t.Errorf("paid after £100: got %d, want 10000", got)
+		}
+		if got := displayOf(inv); got != "Paid" {
+			t.Errorf("display after full: got %q, want Paid", got)
+		}
+	})
+
+	t.Run("deleting a receipt restores the invoice's paid value", func(t *testing.T) {
+		inv := newInvoice("SENT", 5000)
+		txn := newTxn(5000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("50.00", ptr(inv)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if _, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if got := paidOf(inv); got != 0 {
+			t.Errorf("paid after delete: got %d, want 0", got)
+		}
+	})
+
+	t.Run("editing the receipt amount re-syncs paid", func(t *testing.T) {
+		inv := newInvoice("SENT", 10000)
+		txn := newTxn(10000) // £100 line so the portion can shrink
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("100.00", ptr(inv)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if _, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID, receipt("60.00", ptr(inv))); err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		if got := paidOf(inv); got != 6000 {
+			t.Errorf("paid after edit to £60: got %d, want 6000", got)
+		}
+	})
+
+	t.Run("re-pointing a receipt moves paid between invoices", func(t *testing.T) {
+		invA := newInvoice("SENT", 10000)
+		invB := newInvoice("SENT", 10000)
+		txn := newTxn(5000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("50.00", ptr(invA)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if _, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID, receipt("50.00", ptr(invB))); err != nil {
+			t.Fatalf("re-point: %v", err)
+		}
+		if pa, pb := paidOf(invA), paidOf(invB); pa != 0 || pb != 5000 {
+			t.Errorf("after re-point: A=%d B=%d, want A=0 B=5000", pa, pb)
+		}
+	})
+
+	t.Run("a receipt blocks reopening the invoice until it is removed", func(t *testing.T) {
+		inv := newInvoice("SENT", 10000)
+		txn := newTxn(6000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("60.00", ptr(inv))) // partially paid
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		// With a receipt against it, reopen (SENT → DRAFT) is a 409.
+		if _, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen"); err == nil {
+			t.Fatal("expected reopen to be blocked while a receipt exists")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeConflict)
+		}
+		// Remove the receipt → paid back to 0 → reopen now succeeds.
+		if _, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID); err != nil {
+			t.Fatalf("delete receipt: %v", err)
+		}
+		out, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen")
+		if err != nil {
+			t.Fatalf("reopen after removing receipt: %v", err)
+		}
+		if out.Status != "DRAFT" {
+			t.Errorf("status after reopen: got %q, want DRAFT", out.Status)
+		}
+	})
+
+	t.Run("editing the same receipt to the same amount is allowed", func(t *testing.T) {
+		inv := newInvoice("SENT", 5000)
+		txn := newTxn(5000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("50.00", ptr(inv))) // fully pays it
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		// Re-saving £50 against the now-fully-paid invoice must NOT trip the cap (its own
+		// prior portion is given back before the check).
+		if _, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID, receipt("50.00", ptr(inv))); err != nil {
+			t.Fatalf("re-save same amount: %v", err)
+		}
+		if got := paidOf(inv); got != 5000 {
+			t.Errorf("paid after re-save: got %d, want 5000", got)
+		}
+	})
+
+	t.Run("paid_invoice_id is required", func(t *testing.T) {
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(5000), receipt("50.00", nil))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("a draft invoice cannot be paid", func(t *testing.T) {
+		inv := newInvoice("DRAFT", 5000)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(5000), receipt("50.00", ptr(inv)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("a fully-paid invoice cannot be paid again", func(t *testing.T) {
+		inv := newInvoice("SENT", 5000)
+		if _, err := ts.pool.Exec(ctx, `UPDATE invoices SET paid_value_minor=5000 WHERE id=$1`, inv); err != nil {
+			t.Fatalf("mark paid: %v", err)
+		}
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(5000), receipt("50.00", ptr(inv)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("overpayment beyond the outstanding balance is rejected", func(t *testing.T) {
+		inv := newInvoice("SENT", 5000) // £50 owed
+		txn := newTxn(10000)            // £100 in — the bank line allows £100, but the invoice only owes £50
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, receipt("100.00", ptr(inv)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("an invoice receipt on a money-out line is rejected", func(t *testing.T) {
+		inv := newInvoice("SENT", 5000)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(-5000), receipt("50.00", ptr(inv)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+
+	t.Run("another org's invoice is not payable (org-scoped)", func(t *testing.T) {
+		otherOrg, otherUser := newOrgWithOwner(t, ts)
+		otherContact := createContactAs(t, ts, otherUser, otherOrg)
+		var foreign string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO invoices (organisation_id, created_by_user_id, contact_id, dated_on, status,
+			        net_value_minor, sales_tax_value_minor, total_value_minor, reference)
+			 VALUES ($1,$2,$3,CURRENT_DATE,'SENT',5000,0,5000,$4) RETURNING id::text`,
+			otherOrg, otherUser, otherContact, randomRef()).Scan(&foreign); err != nil {
+			t.Fatalf("seed foreign invoice: %v", err)
+		}
+		t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE id=$1`, foreign) })
+		// Caller is `org`; the invoice belongs to otherOrg → the org-scoped GetInvoice misses → 422.
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(5000), receipt("50.00", ptr(foreign)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+}

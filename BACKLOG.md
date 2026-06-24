@@ -179,12 +179,15 @@ MINIMAL cut. Deferred:
   so numbers are never reused). `reference` is now REQUIRED + unique per org. Still deferred:
   honouring `projects.project_invoice_sequence` so a project can use its OWN number sequence instead
   of the org-wide one. _Files: `internal/invoices`, the projects domain._
-- **Payments / reconciliation → `paid_value_minor`.** Nothing populates `paid_value_minor` yet
-  (defaults 0, so a SENT invoice always derives as Open/Overdue, never Paid). Wire it from the
-  banking `INVOICE_RECEIPT` explanation link (see the banking backlog's "future-entity explanation
-  links") and/or a payments table; add `paid_on` / `written_off_date` columns then (and split the
-  single `UpdateInvoiceStatus` into per-transition queries that stamp them). _Files: schema,
-  `db/queries/invoices.sql`, banking._
+- **Payments / reconciliation — `paid_value_minor` now wired from `INVOICE_RECEIPT`** (2026-06-24).
+  Explaining a money-in bank line as an Invoice Receipt sets `bank_transaction_explanations.paid_invoice_id`
+  and re-syncs `invoices.paid_value_minor = Σ(live receipts)` in the same transaction (so a SENT invoice
+  now derives Paid/partial); `GET /api/v1/invoices/outstanding` backs the picker; overpayment is capped
+  at the outstanding balance; and a SENT invoice with any payment **cannot be reopened** (409 — the
+  receipt(s) must be removed first, which keeps a DRAFT's paid at 0 and so editing safe). Still deferred:
+  a dedicated payments table; `paid_on` / `written_off_date` columns (and splitting the single
+  `UpdateInvoiceStatus` into per-transition queries that stamp them). _Files: schema,
+  `db/queries/invoices.sql`, `internal/banking`, `internal/invoices`._
 - **Wire `ContactHasInvoices` into the contacts in-use guard.** The datalayer query exists but is
   unused; inject the invoices querier into `contacts.NewService` and OR it into the existing
   `ContactHasProjects` check, so a contact with invoices can't be soft-deleted and reports
@@ -336,9 +339,9 @@ remains is the reconciliation/feed richness:
   service (`internal/banking/explain.go` + `internal/categories` reference endpoints)
   with per-type validation, splitting + the over-explain guard, and VAT via
   `money.ComputeFixedVAT`; and the **inline expanding panel** on
-  `BankAccountTransactionsView.vue` (Type → category/Transfer/User pickers, VAT
-  pre-fill from `default_vat`, add/edit/delete + split). v1 covers 12 of 18 types
-  (`entity_link ∈ {NONE, BANK_ACCOUNT, USER, CAPITAL_ASSET}`). Refinements still to do:
+  `BankAccountTransactionsView.vue` (Type → category/Transfer/User/Invoice pickers, VAT
+  pre-fill from `default_vat`, add/edit/delete + split). v1 covers 13 of 18 types
+  (`entity_link ∈ {NONE, BANK_ACCOUNT, USER, CAPITAL_ASSET, INVOICE}`). Refinements still to do:
   - **"Guess explanations" auto-engine.** Pre-suggest an explanation (the account's
     `guess_explanations` flag is stored but unused) — e.g. from the supplier→category
     dictionary or prior explanations; lands rows in `for_approval`.
@@ -349,9 +352,10 @@ remains is the reconciliation/feed richness:
     is currently reference metadata only — no journal lines are posted. A future ledger
     posts balanced debits/credits across nominals (incl. the per-entity sub-accounts
     750-x bank / 900-x user / 602-x asset that are represented by entity links today).
-  - **Future-entity explanation links.** `BILL_PAYMENT` / `INVOICE_RECEIPT` /
-    `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds) are valid `type`s now but carry no
-    dedicated link — add `paid_invoice_id` / `paid_bill_id` / … to
+  - **Future-entity explanation links.** `INVOICE_RECEIPT` landed (2026-06-24): `paid_invoice_id`
+    on `bank_transaction_explanations`, wired to `invoices.paid_value_minor`, `INVOICE` added to
+    `SupportedEntityLinks`. Remaining: `BILL_PAYMENT` / `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds)
+    are valid `type`s but still carry no dedicated link — add `paid_bill_id` / … to
     `bank_transaction_explanations` when those modules land. Likewise a capital-asset
     register (Purchase/Disposal) and `project_id` + rebilling.
   - **`expense_categories` → `categories` unification.** Two category tables coexist

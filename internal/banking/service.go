@@ -42,24 +42,29 @@ import (
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	banking "github.com/operationfb/accounting-saas/db/banking"
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
+	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
 
 // Service holds the pool (for the multi-statement primary-flip transaction), the
 // banking query set, the auth queries (caller's membership/role + the org's
-// company_type), and the categories query set (the explain flow's reference
-// lookups: type, offered-category check, VAT rate).
+// company_type), the categories query set (the explain flow's reference lookups:
+// type, offered-category check, VAT rate), and the invoices query set (the
+// cross-domain dependency for the Invoice Receipt explanation: validate the target
+// invoice + keep its paid_value_minor in sync — the concrete *Queries, not the
+// interface, so it can join the explanation write's transaction via WithTx).
 type Service struct {
-	pool        *pgxpool.Pool
-	queries     *banking.Queries
-	authQueries auth.Querier
-	catQueries  *categoriesdb.Queries
+	pool           *pgxpool.Pool
+	queries        *banking.Queries
+	authQueries    auth.Querier
+	catQueries     *categoriesdb.Queries
+	invoiceQueries *invoicesdb.Queries
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
-func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries) *Service {
-	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries}
+func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries) *Service {
+	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries}
 }
 
 // =============================================================================

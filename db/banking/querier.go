@@ -163,6 +163,15 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	SoftDeleteExplanation(ctx context.Context, arg SoftDeleteExplanationParams) error
 	// -----------------------------------------------------------------------------
+	// SumInvoiceReceiptsForInvoice — the total settled against ONE invoice by live
+	// INVOICE_RECEIPT explanations (the new paid_value_minor for that invoice). The
+	// explain service recomputes this inside the same transaction as the explanation
+	// write and pushes it onto invoices.paid_value_minor (UpdateInvoicePaidValue), so
+	// the figure is drift-free across split/edit/re-point/delete. gross_value_minor is
+	// positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
+	// -----------------------------------------------------------------------------
+	SumInvoiceReceiptsForInvoice(ctx context.Context, arg SumInvoiceReceiptsForInvoiceParams) (int64, error)
+	// -----------------------------------------------------------------------------
 	// UnsetPrimaryBankAccounts  (clear the org's current primary)
 	// Sets is_primary = FALSE on whichever live account is currently primary for the
 	// org. Called inside a transaction BEFORE marking a new primary, so the partial

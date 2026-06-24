@@ -428,19 +428,24 @@ sql:
   # Generates the data layer for the bank_accounts + bank_transactions +
   # bank_transaction_explanations tables into package `banking` at db/banking.
   #
-  # Loads schema.sql + auth_schema.sql + categories_schema.sql + banking_schema.sql
-  # in dependency order: banking_schema.sql references set_updated_at() + vat_rates
-  # (schema.sql), the organisations / users tables (auth_schema.sql), and the
-  # categories / transaction_types that bank_transaction_explanations FKs
-  # (categories_schema.sql). omit_unused_structs keeps the other domains' structs
-  # out of db/banking — only the banking structs + List/Get *Row structs are emitted.
+  # Loads schema.sql + auth_schema.sql + contacts_schema.sql + categories_schema.sql +
+  # invoices_schema.sql + banking_schema.sql in dependency order: banking_schema.sql
+  # references set_updated_at() + vat_rates (schema.sql), the organisations / users
+  # tables (auth_schema.sql), the categories / transaction_types (categories_schema.sql)
+  # and now the invoices table that bank_transaction_explanations.paid_invoice_id FKs
+  # (invoices_schema.sql, which itself needs contacts_schema.sql for its contact_id FK).
+  # The detailed explanations query also LEFT JOINs invoices for the reference label.
+  # omit_unused_structs keeps the other domains' structs out of db/banking — only the
+  # banking structs + List/Get *Row structs are emitted.
   # ===========================================================================
   - engine: "postgresql"
 
     schema:
       - "db/schema/schema.sql"
       - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
       - "db/schema/categories_schema.sql"
+      - "db/schema/invoices_schema.sql"
       - "db/schema/banking_schema.sql"
 
     queries: "db/queries/banking.sql"

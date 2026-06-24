@@ -252,6 +252,32 @@ func (s *Service) ListInvoices(
 	return out, nil
 }
 
+// ListOutstandingInvoices returns the org's SENT-but-not-fully-paid invoices (those
+// still owing money — covers both unpaid and partially-paid). It backs the banking
+// "Invoice Receipt" explanation picker: only a sent invoice can be settled, and a
+// fully-paid one drops off. Any active member may list (the picker needs it). Reuses
+// the same InvoiceResponse shape as ListInvoices (no line items); the dropdown label
+// is composed client-side from reference + due_value.
+func (s *Service) ListOutstandingInvoices(
+	ctx context.Context,
+	authUserID uuid.UUID,
+	authOrgID uuid.UUID,
+) ([]*InvoiceResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.queries.ListOutstandingInvoices(ctx, authOrgID)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	out := make([]*InvoiceResponse, 0, len(rows))
+	for _, inv := range rows {
+		out = append(out, invoiceToResponse(inv))
+	}
+	return out, nil
+}
+
 // =============================================================================
 // NEXT REFERENCE (invoice auto-numbering)
 // =============================================================================
@@ -486,6 +512,16 @@ func (s *Service) ChangeStatus(
 		target, ok := resolveTransition(action, existing.Status)
 		if !ok {
 			return kernel.ErrConflict(fmt.Sprintf("cannot %q an invoice in status %s", action, existing.Status))
+		}
+
+		// A SENT invoice with money recorded against it (a bank Invoice Receipt) is a
+		// live/part-paid receivable. Reopening to DRAFT is the ONLY route back to editing
+		// — and an edit could then drop the total below the amount already paid. So once
+		// any payment has landed, block the reopen: the bank receipt(s) must be removed
+		// first (via the banking explain panel), which returns paid_value_minor to 0.
+		// Other transitions (write_off / refund) are unaffected.
+		if target == StatusDraft && existing.PaidValueMinor > 0 {
+			return kernel.ErrConflict("cannot reopen an invoice that has payments recorded against it — remove the bank receipt(s) first")
 		}
 
 		updated, err := qtx.UpdateInvoiceStatus(ctx, invoicesdb.UpdateInvoiceStatusParams{

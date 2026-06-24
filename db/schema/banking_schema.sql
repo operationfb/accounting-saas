@@ -10,9 +10,10 @@
 --
 -- This is its own bounded context (like auth, contacts, projects): own schema
 -- file, own sqlc package (db/banking). Applied AFTER schema.sql + auth_schema.sql +
--- categories_schema.sql, so set_updated_at(), the organisations/users tables, and the
--- categories/transaction_types that bank_transaction_explanations references already
--- exist — the foreign keys below are declared INLINE.
+-- categories_schema.sql + invoices_schema.sql, so set_updated_at(), the
+-- organisations/users tables, the categories/transaction_types AND the invoices table
+-- that bank_transaction_explanations references already exist — the foreign keys below
+-- are declared INLINE. (invoices itself needs contacts_schema.sql, so that is loaded too.)
 --
 -- Design decisions worth knowing:
 --
@@ -217,10 +218,14 @@ CREATE TABLE bank_transaction_explanations (
     place_of_supply     CHAR(2),                                         -- for EC VAT MOSS
 
     -- Type-specific links to EXISTING entities (real FKs). Links to not-yet-built
-    -- entities (invoice/bill/credit note/HP/capital asset) are recorded by `type`
-    -- for now; their FK columns land with that module.
+    -- entities (bill/credit note/HP/capital asset) are recorded by `type` for now;
+    -- their FK columns land with that module.
     transfer_bank_account_id UUID REFERENCES bank_accounts(id),          -- Transfer to/from Another Account
     paid_user_id        UUID REFERENCES users(id),                       -- Money Paid/Received to/from User
+    -- Invoice Receipt: the sales invoice this receipt settles. NULL for every other
+    -- type. The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT
+    -- explanations for the invoice) in the same transaction as the explanation write.
+    paid_invoice_id     UUID REFERENCES invoices(id),                    -- Invoice Receipt → invoices(id)
 
     -- Misc (FreeAgent). marked_for_review = a guessed explanation pending a human OK.
     marked_for_review   BOOLEAN NOT NULL DEFAULT FALSE,
@@ -244,8 +249,10 @@ CREATE INDEX idx_explanations_txn
 -- like auth_schema.sql / contacts_schema.sql do. Schemas are applied in order:
 --   1. schema.sql            (defines set_updated_at)
 --   2. auth_schema.sql       (organisations, users)
---   3. categories_schema.sql (categories, transaction_types — referenced below)
---   4. banking_schema.sql    (this file)
+--   3. contacts_schema.sql   (contacts — needed by invoices_schema.sql)
+--   4. categories_schema.sql (categories, transaction_types — referenced below)
+--   5. invoices_schema.sql   (invoices — referenced by paid_invoice_id below)
+--   6. banking_schema.sql    (this file)
 -- =============================================================================
 CREATE TRIGGER trg_bank_accounts_updated_at
     BEFORE UPDATE ON bank_accounts
@@ -325,3 +332,4 @@ COMMENT ON TABLE  bank_transaction_explanations IS 'Accounting explanations for 
 COMMENT ON COLUMN bank_transaction_explanations.gross_value_minor IS 'This explanation''s portion of the transaction, signed minor units (pence). Σ of a transaction''s live explanations = its amount_minor when fully explained.';
 COMMENT ON COLUMN bank_transaction_explanations.category_id IS 'CoA account (categories) this posts to. NULL for entity-link types (Transfer / Invoice Receipt / Bill Payment / …), whose account comes from the linked entity.';
 COMMENT ON COLUMN bank_transaction_explanations.marked_for_review IS 'TRUE = a guessed/auto explanation pending human approval; drives the parent transaction''s status = for_approval (see recompute trigger).';
+COMMENT ON COLUMN bank_transaction_explanations.paid_invoice_id IS 'Invoice Receipt only: the sales invoice this receipt settles (NULL for every other type). The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT explanations for the invoice) in the same transaction as the explanation write.';

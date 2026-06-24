@@ -14,6 +14,14 @@ export async function listInvoices(): Promise<Invoice[]> {
   return ListInvoicesResponseSchema.parse(data).invoices ?? []
 }
 
+// GET /api/v1/invoices/outstanding — the org's SENT, not-fully-paid invoices (those
+// still owing money). Backs the banking "Invoice Receipt" explanation picker. Same
+// header-only shape as listInvoices; an empty list may arrive as null.
+export async function listOutstandingInvoices(): Promise<Invoice[]> {
+  const data = await apiFetch<unknown>('/invoices/outstanding', { method: 'GET' })
+  return ListInvoicesResponseSchema.parse(data).invoices ?? []
+}
+
 // GET /api/v1/invoices/:id — one invoice WITH its line items. A 404 surfaces as an
 // ApiError for the caller to show.
 export async function getInvoice(id: string): Promise<Invoice> {

@@ -30,11 +30,13 @@ import {
 } from '@/services/explanation.service'
 import { listVatRates } from '@/services/expenses.service'
 import { listMembers } from '@/services/members.service'
+import { listOutstandingInvoices } from '@/services/invoices.service'
 import { formatMoney, formatDate, computeFixedVatPounds } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth'
 import type { BankAccount, BankTransaction } from '@/types/bank-account'
 import type { TransactionType, ExplanationCategory, Explanation, TransactionExplanations, CreateExplanationRequest } from '@/types/explanation'
 import type { VatRate } from '@/types/expense'
+import type { Invoice } from '@/types/invoice'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
@@ -268,11 +270,16 @@ const members = ref<{ id: string; name: string }[]>([])
 const refLoaded = ref(false)
 
 // the add/edit form
-const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', amount: '', vatRateId: '', vatAmount: '', description: '' })
+const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', invoiceId: '', amount: '', vatRateId: '', vatAmount: '', description: '' })
 const editingId = ref<string | null>(null)
 const saving = ref(false)
 const formError = ref('')
 const catsForType = ref<ExplanationCategory[]>([])
+// Outstanding (SENT, not-fully-paid) invoices for the Invoice Receipt picker, loaded
+// lazily when that type is chosen. editingInvoiceOption keeps a now-fully-paid invoice
+// selectable while editing its own receipt (it has dropped off the outstanding list).
+const outstandingInvoices = ref<Invoice[]>([])
+const editingInvoiceOption = ref<{ label: string; value: string } | null>(null)
 
 const expandedTxn = computed(() => transactions.value.find((t) => t.id === expandedId.value) ?? null)
 const lineDirection = computed(() => (expandedTxn.value?.money_out ? 'out' : 'in'))
@@ -323,6 +330,19 @@ const currencySymbol = computed(() => {
 })
 const accountOptions = computed(() => otherAccounts.value.map((a) => ({ label: a.name, value: a.id })))
 const memberOptions = computed(() => members.value.map((m) => ({ label: m.name, value: m.id })))
+// Invoice Receipt picker: each SENT, not-fully-paid invoice as "#ref — £due due". While
+// editing a receipt whose invoice is now fully paid, that invoice has dropped off the
+// outstanding list, so merge it back in (editingInvoiceOption) to keep the link visible.
+const invoiceOptions = computed(() => {
+  const opts = outstandingInvoices.value.map((inv) => ({
+    label: `${inv.reference ? '#' + inv.reference : 'Invoice'} — ${currencySymbol.value}${inv.due_value} due`,
+    value: inv.id,
+  }))
+  if (editingInvoiceOption.value && !opts.some((o) => o.value === editingInvoiceOption.value!.value)) {
+    opts.unshift(editingInvoiceOption.value)
+  }
+  return opts
+})
 const vatOptions = computed(() => [{ label: 'No VAT', value: '' }, ...vatRates.value.map((r) => ({ label: `${r.name} (${r.rate})`, value: r.id }))])
 const selectedVatRate = computed(() => vatRates.value.find((r) => r.id === form.vatRateId) ?? null)
 // A "manual" VAT rate (is_fixed_ratio = false, e.g. "Standard Rate (manual)") lets the user type
@@ -410,21 +430,35 @@ function resetForm() {
   form.categoryId = ''
   form.transferAccountId = ''
   form.paidUserId = ''
+  form.invoiceId = ''
   form.amount = ''
   form.vatRateId = ''
   form.vatAmount = ''
   form.description = ''
   catsForType.value = []
+  outstandingInvoices.value = []
+  editingInvoiceOption.value = null
   formError.value = ''
 }
 
-// onTypeChange loads the categories the chosen type offers (category + user types).
+// onTypeChange loads the picker data the chosen type needs: the offered categories
+// (category + user types) or the outstanding invoices (Invoice Receipt).
 async function onTypeChange() {
   form.categoryId = ''
   form.transferAccountId = ''
   form.paidUserId = ''
+  form.invoiceId = ''
   catsForType.value = []
+  outstandingInvoices.value = []
   if (!form.type) return
+  if (entityLink.value === 'INVOICE') {
+    try {
+      outstandingInvoices.value = await listOutstandingInvoices()
+    } catch {
+      outstandingInvoices.value = []
+    }
+    return
+  }
   if (entityLink.value !== 'BANK_ACCOUNT') {
     try {
       catsForType.value = await listCategoriesForType(form.type)
@@ -470,6 +504,12 @@ async function submitForm() {
     }
     payload.paid_user_id = form.paidUserId
     payload.category_id = form.categoryId
+  } else if (entityLink.value === 'INVOICE') {
+    if (!form.invoiceId) {
+      formError.value = 'Choose an invoice.'
+      return
+    }
+    payload.paid_invoice_id = form.invoiceId // no category / VAT for an invoice receipt
   } else {
     if (!form.categoryId) {
       formError.value = 'Choose a category.'
@@ -507,6 +547,12 @@ async function startEdit(e: Explanation) {
   form.categoryId = e.category_id ?? ''
   form.transferAccountId = e.transfer_bank_account_id ?? ''
   form.paidUserId = e.paid_user_id ?? ''
+  form.invoiceId = e.paid_invoice_id ?? ''
+  // The invoice this receipt settled may now be fully paid (off the outstanding list) —
+  // keep it selectable so the link stays visible while editing.
+  editingInvoiceOption.value = e.paid_invoice_id
+    ? { value: e.paid_invoice_id, label: e.invoice_reference ? `#${e.invoice_reference}` : 'Invoice' }
+    : null
 }
 
 function cancelEdit() {
@@ -703,7 +749,7 @@ async function removeEditing() {
                             >
                               <td class="py-1.5 font-semibold">{{ typeName(e.type) }}</td>
                               <td class="py-1.5 text-fa-muted">
-                                {{ e.category_name || e.transfer_account_name || e.paid_user_name || '—' }}
+                                {{ e.category_name || e.transfer_account_name || e.paid_user_name || (e.invoice_reference && 'Invoice ' + e.invoice_reference) || '—' }}
                               </td>
                               <td class="py-1.5 text-right tabular-nums">
                                 £{{ e.amount }}<span v-if="Number(e.vat_value) > 0" class="text-fa-muted"> (incl. £{{ e.vat_value }} VAT)</span>
@@ -724,21 +770,24 @@ async function removeEditing() {
                             <label class="text-right text-fa-muted">Type</label>
                             <Select v-model="form.type" :options="typeOptions" option-label="label" option-value="value" placeholder="Choose…" class="w-full max-w-xs" @change="onTypeChange" />
 
-                            <!-- VAT: rate + amount (amount editable only for a manual rate) -->
-                            <label class="text-right text-fa-muted">VAT</label>
-                            <div class="flex items-center gap-2">
-                              <Select v-model="form.vatRateId" :options="vatOptions" option-label="label" option-value="value" class="w-52" />
-                              <InputGroup class="w-32">
-                                <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
-                                <InputText
-                                  v-model="form.vatAmount"
-                                  :readonly="!isManualVat"
-                                  :class="isManualVat ? '' : 'bg-[#f1f3f5] text-fa-muted'"
-                                  inputmode="decimal"
-                                  class="text-right"
-                                />
-                              </InputGroup>
-                            </div>
+                            <!-- VAT: rate + amount (amount editable only for a manual rate). An
+                                 invoice receipt carries no VAT of its own, so the row is hidden. -->
+                            <template v-if="entityLink !== 'INVOICE'">
+                              <label class="text-right text-fa-muted">VAT</label>
+                              <div class="flex items-center gap-2">
+                                <Select v-model="form.vatRateId" :options="vatOptions" option-label="label" option-value="value" class="w-52" />
+                                <InputGroup class="w-32">
+                                  <InputGroupAddon>{{ currencySymbol }}</InputGroupAddon>
+                                  <InputText
+                                    v-model="form.vatAmount"
+                                    :readonly="!isManualVat"
+                                    :class="isManualVat ? '' : 'bg-[#f1f3f5] text-fa-muted'"
+                                    inputmode="decimal"
+                                    class="text-right"
+                                  />
+                                </InputGroup>
+                              </div>
+                            </template>
 
                             <!-- Value (the gross) -->
                             <label class="text-right text-fa-muted">Value</label>
@@ -757,6 +806,20 @@ async function removeEditing() {
                               <Select v-model="form.paidUserId" :options="memberOptions" option-label="label" option-value="value" placeholder="User" class="w-full max-w-xs" />
                               <label class="text-right text-fa-muted">Account</label>
                               <Select v-model="form.categoryId" :options="categoryOptions" option-label="label" option-value="value" placeholder="Account" class="w-full max-w-xs" @change="onCategoryChange" />
+                            </template>
+                            <template v-else-if="entityLink === 'INVOICE'">
+                              <label class="text-right text-fa-muted">Invoice</label>
+                              <Select
+                                v-model="form.invoiceId"
+                                :options="invoiceOptions"
+                                option-label="label"
+                                option-value="value"
+                                placeholder="Choose an invoice"
+                                filter
+                                scroll-height="320px"
+                                class="w-full max-w-xs"
+                                empty-message="No outstanding invoices"
+                              />
                             </template>
                             <template v-else>
                               <label class="text-right text-fa-muted">Category</label>

@@ -374,15 +374,15 @@ INSERT INTO bank_transaction_explanations (
     type, gross_value_minor, category_id,
     sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax,
     ec_status, place_of_supply,
-    transfer_bank_account_id, paid_user_id,
+    transfer_bank_account_id, paid_user_id, paid_invoice_id,
     marked_for_review, cheque_number, receipt_reference
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
     $6,  $7,  $8,
     $9,  $10, $11, $12,
     $13, $14,
-    $15, $16,
-    $17, $18, $19
+    $15, $16, $17,
+    $18, $19, $20
 )
 RETURNING *;
 
@@ -429,9 +429,10 @@ UPDATE bank_transaction_explanations SET
     place_of_supply          = $13,
     transfer_bank_account_id = $14,
     paid_user_id             = $15,
-    marked_for_review        = $16,
-    cheque_number            = $17,
-    receipt_reference        = $18
+    paid_invoice_id          = $16,
+    marked_for_review        = $17,
+    cheque_number            = $18,
+    receipt_reference        = $19
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
@@ -467,13 +468,32 @@ SELECT
     u.first_name   AS paid_user_first_name,
     u.last_name    AS paid_user_last_name,
     vr.name        AS vat_rate_name,
-    vr.rate_bps    AS vat_rate_bps
+    vr.rate_bps    AS vat_rate_bps,
+    inv.reference  AS invoice_reference
 FROM bank_transaction_explanations e
-LEFT JOIN categories    c  ON c.id  = e.category_id
-LEFT JOIN bank_accounts ta ON ta.id = e.transfer_bank_account_id
-LEFT JOIN users         u  ON u.id  = e.paid_user_id
-LEFT JOIN vat_rates     vr ON vr.id = e.sales_tax_rate_id
+LEFT JOIN categories    c   ON c.id   = e.category_id
+LEFT JOIN bank_accounts ta  ON ta.id  = e.transfer_bank_account_id
+LEFT JOIN users         u   ON u.id   = e.paid_user_id
+LEFT JOIN vat_rates     vr  ON vr.id  = e.sales_tax_rate_id
+LEFT JOIN invoices      inv ON inv.id = e.paid_invoice_id
 WHERE e.bank_transaction_id = $1
   AND e.organisation_id     = $2
   AND e.deleted_at IS NULL
 ORDER BY e.created_at ASC, e.id ASC;
+
+
+-- -----------------------------------------------------------------------------
+-- SumInvoiceReceiptsForInvoice — the total settled against ONE invoice by live
+-- INVOICE_RECEIPT explanations (the new paid_value_minor for that invoice). The
+-- explain service recomputes this inside the same transaction as the explanation
+-- write and pushes it onto invoices.paid_value_minor (UpdateInvoicePaidValue), so
+-- the figure is drift-free across split/edit/re-point/delete. gross_value_minor is
+-- positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
+-- -----------------------------------------------------------------------------
+-- name: SumInvoiceReceiptsForInvoice :one
+SELECT COALESCE(SUM(gross_value_minor), 0)::bigint AS total_minor
+FROM bank_transaction_explanations
+WHERE paid_invoice_id  = $1
+  AND organisation_id  = $2
+  AND type             = 'INVOICE_RECEIPT'
+  AND deleted_at IS NULL;
