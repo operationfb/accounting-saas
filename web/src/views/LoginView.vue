@@ -87,7 +87,7 @@ async function onSubmit() {
             />
             <button
               type="button"
-              class="absolute right-0 top-0 h-full border-l border-fa-input-border px-3.5 text-sm font-semibold text-fa-blue"
+              class="absolute right-0 top-0 h-full border-l border-fa-input-border px-3.5 text-sm font-semibold text-fa-green"
               @click="showPassword = !showPassword"
             >
               {{ showPassword ? 'Hide' : 'Show' }}
@@ -101,7 +101,7 @@ async function onSubmit() {
             <span>Keep me logged in</span>
           </label>
           <span class="text-fa-muted">•</span>
-          <RouterLink to="/forgot" class="text-fa-blue hover:underline">Reset my password</RouterLink>
+          <RouterLink to="/forgot" class="text-fa-green hover:underline">Reset my password</RouterLink>
         </div>
 
         <Button type="submit" label="Log in" :loading="pending" class="w-full font-semibold" />
