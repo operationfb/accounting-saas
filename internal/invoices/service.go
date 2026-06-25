@@ -48,6 +48,7 @@ import (
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	contactsdb "github.com/operationfb/accounting-saas/db/contacts"
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
+	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
@@ -60,23 +61,49 @@ type Service struct {
 	queries        *invoicesdb.Queries
 	authQueries    auth.Querier
 	contactQueries contactsdb.Querier
+	// vatQueries is the read-only VAT lookup behind the filed-period lock: issuing or
+	// reopening an invoice changes whether it counts in its VAT period, so an invoice
+	// dated in an already-filed period can't cross the SENT boundary (assertNotFiled).
+	vatQueries *vatdb.Queries
 }
 
 // NewService is the constructor, called once in main.go. contactQueries is a
 // cross-domain dependency (like authQueries), used to validate contact_id — the
-// same pattern projects uses.
+// same pattern projects uses. vatQueries powers the filed-period lock; pass nil to
+// disable it (the lock is then off).
 func NewService(
 	pool *pgxpool.Pool,
 	queries *invoicesdb.Queries,
 	authQueries auth.Querier,
 	contactQueries contactsdb.Querier,
+	vatQueries *vatdb.Queries,
 ) *Service {
 	return &Service{
 		pool:           pool,
 		queries:        queries,
 		authQueries:    authQueries,
 		contactQueries: contactQueries,
+		vatQueries:     vatQueries,
 	}
+}
+
+// assertNotFiled refuses the operation (409 conflict) when the given date falls
+// inside a FILED VAT period — moving an invoice across the SENT boundary (issue / send
+// / reopen / write_off / refund) changes a submitted return's output VAT. Nil-safe:
+// with no vat querier wired (or an invalid date), the lock is inactive. Mirrors the
+// bills/banking/expenses guard.
+func (s *Service) assertNotFiled(ctx context.Context, orgID uuid.UUID, dated pgtype.Date) error {
+	if s.vatQueries == nil || !dated.Valid {
+		return nil
+	}
+	locked, err := s.vatQueries.IsDateInFiledPeriod(ctx, vatdb.IsDateInFiledPeriodParams{OrganisationID: orgID, DatedOn: dated})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if locked {
+		return kernel.ErrConflict("this invoice is dated in a VAT period that has been filed, so its status can no longer be changed")
+	}
+	return nil
 }
 
 // =============================================================================
@@ -512,6 +539,17 @@ func (s *Service) ChangeStatus(
 		target, ok := resolveTransition(action, existing.Status)
 		if !ok {
 			return kernel.ErrConflict(fmt.Sprintf("cannot %q an invoice in status %s", action, existing.Status))
+		}
+
+		// Filed-period lock: the VAT return counts status='SENT' invoices, so any
+		// transition INTO or OUT OF SENT changes whether this invoice is in its period
+		// (issue/send add it; reopen/write_off/refund remove it). If the invoice is
+		// dated in an already-filed period, that would change a submitted return —
+		// refuse it. A transition that doesn't touch SENT (e.g. DRAFT→SCHEDULED) is exempt.
+		if target == StatusSent || existing.Status == StatusSent {
+			if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn); err != nil {
+				return err
+			}
 		}
 
 		// A SENT invoice with money recorded against it (a bank Invoice Receipt) is a

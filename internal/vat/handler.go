@@ -40,6 +40,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.PUT("/settings", h.UpdateSettings)
 		g.GET("/periods", h.ListPeriods)
 		g.GET("/returns/:periodKey", h.GetReturn)
+		g.POST("/returns/:periodKey/mark-filed", h.MarkFiled)
 	}
 }
 
@@ -86,6 +87,18 @@ func (h *Handler) ListPeriods(c *gin.Context) {
 // is taken from the token; any active member may read. An unknown period is 404.
 func (h *Handler) GetReturn(c *gin.Context) {
 	ret, err := h.svc.GetReturn(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("periodKey"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"vat_return": ret})
+}
+
+// MarkFiled handles POST /api/v1/vat/returns/:periodKey/mark-filed — snapshot the
+// return and mark it filed, which LOCKS the period against further record changes.
+// Owner/admin only.
+func (h *Handler) MarkFiled(c *gin.Context) {
+	ret, err := h.svc.MarkFiled(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("periodKey"))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

@@ -4,16 +4,18 @@
 -- PostgreSQL 15+
 --
 -- Models the FreeAgent-style "New Bank Account" screen plus the bank-account
--- and transaction list views. Two tables:
---   - bank_accounts      — an organisation's own bank accounts (the parent)
---   - bank_transactions  — the lines on each account's statement (the child)
+-- and transaction list views, and the explain/reconcile workflow. Three tables:
+--   - bank_accounts                 — an organisation's own bank accounts (the parent)
+--   - bank_transactions             — the lines on each account's statement (the child)
+--   - bank_transaction_explanations — the accounting treatment(s) explaining a line
 --
 -- This is its own bounded context (like auth, contacts, projects): own schema
 -- file, own sqlc package (db/banking). Applied AFTER schema.sql + auth_schema.sql +
--- categories_schema.sql + invoices_schema.sql, so set_updated_at(), the
--- organisations/users tables, the categories/transaction_types AND the invoices table
--- that bank_transaction_explanations references already exist — the foreign keys below
--- are declared INLINE. (invoices itself needs contacts_schema.sql, so that is loaded too.)
+-- categories_schema.sql + invoices_schema.sql + bills_schema.sql, so set_updated_at(),
+-- the organisations/users tables, the categories/transaction_types AND the invoices and
+-- bills tables that bank_transaction_explanations references (paid_invoice_id / paid_bill_id)
+-- already exist — the foreign keys below are declared INLINE. (invoices + bills pull in
+-- contacts_schema.sql + projects_schema.sql, so those are loaded too.)
 --
 -- Design decisions worth knowing:
 --
@@ -115,10 +117,12 @@ CREATE UNIQUE INDEX idx_bank_accounts_one_primary
 
 -- -----------------------------------------------------------------------------
 -- bank_transactions
--- The statement lines on an account. v1 STORES transactions (manual entry, future
--- feed/statement import); the "explain"/reconciliation workflow that links a line
--- to an expense or invoice is deferred (see BACKLOG.md) — hence status/source are
--- plain classification columns for now, with no link-to-expense FK yet.
+-- The statement lines on an account. Transactions are STORED (manual entry, future
+-- feed/statement import) and then EXPLAINED: the explain/reconcile workflow lives in
+-- bank_transaction_explanations (below), which links a line to a category, invoice,
+-- bill, user or transfer. The `status` column (unexplained / explained / for_approval)
+-- is kept in sync from those explanations by the recompute trigger (below); `source`
+-- is a plain feed/manual/statement origin tag.
 -- -----------------------------------------------------------------------------
 CREATE TABLE bank_transactions (
     -- Identity & tenancy
@@ -143,8 +147,9 @@ CREATE TABLE bank_transactions (
     -- COALESCEs to amount_minor, so existing/seed/feed rows need no backfill.
     unexplained_amount_minor  BIGINT,
 
-    -- Classification (matches the list tabs). Reconciliation/linking is deferred,
-    -- so these are plain CHECK-constrained columns for now.
+    -- Classification (matches the list tabs). `status` is DERIVED from the line's
+    -- explanations by the recompute trigger (below); `source` is a plain feed/manual/
+    -- statement origin tag.
     status              VARCHAR(20) NOT NULL DEFAULT 'unexplained'
                         CHECK (status IN ('unexplained','explained','for_approval')),
     source              VARCHAR(20) NOT NULL DEFAULT 'manual'
@@ -217,9 +222,9 @@ CREATE TABLE bank_transaction_explanations (
     ec_status           VARCHAR(30),                                     -- UK/Non-EC, Reverse Charge, EC VAT MOSS, …
     place_of_supply     CHAR(2),                                         -- for EC VAT MOSS
 
-    -- Type-specific links to EXISTING entities (real FKs). Links to not-yet-built
-    -- entities (bill/credit note/HP/capital asset) are recorded by `type` for now;
-    -- their FK columns land with that module.
+    -- Type-specific links to the settled entities (real FKs): transfer account, user,
+    -- invoice and bill below. Links to not-yet-built entities (credit note / HP /
+    -- capital asset) are recorded by `type` for now; their FK columns land with that module.
     transfer_bank_account_id UUID REFERENCES bank_accounts(id),          -- Transfer to/from Another Account
     paid_user_id        UUID REFERENCES users(id),                       -- Money Paid/Received to/from User
     -- Invoice Receipt: the sales invoice this receipt settles. NULL for every other
@@ -331,7 +336,7 @@ COMMENT ON COLUMN bank_accounts.opening_balance_minor IS 'Opening balance in min
 COMMENT ON COLUMN bank_accounts.is_primary IS 'The org''s primary account. At most one live primary per org, enforced by idx_bank_accounts_one_primary.';
 COMMENT ON COLUMN bank_accounts.sort_code IS 'UK branch code (6 digits). US accounts use routing_number instead; international use iban/bic.';
 COMMENT ON COLUMN bank_accounts.routing_number IS 'US ABA routing number (9 digits). NULL for non-US accounts.';
-COMMENT ON TABLE  bank_transactions IS 'Statement lines on a bank account. amount_minor is signed (+ in / - out). Org-scoped + soft-deleted. Reconciliation/explain is deferred (BACKLOG).';
+COMMENT ON TABLE  bank_transactions IS 'Statement lines on a bank account. amount_minor is signed (+ in / - out). Org-scoped + soft-deleted. Explained via bank_transaction_explanations; status (unexplained/explained/for_approval) is kept in sync by the recompute trigger.';
 COMMENT ON COLUMN bank_transactions.amount_minor IS 'Signed minor units (pence): POSITIVE = money in, NEGATIVE = money out. BIGINT/int64.';
 COMMENT ON COLUMN bank_transactions.external_id IS 'Bank feed provider transaction id, for dedupe. NULL for manual rows; unique per account when present (idx_bank_transactions_external).';
 COMMENT ON TABLE  bank_transaction_explanations IS 'Accounting explanations for bank transactions (the reconcile record). Many per transaction (splitting). gross_value_minor is signed (+ in / - out). type drives category-vs-entity-link. The recompute trigger keeps bank_transactions.unexplained_amount_minor + status in sync. No double-entry journal yet.';

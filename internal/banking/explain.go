@@ -148,6 +148,10 @@ func (s *Service) CreateExplanation(ctx context.Context, authUserID, authOrgID u
 	if err != nil {
 		return nil, err
 	}
+	// Filed-period lock: refuse a new explanation dated inside an already-filed VAT return.
+	if err := s.assertNotFiled(ctx, authOrgID, params.DatedOn); err != nil {
+		return nil, err
+	}
 	// Write the explanation and (for an invoice receipt) re-sync the invoice's paid
 	// value in ONE transaction, so invoices.paid_value_minor can never drift from the
 	// explanations that drive it.
@@ -192,6 +196,10 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 	// over-explain check AND the invoice overpayment cap.
 	params, err := s.resolveExplanationFields(ctx, authUserID, authOrgID, accountUUID, txn, req, &existing)
 	if err != nil {
+		return nil, err
+	}
+	// Filed-period lock: block the edit if the explanation's OLD or NEW date is in a filed period.
+	if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn, params.DatedOn); err != nil {
 		return nil, err
 	}
 	// Update the explanation and re-sync the affected invoice(s) in one transaction.
@@ -270,6 +278,10 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 	}
 	existing, err := s.loadExplanationForTxn(ctx, authOrgID, txnUUID, explUUID)
 	if err != nil {
+		return nil, err
+	}
+	// Filed-period lock: refuse to delete an explanation dated inside a filed VAT return.
+	if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn); err != nil {
 		return nil, err
 	}
 	// Soft-delete the explanation and, if it settled an invoice, re-sync that invoice's

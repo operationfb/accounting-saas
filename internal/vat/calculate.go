@@ -124,23 +124,17 @@ func routeToBoxes(direction, vatStatus, ecStatus string, vatMinor, netMinor int6
 	}
 }
 
-// computeReturn maps the four sources' rows into lines, routes them into the boxes,
-// and returns the boxes plus the split (sales / purchases) line lists for the Full
-// Report. OUT_OF_SCOPE lines are dropped entirely (not shown, not summed). Boxes 3
-// and 5 are derived; Box5 is signed (negative = reclaim).
-func computeReturn(
-	expenses []vatdb.ListExpensesForVatReturnRow,
-	invoices []vatdb.ListInvoicesForVatReturnRow,
-	bills []vatdb.ListBillsForVatReturnRow,
-	bankLines []vatdb.ListExplanationsForVatReturnRow,
-) (vatBoxes, []vatLine, []vatLine) {
+// computeFromLines routes a set of normalised lines into the 9 boxes and splits them
+// into sales / purchases for the Full Report. OUT_OF_SCOPE lines are dropped entirely
+// (not shown, not summed). Boxes 3 and 5 are derived; Box5 is signed (negative =
+// reclaim). Shared by the accrual and cash builders below.
+func computeFromLines(lines []vatLine) (vatBoxes, []vatLine, []vatLine) {
 	var b vatBoxes
 	sales := []vatLine{}
 	purchases := []vatLine{}
-
-	add := func(l vatLine) {
+	for _, l := range lines {
 		if l.VatStatus == vatStatusOutOfScope {
-			return // out of scope: excluded from both the boxes and the report
+			continue
 		}
 		routeToBoxes(l.Direction, l.VatStatus, l.EcStatus, l.VatMinor, l.NetMinor, &b)
 		if l.Direction == dirOutput {
@@ -149,23 +143,59 @@ func computeReturn(
 			purchases = append(purchases, l)
 		}
 	}
-
-	for _, r := range invoices {
-		add(invoiceToLine(r))
-	}
-	for _, r := range expenses {
-		add(expenseToLine(r))
-	}
-	for _, r := range bills {
-		add(billToLine(r))
-	}
-	for _, r := range bankLines {
-		add(explanationToLine(r))
-	}
-
 	b.Box3 = b.Box1 + b.Box2
 	b.Box5 = b.Box3 - b.Box4
 	return b, sales, purchases
+}
+
+// computeReturnAccrual builds the INVOICE/ACCRUAL return: the documents counted by
+// their date (invoices SENT, expenses, bills) + direct-category bank explanations.
+func computeReturnAccrual(
+	expenses []vatdb.ListExpensesForVatReturnRow,
+	invoices []vatdb.ListInvoicesForVatReturnRow,
+	bills []vatdb.ListBillsForVatReturnRow,
+	bankLines []vatdb.ListExplanationsForVatReturnRow,
+) (vatBoxes, []vatLine, []vatLine) {
+	lines := make([]vatLine, 0, len(invoices)+len(expenses)+len(bills)+len(bankLines))
+	for _, r := range invoices {
+		lines = append(lines, invoiceToLine(r))
+	}
+	for _, r := range expenses {
+		lines = append(lines, expenseToLine(r))
+	}
+	for _, r := range bills {
+		lines = append(lines, billToLine(r))
+	}
+	for _, r := range bankLines {
+		lines = append(lines, explanationToLine(r))
+	}
+	return computeFromLines(lines)
+}
+
+// computeReturnCash builds the CASH return: invoices and bills are recognised via the
+// bank transactions that SETTLE them (receipts / payments, with the document's VAT
+// apportioned to the amount that moved) rather than by document date. Expenses and
+// direct-category bank explanations are identical to the accrual basis.
+func computeReturnCash(
+	expenses []vatdb.ListExpensesForVatReturnRow,
+	receipts []vatdb.ListInvoiceReceiptsForVatReturnRow,
+	payments []vatdb.ListBillPaymentsForVatReturnRow,
+	bankLines []vatdb.ListExplanationsForVatReturnRow,
+) (vatBoxes, []vatLine, []vatLine) {
+	lines := make([]vatLine, 0, len(receipts)+len(expenses)+len(payments)+len(bankLines))
+	for _, r := range receipts {
+		lines = append(lines, invoiceReceiptToLine(r))
+	}
+	for _, r := range expenses {
+		lines = append(lines, expenseToLine(r))
+	}
+	for _, r := range payments {
+		lines = append(lines, billPaymentToLine(r))
+	}
+	for _, r := range bankLines {
+		lines = append(lines, explanationToLine(r))
+	}
+	return computeFromLines(lines)
 }
 
 // =============================================================================
@@ -240,6 +270,46 @@ func explanationToLine(r vatdb.ListExplanationsForVatReturnRow) vatLine {
 		EcStatus:    ecOr(r.EcStatus),
 		NetMinor:    gross - r.SalesTaxValueMinor,
 		VatMinor:    r.SalesTaxValueMinor,
+	}
+}
+
+// invoiceReceiptToLine (CASH basis) apportions the linked invoice's VAT to the
+// received amount. The receipt's gross is positive (money in); output direction.
+// net + vat = the receipt, so a part-payment recognises a proportional share.
+func invoiceReceiptToLine(r vatdb.ListInvoiceReceiptsForVatReturnRow) vatLine {
+	gross := r.GrossValueMinor
+	vat := money.Apportion(gross, r.InvoiceVatMinor, r.InvoiceTotalMinor)
+	ref := textOr(r.Reference, "")
+	return vatLine{
+		Date:        dateStr(r.DatedOn),
+		Source:      "invoice",
+		Description: descOr(ref, "Invoice receipt"),
+		Reference:   ref,
+		Direction:   dirOutput,
+		VatStatus:   vatStatusTaxable, // invoices are always UK-standard
+		EcStatus:    ecUKNonEC,
+		NetMinor:    gross - vat,
+		VatMinor:    vat,
+	}
+}
+
+// billPaymentToLine (CASH basis) apportions the linked bill's VAT to the amount paid.
+// The payment's gross is SIGNED (− out / + refund), so the apportioned share is
+// negated → a payment becomes a positive input reclaim and a refund nets it down.
+func billPaymentToLine(r vatdb.ListBillPaymentsForVatReturnRow) vatLine {
+	gross := r.GrossValueMinor
+	vat := -money.Apportion(gross, r.BillVatMinor, r.BillTotalMinor)
+	ref := textOr(r.Reference, "")
+	return vatLine{
+		Date:        dateStr(r.DatedOn),
+		Source:      "bill",
+		Description: descOr(textOr(r.Comments, ""), descOr(ref, "Bill payment")),
+		Reference:   ref,
+		Direction:   dirInput,
+		VatStatus:   vatStatusTaxable,
+		EcStatus:    ecUKNonEC,
+		NetMinor:    -gross - vat,
+		VatMinor:    vat,
 	}
 }
 

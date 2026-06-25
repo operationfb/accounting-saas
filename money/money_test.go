@@ -130,9 +130,9 @@ func TestExtractVAT(t *testing.T) {
 		{"20% of £120 inclusive (1/6)", 12000, 2000, 2000},
 		{"5% of £105 inclusive", 10500, 500, 500},
 		{"zero rate yields zero", 5000, 0, 0},
-		{"rounds half-up", 999, 2000, 167},                       // 999*2000/12000 = 166.5 → 167
+		{"rounds half-up", 999, 2000, 167},                          // 999*2000/12000 = 166.5 → 167
 		{"beyond int32 range", 30_000_000_000, 2000, 5_000_000_000}, // 30e9 incl 20% → 5e9
-		{"negative (credit note)", -12000, 2000, -2000},          // half away from zero
+		{"negative (credit note)", -12000, 2000, -2000},             // half away from zero
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -256,6 +256,24 @@ func TestVATRateRoundTrip(t *testing.T) {
 		}
 		if got != bps {
 			t.Errorf("round trip %d → %q → %d", bps, s, got)
+		}
+	}
+}
+
+func TestApportion(t *testing.T) {
+	cases := []struct {
+		amount, num, den, want int64
+	}{
+		{120000, 20000, 120000, 20000},   // full payment → full VAT
+		{60000, 20000, 120000, 10000},    // half payment → half VAT
+		{-120000, 20000, 120000, -20000}, // signed (a payment-out / refer sign through)
+		{100, 1, 3, 33},                  // 33.33 → 33
+		{200, 1, 3, 67},                  // 66.67 → 67 (half away from zero)
+		{5000, 1234, 0, 0},               // zero denominator → 0 (no divide-by-zero)
+	}
+	for _, c := range cases {
+		if got := Apportion(c.amount, c.num, c.den); got != c.want {
+			t.Errorf("Apportion(%d, %d, %d) = %d, want %d", c.amount, c.num, c.den, got, c.want)
 		}
 	}
 }

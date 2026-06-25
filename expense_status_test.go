@@ -448,3 +448,73 @@ func TestExpenseDetailExposesApprovalFields(t *testing.T) {
 		}
 	})
 }
+
+// TestExpenseApproveFiledPeriodLock covers the expense half of the VAT filed-period
+// lock: approve is the ONLY transition that moves an expense INTO the VAT-counted set
+// (APPROVED), so once a period is filed an expense dated inside it can no longer be
+// approved (409). The other transitions (submit/reject/reopen) move only among
+// un-counted states and are unaffected. The period is "filed" by inserting a
+// marked_as_filed vat_returns row — all the IsDateInFiledPeriod guard reads.
+func TestExpenseApproveFiledPeriodLock(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	orgID, ownerID := newOrgWithOwner(t, ts)
+	authHeader := bearer(t, ts, ownerID, orgID)
+
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = ts.pool.Exec(c, `DELETE FROM vat_returns WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM expenses WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM expense_categories WHERE organisation_id=$1`, orgID)
+	})
+
+	catID := vatSeedExpenseCategory(t, ts, orgID)
+
+	// File the Mar–May 2026 quarter: a marked_as_filed snapshot covering 2026-04-12.
+	if _, err := ts.pool.Exec(context.Background(),
+		`INSERT INTO vat_returns (organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis, filing_status, filed_at)
+		 VALUES ($1,$2,'2026-03-01','2026-05-31','2026-05-31','invoice','marked_as_filed', now())`, orgID, ownerID); err != nil {
+		t.Fatalf("seed filed vat_return: %v", err)
+	}
+
+	seedExpense := func(datedOn, status string) string {
+		var id string
+		if err := ts.pool.QueryRow(context.Background(),
+			`INSERT INTO expenses
+			   (organisation_id, user_id, created_by_user_id, category_id, dated_on, description,
+			    gross_value_minor, native_gross_value_minor, native_vat_value_minor,
+			    vat_status, ec_status, status, needs_review)
+			 VALUES ($1,$2,$2,$3,$4,'lock test',12000,12000,2000,'TAXABLE','UK_NON_EC',$5,FALSE)
+			 RETURNING id::text`, orgID, ownerID, catID, datedOn, status).Scan(&id); err != nil {
+			t.Fatalf("seed expense (%s, %s): %v", datedOn, status, err)
+		}
+		return id
+	}
+
+	t.Run("approving an expense dated in a filed period → 409", func(t *testing.T) {
+		id := seedExpense("2026-04-12", "SUBMITTED")
+		rec := postStatus(t, ts, id, authHeader, expenses.ChangeExpenseStatusRequest{Action: "approve"})
+		if rec.Code != http.StatusConflict {
+			t.Errorf("expected 409, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("approving an expense OUTSIDE the filed period succeeds", func(t *testing.T) {
+		id := seedExpense("2026-07-15", "SUBMITTED") // next quarter, not filed
+		rec := postStatus(t, ts, id, authHeader, expenses.ChangeExpenseStatusRequest{Action: "approve"})
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("submit (a non-approve transition) in a filed period is unaffected", func(t *testing.T) {
+		// submit (DRAFT → SUBMITTED) keeps the expense OUT of the VAT-counted set, so
+		// the lock must not block it even though the expense is dated in a filed period.
+		id := seedExpense("2026-04-12", "DRAFT")
+		rec := postStatus(t, ts, id, authHeader, expenses.ChangeExpenseStatusRequest{Action: "submit"})
+		if rec.Code != http.StatusOK {
+			t.Errorf("submit in a filed period should be allowed, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+}

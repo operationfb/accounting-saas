@@ -44,6 +44,7 @@ import (
 	billsdb "github.com/operationfb/accounting-saas/db/bills"
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
+	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
@@ -56,6 +57,8 @@ import (
 // invoice + keep its paid_value_minor in sync — the concrete *Queries, not the
 // interface, so it can join the explanation write's transaction via WithTx). billQueries
 // is the same cross-domain dependency for the Bill Payment explanation (the money-OUT twin).
+// vatQueries is the read-only VAT lookup that powers the filed-period lock: an explanation
+// dated inside a filed VAT return can no longer be created/edited/deleted (assertNotFiled).
 type Service struct {
 	pool           *pgxpool.Pool
 	queries        *banking.Queries
@@ -63,11 +66,35 @@ type Service struct {
 	catQueries     *categoriesdb.Queries
 	invoiceQueries *invoicesdb.Queries
 	billQueries    *billsdb.Queries
+	vatQueries     *vatdb.Queries
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
-func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries, billQueries *billsdb.Queries) *Service {
-	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries, billQueries: billQueries}
+func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries, billQueries *billsdb.Queries, vatQueries *vatdb.Queries) *Service {
+	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries, billQueries: billQueries, vatQueries: vatQueries}
+}
+
+// assertNotFiled refuses the operation (409 conflict) when any of the given dates
+// falls inside a FILED VAT period — an explanation that is part of a submitted VAT
+// return must not change. UPDATE passes both the old and new date (a move OUT of a
+// filed period is blocked too). Nil-safe: with no vat querier wired, the lock is off.
+func (s *Service) assertNotFiled(ctx context.Context, orgID uuid.UUID, dates ...pgtype.Date) error {
+	if s.vatQueries == nil {
+		return nil
+	}
+	for _, d := range dates {
+		if !d.Valid {
+			continue
+		}
+		locked, err := s.vatQueries.IsDateInFiledPeriod(ctx, vatdb.IsDateInFiledPeriodParams{OrganisationID: orgID, DatedOn: d})
+		if err != nil {
+			return kernel.ErrInternal(err)
+		}
+		if locked {
+			return kernel.ErrConflict("this explanation is dated in a VAT period that has been filed, so it can no longer be changed")
+		}
+	}
+	return nil
 }
 
 // =============================================================================
@@ -353,16 +380,16 @@ func bankTransactionToResponse(t banking.BankTransaction, runningMinor int64, ex
 		unexplainedMinor = t.UnexplainedAmountMinor.Int64
 	}
 	return &BankTransactionResponse{
-		ID:                t.ID.String(),
-		DatedOn:           t.DatedOn.Time.Format("2006-01-02"),
-		Description:       kernel.NullTextToPtr(t.Description),
-		BankMemo:          kernel.NullTextToPtr(t.BankMemo),
-		Status:            t.Status,
-		Source:            t.Source,
-		IsManual:          t.Source == "manual",
-		TransactionType:   kernel.NullTextToPtr(t.TransactionType),
-		MoneyIn:           moneyIn,
-		MoneyOut:          moneyOut,
+		ID:                 t.ID.String(),
+		DatedOn:            t.DatedOn.Time.Format("2006-01-02"),
+		Description:        kernel.NullTextToPtr(t.Description),
+		BankMemo:           kernel.NullTextToPtr(t.BankMemo),
+		Status:             t.Status,
+		Source:             t.Source,
+		IsManual:           t.Source == "manual",
+		TransactionType:    kernel.NullTextToPtr(t.TransactionType),
+		MoneyIn:            moneyIn,
+		MoneyOut:           moneyOut,
 		UnexplainedAmount:  money.MinorToPounds(unexplainedMinor),
 		RunningBalance:     money.MinorToPounds(runningMinor),
 		ExplanationSummary: explanationSummary,

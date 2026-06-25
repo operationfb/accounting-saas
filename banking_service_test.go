@@ -1403,3 +1403,111 @@ func TestBillPaymentExplain(t *testing.T) {
 		}
 	})
 }
+
+// TestExplanationFiledPeriodLock covers the bank-explanation half of the VAT
+// filed-period lock: once a return covering a date is filed, an explanation dated
+// inside that period can no longer be created, edited, deleted, or MOVED into it
+// (409 conflict), while explanations in unfiled periods are unaffected. The period
+// is "filed" by inserting a marked_as_filed vat_returns row — all the guard reads.
+func TestExplanationFiledPeriodLock(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+	svc := ts.bankingService
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+
+	// One CoA expense account for the PAYMENT explanations (the mapping is global; the
+	// account is per-org), plus cleanup of everything this test writes.
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group)
+		 VALUES ($1,'254','Travel and Subsistence','ADMIN_EXPENSE','admin_expenses_categories')`, org); err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = ts.pool.Exec(c, `DELETE FROM bank_transaction_explanations WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(c, `DELETE FROM vat_returns WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(c, `DELETE FROM categories WHERE organisation_id=$1`, org)
+	})
+
+	acc, err := svc.CreateBankAccount(ctx, userID, orgID, bankReq("Main", nil))
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cleanupBankAccount(t, ts, acc.ID)
+
+	var catID string
+	if err := ts.pool.QueryRow(ctx, `SELECT id::text FROM categories WHERE organisation_id=$1 AND nominal_code='254'`, org).Scan(&catID); err != nil {
+		t.Fatalf("catID: %v", err)
+	}
+	ptr := func(s string) *string { return &s }
+	payment := banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID)}
+
+	newTxnOn := func(datedOn string, amountMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source)
+			 VALUES ($1,$2,$3,$4,'unexplained','manual') RETURNING id::text`, org, acc.ID, datedOn, amountMinor).Scan(&id); err != nil {
+			t.Fatalf("new txn %s: %v", datedOn, err)
+		}
+		return id
+	}
+
+	// A money-out line dated INSIDE the soon-to-be-filed quarter, explained while open.
+	txnIn := newTxnOn("2026-04-12", -12000)
+	respIn, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txnIn, payment)
+	if err != nil {
+		t.Fatalf("explain before filing: %v", err)
+	}
+	explIn := respIn.Explanations[0].ID
+
+	// A money-out line dated in a LATER, never-filed quarter, explained too.
+	txnOut := newTxnOn("2026-07-15", -12000)
+	respOut, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txnOut, payment)
+	if err != nil {
+		t.Fatalf("explain (later quarter): %v", err)
+	}
+	explOut := respOut.Explanations[0].ID
+
+	// File the Mar–May 2026 quarter: a marked_as_filed snapshot covering txnIn's date.
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO vat_returns (organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis, filing_status, filed_at)
+		 VALUES ($1,$2,'2026-03-01','2026-05-31','2026-05-31','invoice','marked_as_filed', now())`, org, user); err != nil {
+		t.Fatalf("seed filed vat_return: %v", err)
+	}
+
+	t.Run("editing an explanation dated in a filed period → 409", func(t *testing.T) {
+		_, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txnIn, explIn,
+			banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "100.00", CategoryID: ptr(catID)})
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+
+	t.Run("deleting an explanation dated in a filed period → 409", func(t *testing.T) {
+		_, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txnIn, explIn)
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+
+	t.Run("creating a new explanation dated in a filed period → 409", func(t *testing.T) {
+		txn := newTxnOn("2026-04-20", -12000) // £120 line, fully explained by the £120 payment
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, payment)
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+
+	t.Run("moving an explanation INTO a filed period → 409", func(t *testing.T) {
+		_, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txnOut, explOut,
+			banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "120.00", CategoryID: ptr(catID), DatedOn: ptr("2026-04-12")})
+		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+
+	t.Run("an explanation OUTSIDE every filed period is unaffected", func(t *testing.T) {
+		if _, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txnOut, explOut,
+			banking.CreateExplanationRequest{Type: "PAYMENT", Amount: "90.00", CategoryID: ptr(catID)}); err != nil {
+			t.Errorf("editing an explanation outside any filed period should succeed, got: %v", err)
+		}
+		if _, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txnOut, explOut); err != nil {
+			t.Errorf("deleting an explanation outside any filed period should succeed, got: %v", err)
+		}
+	})
+}

@@ -151,6 +151,17 @@ func (s *Service) ChangeExpenseStatus(
 				"cannot %s an expense in %s status (must be %s)", action, existing.Status, t.from))
 		}
 
+		// Filed-period lock: approve is the ONLY transition that moves an expense INTO
+		// the VAT-counted set (APPROVED), so it can ADD input VAT to a period. If the
+		// expense is dated in an already-filed period, approving would change a
+		// submitted return after the fact — refuse it. The other transitions
+		// (submit/reject/reopen) move only among un-counted states, so they're exempt.
+		if action == "approve" {
+			if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn); err != nil {
+				return err
+			}
+		}
+
 		// Apply the transition via its dedicated query. Each query changes only
 		// the columns its transition owns (so, e.g., approve preserves submitted_at).
 		switch action {

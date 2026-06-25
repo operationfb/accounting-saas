@@ -890,7 +890,9 @@ func TestListOutstandingInvoices(t *testing.T) {
 	org, user := newOrgWithOwner(t, ts)
 	userID, orgID := mustUUID(t, user), mustUUID(t, org)
 	contactID := createContactAs(t, ts, user, org)
-	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org) })
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org)
+	})
 
 	seed := func(orgIDStr, userIDStr, contact, status string, total, paid int64) string {
 		var id string
@@ -948,7 +950,9 @@ func TestReopenGuardWithPayments(t *testing.T) {
 	org, user := newOrgWithOwner(t, ts)
 	userID, orgID := mustUUID(t, user), mustUUID(t, org)
 	contactID := createContactAs(t, ts, user, org)
-	t.Cleanup(func() { _, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org) })
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(context.Background(), `DELETE FROM invoices WHERE organisation_id=$1`, org)
+	})
 
 	seedSent := func(total, paid int64) string {
 		var id string
@@ -983,5 +987,79 @@ func TestReopenGuardWithPayments(t *testing.T) {
 		inv := seedSent(10000, 10000)
 		_, err := ts.invoiceService.ChangeStatus(ctx, userID, orgID, inv, "reopen")
 		assertAppCode(t, err, kernel.ErrCodeConflict)
+	})
+}
+
+// TestInvoiceStatusFiledPeriodLock covers the invoice half of the VAT filed-period
+// lock. The return counts status='SENT' invoices, so any transition INTO or OUT OF
+// SENT (issue/send add it; reopen/write_off/refund remove it) changes whether a
+// dated-in-period invoice is counted. Once a period is filed, those transitions are
+// refused (409) for an invoice dated inside it; a transition that doesn't touch SENT
+// (schedule), and any transition outside the filed period, is unaffected. The period
+// is "filed" by inserting a marked_as_filed vat_returns row.
+func TestInvoiceStatusFiledPeriodLock(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	orgID, ownerID := newOrgWithOwner(t, ts)
+	authHeader := bearer(t, ts, ownerID, orgID)
+
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = ts.pool.Exec(c, `DELETE FROM vat_returns WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM invoices WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM contacts WHERE organisation_id=$1`, orgID)
+	})
+
+	contactID := vatSeedContact(t, ts, orgID, ownerID)
+	seed := func(datedOn, status string) string {
+		return vatSeedInvoice(t, ts, orgID, ownerID, contactID, datedOn, 10000, 2000, status)
+	}
+
+	// File the Mar–May 2026 quarter: a marked_as_filed snapshot covering that range.
+	if _, err := ts.pool.Exec(context.Background(),
+		`INSERT INTO vat_returns (organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis, filing_status, filed_at)
+		 VALUES ($1,$2,'2026-03-01','2026-05-31','2026-05-31','invoice','marked_as_filed', now())`, orgID, ownerID); err != nil {
+		t.Fatalf("seed filed vat_return: %v", err)
+	}
+
+	t.Run("issuing a DRAFT dated in a filed period → 409", func(t *testing.T) {
+		id := seed("2026-04-12", "DRAFT") // DRAFT → SENT would ADD it to the filed return
+		rec := statusInvoiceReq(t, ts, id, authHeader, "issue")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("expected 409, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("reopening a SENT invoice dated in a filed period → 409", func(t *testing.T) {
+		id := seed("2026-04-20", "SENT") // SENT → DRAFT would REMOVE it from the filed return
+		rec := statusInvoiceReq(t, ts, id, authHeader, "reopen")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("expected 409, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("writing off a SENT invoice dated in a filed period → 409", func(t *testing.T) {
+		id := seed("2026-04-21", "SENT") // SENT → WRITTEN_OFF also removes it
+		rec := statusInvoiceReq(t, ts, id, authHeader, "write_off")
+		if rec.Code != http.StatusConflict {
+			t.Errorf("expected 409, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("scheduling a DRAFT in a filed period is unaffected (never touches SENT)", func(t *testing.T) {
+		id := seed("2026-04-12", "DRAFT") // DRAFT → SCHEDULED: neither state is counted
+		rec := statusInvoiceReq(t, ts, id, authHeader, "schedule")
+		if rec.Code != http.StatusOK {
+			t.Errorf("schedule in a filed period should be allowed, got %d — %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("issuing an invoice OUTSIDE the filed period succeeds", func(t *testing.T) {
+		id := seed("2026-07-15", "DRAFT") // next quarter, not filed
+		rec := statusInvoiceReq(t, ts, id, authHeader, "issue")
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d — %s", rec.Code, rec.Body.String())
+		}
 	})
 }

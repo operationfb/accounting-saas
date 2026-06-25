@@ -83,7 +83,7 @@ func TestComputeReturn_ScreenshotExpense(t *testing.T) {
 		EcStatus:              ecUKNonEC,
 	}}
 
-	b, sales, purchases := computeReturn(expenses, nil, nil, nil)
+	b, sales, purchases := computeReturnAccrual(expenses, nil, nil, nil)
 
 	if b.Box4 != 33117 || b.Box7 != 165583 {
 		t.Errorf("Box4=%d Box7=%d, want 33117 and 165583", b.Box4, b.Box7)
@@ -123,7 +123,7 @@ func TestComputeReturn_InvoiceSale(t *testing.T) {
 		ID: [16]byte{2}, DatedOn: pgD("2026-04-10"), Reference: pgT("001"),
 		NetValueMinor: 100000, SalesTaxValueMinor: 20000,
 	}}
-	b, sales, purchases := computeReturn(nil, invoices, nil, nil)
+	b, sales, purchases := computeReturnAccrual(nil, invoices, nil, nil)
 	if b.Box1 != 20000 || b.Box6 != 100000 || b.Box3 != 20000 || b.Box5 != 20000 {
 		t.Errorf("got Box1=%d Box6=%d Box3=%d Box5=%d, want 20000/100000/20000/20000", b.Box1, b.Box6, b.Box3, b.Box5)
 	}
@@ -138,7 +138,7 @@ func TestComputeReturn_Bill(t *testing.T) {
 		ID: [16]byte{3}, DatedOn: pgD("2026-04-12"), Reference: pgT("INV-9"),
 		NetValueMinor: 50000, SalesTaxValueMinor: 10000,
 	}}
-	b, _, purchases := computeReturn(nil, nil, bills, nil)
+	b, _, purchases := computeReturnAccrual(nil, nil, bills, nil)
 	if b.Box4 != 10000 || b.Box7 != 50000 {
 		t.Errorf("got Box4=%d Box7=%d, want 10000/50000", b.Box4, b.Box7)
 	}
@@ -156,7 +156,7 @@ func TestComputeReturn_BankDirectionBySign(t *testing.T) {
 		{ID: [16]byte{5}, DatedOn: pgD("2026-04-16"), Description: pgT("Stationery"),
 			GrossValueMinor: -6000, SalesTaxValueMinor: 1000, SalesTaxStatus: vatStatusTaxable}, // money out → input
 	}
-	b, sales, purchases := computeReturn(nil, nil, nil, bank)
+	b, sales, purchases := computeReturnAccrual(nil, nil, nil, bank)
 	if b.Box1 != 2000 || b.Box6 != 10000 {
 		t.Errorf("money-in: got Box1=%d Box6=%d, want 2000/10000", b.Box1, b.Box6)
 	}
@@ -175,11 +175,47 @@ func TestComputeReturn_ExcludesOutOfScope(t *testing.T) {
 		CategoryName: "Bank fees", NativeGrossValueMinor: 5000, NativeVatValueMinor: 0,
 		VatStatus: vatStatusOutOfScope, EcStatus: ecUKNonEC,
 	}}
-	b, _, purchases := computeReturn(expenses, nil, nil, nil)
+	b, _, purchases := computeReturnAccrual(expenses, nil, nil, nil)
 	if (b != vatBoxes{}) {
 		t.Errorf("out-of-scope expense should contribute nothing, got %+v", b)
 	}
 	if len(purchases) != 0 {
 		t.Errorf("out-of-scope expense should not be listed, got %d purchase lines", len(purchases))
+	}
+}
+
+// CASH basis: an invoice receipt recognises a proportional share of the invoice's VAT.
+func TestComputeReturnCash_InvoiceReceiptApportioned(t *testing.T) {
+	// £1,200 invoice (net £1,000, VAT £200). A £600 part-receipt → half the VAT + net.
+	receipts := []vatdb.ListInvoiceReceiptsForVatReturnRow{{
+		ID: [16]byte{1}, DatedOn: pgD("2026-04-10"), Reference: pgT("001"),
+		GrossValueMinor: 60000, InvoiceVatMinor: 20000, InvoiceTotalMinor: 120000,
+	}}
+	b, sales, purchases := computeReturnCash(nil, receipts, nil, nil)
+	if b.Box1 != 10000 || b.Box6 != 50000 {
+		t.Errorf("part-receipt: got Box1=%d Box6=%d, want 10000/50000", b.Box1, b.Box6)
+	}
+	if len(sales) != 1 || len(purchases) != 0 {
+		t.Errorf("lines: got %d sales / %d purchases, want 1 / 0", len(sales), len(purchases))
+	}
+}
+
+// CASH basis: a bill payment apportions the bill's VAT (positive input reclaim); a
+// refund (positive gross) nets it back down.
+func TestComputeReturnCash_BillPaymentAndRefund(t *testing.T) {
+	// £1,200 bill (VAT £200, total £1,200). Pay in full (gross −120000) → Box4 £200,
+	// Box7 £1,000. Then a £600 refund (gross +60000) → Box4 −£100, Box7 −£500.
+	payments := []vatdb.ListBillPaymentsForVatReturnRow{
+		{ID: [16]byte{2}, DatedOn: pgD("2026-04-12"), Reference: pgT("INV-9"),
+			GrossValueMinor: -120000, BillVatMinor: 20000, BillTotalMinor: 120000},
+		{ID: [16]byte{3}, DatedOn: pgD("2026-04-20"), Reference: pgT("INV-9"),
+			GrossValueMinor: 60000, BillVatMinor: 20000, BillTotalMinor: 120000},
+	}
+	b, _, purchases := computeReturnCash(nil, nil, payments, nil)
+	if b.Box4 != 10000 || b.Box7 != 50000 {
+		t.Errorf("payment+refund net: got Box4=%d Box7=%d, want 10000/50000", b.Box4, b.Box7)
+	}
+	if len(purchases) != 2 {
+		t.Errorf("want 2 purchase lines, got %d", len(purchases))
 	}
 }

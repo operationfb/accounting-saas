@@ -5,26 +5,53 @@
 //   - Full Report → the Sales / Purchases line tables (the transactions behind the
 //                   boxes).
 // A right sidebar shows the VAT period, deadlines, and calculation details. The
-// figures are read-only here; filing (Mark as filed) and HMRC connection are later
-// slices, shown as disabled placeholders.
+// figures are read-only; "Mark as filed" snapshots the return and LOCKS the period
+// (records dated inside it can no longer be changed). Online HMRC filing is a later slice.
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
-import { getVatReturn } from '@/services/vat.service'
+import { useAuthStore } from '@/stores/auth'
+import { getVatReturn, markVatReturnFiled } from '@/services/vat.service'
 import { formatMoney, formatDate } from '@/lib/format'
 import { vatStatusClass } from '@/lib/vatStatus'
 import type { VatReturn } from '@/types/vat'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
+const auth = useAuthStore()
 const periodKey = computed(() => String(route.params.periodKey ?? ''))
 
 const ret = ref<VatReturn | null>(null)
 const loading = ref(true)
 const error = ref('')
 const tab = ref<'preview' | 'full'>('preview')
+
+// Filing. "Mark as filed" is owner/admin-only and only offered while the return is
+// not already filed (a filed return shows no button — the period is locked).
+const filing = ref(false)
+const fileError = ref('')
+const filedStatuses = ['Marked as filed', 'Filed', 'Pending']
+const canFile = computed(
+  () => auth.isOrgAdmin && !!ret.value && !filedStatuses.includes(ret.value.display_status),
+)
+const isFiled = computed(
+  () => !!ret.value && filedStatuses.includes(ret.value.display_status),
+)
+
+async function markFiled() {
+  if (filing.value || !ret.value) return
+  fileError.value = ''
+  filing.value = true
+  try {
+    ret.value = await markVatReturnFiled(periodKey.value)
+  } catch (err) {
+    fileError.value = (err as ApiError)?.message ?? 'Could not mark this return as filed.'
+  } finally {
+    filing.value = false
+  }
+}
 
 // The 9 boxes in display order, with their official HMRC descriptions.
 const boxes = computed(() => {
@@ -105,12 +132,22 @@ onMounted(load)
         </RouterLink>
         <h1 v-if="ret" class="text-[22px] font-bold">VAT Return for period {{ ret.label }}</h1>
       </div>
-      <span
-        v-if="ret"
-        class="inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
-        :class="vatStatusClass(ret.display_status)"
-        >{{ ret.display_status }}</span
-      >
+      <div v-if="ret" class="flex items-center gap-3">
+        <span
+          class="inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold tracking-wide"
+          :class="vatStatusClass(ret.display_status)"
+          >{{ ret.display_status }}</span
+        >
+        <Button v-if="canFile" label="Mark as filed" :loading="filing" @click="markFiled" />
+      </div>
+    </div>
+
+    <div
+      v-if="fileError"
+      class="mb-4 rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-sm text-[#c0392b]"
+      role="alert"
+    >
+      {{ fileError }}
     </div>
 
     <!-- Loading / error -->
@@ -153,11 +190,20 @@ onMounted(load)
           <!-- ---------- PREVIEW ---------- -->
           <template v-if="tab === 'preview'">
             <div
+              v-if="isFiled"
+              class="mb-4 rounded border border-[#cfe9c7] bg-[#eaf7e6] px-3 py-2 text-sm text-[#3f8038]"
+              role="note"
+            >
+              This return is marked as filed — the transactions in this period are now locked and can
+              no longer be changed.
+            </div>
+            <div
+              v-else
               class="mb-4 rounded border border-[#f3dca8] bg-[#fef8ec] px-3 py-2 text-sm text-[#8a6d3b]"
               role="note"
             >
-              Online filing to HMRC (Making Tax Digital) is coming soon — for now you can review the
-              return and mark it as filed once you've submitted it.
+              Online filing to HMRC (Making Tax Digital) is coming soon — for now, review the return
+              and use “Mark as filed” once you've submitted it. Filing locks the period's records.
             </div>
 
             <!-- The 9-box card -->

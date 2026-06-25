@@ -33,6 +33,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
+	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
@@ -56,6 +57,11 @@ type Service struct {
 	queries     *expensesdb.Queries
 	authQueries auth.Querier
 
+	// vatQueries is the read-only VAT lookup behind the filed-period lock: approving
+	// an expense ADDS its input VAT to that period's return, so an expense dated in an
+	// already-filed period can no longer be approved (assertNotFiled). Optional/nil-safe.
+	vatQueries *vatdb.Queries
+
 	// publisher emits domain events (currently "expense.approved", which drives the
 	// external FreeAgent push). Optional: nil = publishing disabled. It is set in
 	// main.go AFTER construction (the publisher is wired later), so it stays out of
@@ -66,12 +72,32 @@ type Service struct {
 // NewService is the constructor. Called once in main.go.
 // authQueries is the auth module's query interface — the service uses it to
 // resolve the caller's organisation membership/role for authorisation.
-func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier) *Service {
+// vatQueries powers the filed-period lock; pass nil to disable it (the lock is then off).
+func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, vatQueries *vatdb.Queries) *Service {
 	return &Service{
 		pool:        pool,
 		queries:     queries,
 		authQueries: authQueries,
+		vatQueries:  vatQueries,
 	}
+}
+
+// assertNotFiled refuses the operation (409 conflict) when the given date falls
+// inside a FILED VAT period — approving an expense dated in a submitted return would
+// change that return's input VAT after the fact. Nil-safe: with no vat querier wired
+// (or an invalid date), the lock is simply inactive. Mirrors the bills/banking guard.
+func (s *Service) assertNotFiled(ctx context.Context, orgID uuid.UUID, dated pgtype.Date) error {
+	if s.vatQueries == nil || !dated.Valid {
+		return nil
+	}
+	locked, err := s.vatQueries.IsDateInFiledPeriod(ctx, vatdb.IsDateInFiledPeriodParams{OrganisationID: orgID, DatedOn: dated})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if locked {
+		return kernel.ErrConflict("this expense is dated in a VAT period that has been filed, so it can no longer be approved")
+	}
+	return nil
 }
 
 // SetPublisher wires the domain-event publisher AFTER construction. main builds

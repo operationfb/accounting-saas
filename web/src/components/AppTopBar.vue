@@ -20,32 +20,47 @@ const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 
-// An item is active when the current route sits under its `to` path. Placeholder
-// items (no `to`) are never active.
-function isActive(item: NavItem): boolean {
-  return item.to ? route.path.startsWith(item.to) : false
+// A nav item is either a direct link (`to`) or a dropdown group (`children`).
+// Mirroring FreeAgent: Invoices/Projects live under "Money In" and Expenses/Bills
+// under "Money Out"; Contacts, Banking and VAT stay flat links.
+interface NavChild {
+  label: string
+  to: string
 }
-
-// Top nav items mirroring FreeAgent's chrome. Each visible item has a `to` and
-// renders as a real router link. Placeholder sections without a page yet are
-// commented out (hidden) for now — uncomment one to bring it back.
 interface NavItem {
   label: string
-  caret: boolean
-  to?: string
+  to?: string // direct link (Contacts, Banking, VAT)
+  children?: NavChild[] // dropdown group (Money In, Money Out)
 }
 const navItems: NavItem[] = [
-  // { label: 'Overview', caret: false },
-  { label: 'Contacts', caret: false, to: '/contacts' },
-  { label: 'Projects', caret: false, to: '/projects' },
-  { label: 'Invoices', caret: false, to: '/invoices' },
-  { label: 'Bills', caret: false, to: '/bills' },
-  { label: 'Expenses', caret: false, to: '/expenses' },
-  { label: 'Banking', caret: false, to: '/bank-accounts' },
-  { label: 'VAT', caret: false, to: '/vat-returns' },
-  // { label: 'Taxes', caret: true },
-  // { label: 'Accounting', caret: true },
+  { label: 'Contacts', to: '/contacts' },
+  {
+    label: 'Money In',
+    children: [
+      { label: 'Invoices', to: '/invoices' },
+      { label: 'Projects', to: '/projects' },
+    ],
+  },
+  {
+    label: 'Money Out',
+    children: [
+      { label: 'Expenses', to: '/expenses' },
+      { label: 'Bills', to: '/bills' },
+    ],
+  },
+  { label: 'Banking', to: '/bank-accounts' },
+  { label: 'VAT', to: '/vat-returns' },
 ]
+
+// A direct item is active when the route sits under its `to`; a group is active
+// when any of its children are (so "Money In" highlights while on /invoices).
+function isChildActive(child: NavChild): boolean {
+  return route.path.startsWith(child.to)
+}
+function isActive(item: NavItem): boolean {
+  if (item.to) return route.path.startsWith(item.to)
+  return (item.children ?? []).some(isChildActive)
+}
 
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
 const accountMenu = ref()
@@ -105,17 +120,53 @@ function changePassword() {
 
         <!-- Desktop nav items: hidden on phones, visible on sm+ -->
         <ul class="hidden sm:flex items-stretch gap-0.5">
-          <li v-for="item in navItems" :key="item.label" class="flex items-stretch">
-            <!-- Items with a `to` render as a real <RouterLink>; the rest are inert. -->
-            <component
-              :is="item.to ? RouterLink : 'span'"
+          <li
+            v-for="item in navItems"
+            :key="item.label"
+            class="group relative flex items-stretch"
+          >
+            <!-- Direct link (Contacts, Banking, VAT). -->
+            <RouterLink
+              v-if="item.to"
               :to="item.to"
               class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium hover:bg-fa-nav-active"
               :class="{ 'bg-fa-nav-active': isActive(item) }"
             >
               {{ item.label }}
-              <i v-if="item.caret" class="pi pi-angle-down text-[11px] opacity-[0.85]" />
-            </component>
+            </RouterLink>
+
+            <!-- Dropdown group (Money In, Money Out): hover reveals a FA-style
+                 white panel of links. Pure CSS (group-hover) — opens on hover. -->
+            <template v-else>
+              <span
+                class="flex cursor-pointer items-center gap-1 whitespace-nowrap px-3 text-sm font-medium group-hover:bg-fa-nav-active"
+                :class="{ 'bg-fa-nav-active': isActive(item) }"
+              >
+                {{ item.label }}
+                <i
+                  class="pi pi-angle-down text-[11px] opacity-[0.85] transition-transform duration-150 group-hover:rotate-180"
+                />
+              </span>
+              <!-- The panel sits flush under the bar (top-full, no gap) so the
+                   hover isn't lost moving into it. Border + shadow as requested. -->
+              <div
+                class="invisible absolute left-0 top-full z-50 min-w-[190px] translate-y-1 pt-px opacity-0 transition duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100"
+              >
+                <ul
+                  class="overflow-hidden rounded-md border border-fa-border bg-white py-1 text-fa-text shadow-lg"
+                >
+                  <li v-for="child in item.children" :key="child.label">
+                    <RouterLink
+                      :to="child.to"
+                      class="block whitespace-nowrap px-4 py-2 text-sm hover:bg-[#f3f6f9]"
+                      :class="isChildActive(child) ? 'font-semibold text-fa-green' : 'text-fa-text'"
+                    >
+                      {{ child.label }}
+                    </RouterLink>
+                  </li>
+                </ul>
+              </div>
+            </template>
           </li>
         </ul>
       </div>
@@ -168,17 +219,37 @@ function changePassword() {
       class="absolute left-0 right-0 top-[46px] z-50 bg-fa-nav sm:hidden"
     >
       <ul class="border-t border-white/10 py-1">
-        <li v-for="item in navItems" :key="item.label">
-          <component
-            :is="item.to ? RouterLink : 'span'"
-            :to="item.to"
-            class="flex cursor-pointer items-center gap-2 px-5 py-3 text-sm font-medium hover:bg-fa-nav-active"
-            :class="{ 'bg-fa-nav-active': isActive(item) }"
-            @click="closeMobileMenu"
-          >
-            {{ item.label }}
-          </component>
-        </li>
+        <template v-for="item in navItems" :key="item.label">
+          <!-- Direct link -->
+          <li v-if="item.to">
+            <RouterLink
+              :to="item.to"
+              class="flex cursor-pointer items-center gap-2 px-5 py-3 text-sm font-medium hover:bg-fa-nav-active"
+              :class="{ 'bg-fa-nav-active': isActive(item) }"
+              @click="closeMobileMenu"
+            >
+              {{ item.label }}
+            </RouterLink>
+          </li>
+          <!-- Group: a muted header + its children indented beneath it. -->
+          <li v-else>
+            <div
+              class="px-5 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-white/50"
+            >
+              {{ item.label }}
+            </div>
+            <RouterLink
+              v-for="child in item.children"
+              :key="child.label"
+              :to="child.to"
+              class="flex cursor-pointer items-center gap-2 px-8 py-2.5 text-sm font-medium hover:bg-fa-nav-active"
+              :class="{ 'bg-fa-nav-active': isChildActive(child) }"
+              @click="closeMobileMenu"
+            >
+              {{ child.label }}
+            </RouterLink>
+          </li>
+        </template>
       </ul>
     </div>
   </header>

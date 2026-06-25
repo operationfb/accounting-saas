@@ -47,6 +47,7 @@ import (
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	contactsdb "github.com/operationfb/accounting-saas/db/contacts"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
@@ -62,10 +63,12 @@ type Service struct {
 	contactQueries  contactsdb.Querier
 	projectQueries  projectsdb.Querier
 	categoryQueries categoriesdb.Querier
+	vatQueries      *vatdb.Queries // the filed-period lock (IsDateInFiledPeriod)
 }
 
-// NewService is the constructor, called once in main.go. All four cross-domain
-// queriers already exist there (shared with the other domains).
+// NewService is the constructor, called once in main.go. All the cross-domain
+// queriers already exist there (shared with the other domains). vatQueries powers
+// the filed-period lock: a bill dated in a filed VAT period can no longer change.
 func NewService(
 	pool *pgxpool.Pool,
 	queries *billsdb.Queries,
@@ -73,6 +76,7 @@ func NewService(
 	contactQueries contactsdb.Querier,
 	projectQueries projectsdb.Querier,
 	categoryQueries categoriesdb.Querier,
+	vatQueries *vatdb.Queries,
 ) *Service {
 	return &Service{
 		pool:            pool,
@@ -81,7 +85,30 @@ func NewService(
 		contactQueries:  contactQueries,
 		projectQueries:  projectQueries,
 		categoryQueries: categoryQueries,
+		vatQueries:      vatQueries,
 	}
+}
+
+// assertNotFiled refuses the operation (409 conflict) when any of the given dates
+// falls inside a FILED VAT period — a record that is part of a submitted VAT return
+// must not change. Nil-safe: with no vat querier wired, the lock is simply inactive.
+func (s *Service) assertNotFiled(ctx context.Context, orgID uuid.UUID, dates ...pgtype.Date) error {
+	if s.vatQueries == nil {
+		return nil
+	}
+	for _, d := range dates {
+		if !d.Valid {
+			continue
+		}
+		locked, err := s.vatQueries.IsDateInFiledPeriod(ctx, vatdb.IsDateInFiledPeriodParams{OrganisationID: orgID, DatedOn: d})
+		if err != nil {
+			return kernel.ErrInternal(err)
+		}
+		if locked {
+			return kernel.ErrConflict("this bill is dated in a VAT period that has been filed, so it can no longer be changed")
+		}
+	}
+	return nil
 }
 
 // =============================================================================
@@ -301,6 +328,11 @@ func (s *Service) CreateBill(ctx context.Context, authUserID, authOrgID uuid.UUI
 		return nil, err
 	}
 
+	// Can't create a bill dated inside an already-filed VAT period.
+	if err := s.assertNotFiled(ctx, authOrgID, in.datedOn); err != nil {
+		return nil, err
+	}
+
 	bill, err := s.queries.CreateBill(ctx, billsdb.CreateBillParams{
 		OrganisationID:     authOrgID,
 		CreatedByUserID:    authUserID,
@@ -421,6 +453,11 @@ func (s *Service) UpdateBill(ctx context.Context, authUserID, authOrgID uuid.UUI
 		if existing.PaidValueMinor != 0 {
 			return kernel.ErrConflict("a bill that has payments recorded against it cannot be edited — remove the bank payment(s) first")
 		}
+		// Locked if the bill's CURRENT date is in a filed period, or it's being MOVED
+		// into one.
+		if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn, in.datedOn); err != nil {
+			return err
+		}
 
 		updated, err := qtx.UpdateBill(ctx, billsdb.UpdateBillParams{
 			ID:                 billID,
@@ -483,6 +520,9 @@ func (s *Service) DeleteBill(ctx context.Context, authUserID, authOrgID uuid.UUI
 		}
 		if existing.PaidValueMinor != 0 {
 			return kernel.ErrConflict("a bill that has payments recorded against it cannot be deleted — remove the bank payment(s) first")
+		}
+		if err := s.assertNotFiled(ctx, authOrgID, existing.DatedOn); err != nil {
+			return err
 		}
 
 		if err := qtx.SoftDeleteBill(ctx, billsdb.SoftDeleteBillParams{ID: billID, OrganisationID: authOrgID}); err != nil {

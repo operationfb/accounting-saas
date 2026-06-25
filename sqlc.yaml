@@ -450,6 +450,7 @@ sql:
       - "db/schema/invoices_schema.sql"
       - "db/schema/bills_schema.sql"
       - "db/schema/banking_schema.sql"
+      - "db/schema/vat_schema.sql"
 
     queries: "db/queries/vat.sql"
 

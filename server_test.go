@@ -175,7 +175,8 @@ func newTestServer(t *testing.T) *testServer {
 
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
-	service := expenses.NewService(pool, queries, authQueries)
+	vatQueries := dbvat.New(pool) // shared: VAT screens + the filed-period lock guard
+	service := expenses.NewService(pool, queries, authQueries, vatQueries)
 
 	// Build a real auth handler so the /auth/* routes work, and pass the token
 	// maker to the server so the expense routes' auth middleware can verify
@@ -203,10 +204,10 @@ func newTestServer(t *testing.T) *testServer {
 	attachmentService := attachments.NewService(pool, queries, authQueries, store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
-	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool))
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries)
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
-	vatSvc := vat.NewService(authQueries, dbvat.New(pool))
+	vatSvc := vat.NewService(authQueries, vatQueries)
 	userSvc := userauth.NewService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
@@ -238,12 +239,12 @@ func newTestServer(t *testing.T) *testServer {
 	// harness so the service-level tests can call it directly. The explain flow needs
 	// the categories query set; the categories reference endpoints register too.
 	categoryQueries := dbcategories.New(pool)
-	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool))
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Bills: build + register like the per-domain handlers above (mirrors main.go).
-	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, dbcontacts.New(pool), projectsdb.New(pool), categoryQueries)
+	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, dbcontacts.New(pool), projectsdb.New(pool), categoryQueries, vatQueries)
 	bills.NewHandler(billSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Contacts + Projects + Organisation (Company Details): build + register like the

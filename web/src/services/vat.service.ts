@@ -44,3 +44,14 @@ export async function getVatReturn(periodKey: string): Promise<VatReturn> {
   })
   return GetVatReturnResponseSchema.parse(data).vat_return
 }
+
+// POST /api/v1/vat/returns/:periodKey/mark-filed — snapshot the return and mark it
+// filed, which LOCKS the period (records dated inside it can no longer be changed).
+// OWNER/ADMIN only on the backend (403 otherwise).
+export async function markVatReturnFiled(periodKey: string): Promise<VatReturn> {
+  const data = await apiFetch<unknown>(
+    `/vat/returns/${encodeURIComponent(periodKey)}/mark-filed`,
+    { method: 'POST' },
+  )
+  return GetVatReturnResponseSchema.parse(data).vat_return
+}

@@ -152,6 +152,24 @@ func AddOnVAT(netMinor int64, rateBps int32) int64 {
 		IntPart()
 }
 
+// Apportion returns amount × numerator / denominator, rounded half away from zero
+// to the nearest minor unit (penny). It is used on the VAT CASH basis to apportion
+// a document's stored VAT (or net) to the part of it that a bank transaction
+// actually settled — e.g. the VAT on a £200 receipt against a £1,000 invoice is
+// Apportion(receipt, invoiceVat, invoiceTotal). A zero (or absent) denominator
+// yields 0. decimal-based so a large amount × numerator can't overflow int64, and
+// the sign is preserved (a refund's negative amount yields a negative share).
+func Apportion(amount, numerator, denominator int64) int64 {
+	if denominator == 0 {
+		return 0
+	}
+	return decimal.NewFromInt(amount).
+		Mul(decimal.NewFromInt(numerator)).
+		Div(decimal.NewFromInt(denominator)).
+		Round(0). // whole pence, half away from zero
+		IntPart()
+}
+
 // ClampToInt32 saturates an int64 into int32 range. Used as a defensive guard
 // before writing to an INTEGER (int32) money column: a pathological value is
 // pinned to the column's ceiling/floor rather than silently wrapping. A real

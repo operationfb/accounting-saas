@@ -39,7 +39,7 @@ type BankAccount struct {
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
-// Statement lines on a bank account. amount_minor is signed (+ in / - out). Org-scoped + soft-deleted. Reconciliation/explain is deferred (BACKLOG).
+// Statement lines on a bank account. amount_minor is signed (+ in / - out). Org-scoped + soft-deleted. Explained via bank_transaction_explanations; status (unexplained/explained/for_approval) is kept in sync by the recompute trigger.
 type BankTransaction struct {
 	ID              uuid.UUID   `json:"id"`
 	OrganisationID  uuid.UUID   `json:"organisation_id"`

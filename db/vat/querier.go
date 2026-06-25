@@ -6,9 +6,27 @@ package vat
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
+	// The saved snapshot + filing/payment status for one period (NULL row if never
+	// filed). For an UNFILED period this just supplies the display status over a live
+	// recompute; for a FILED period (filing_status in the submitted set) the boxes here
+	// are AUTHORITATIVE — the return is rendered from this frozen snapshot, never a live
+	// recompute, so a filed return can't drift from what was actually filed. accounting_basis
+	// is the basis used at filing time (so the Full-Report lines are recomputed on it).
+	GetVatReturnByPeriod(ctx context.Context, arg GetVatReturnByPeriodParams) (GetVatReturnByPeriodRow, error)
+	// The lock check: TRUE when `dated_on` falls inside a SUBMITTED (marked_as_filed /
+	// filed / pending) return for the org. The source domains call this in their
+	// update/delete to refuse changing a record in a filed VAT period.
+	IsDateInFiledPeriod(ctx context.Context, arg IsDateInFiledPeriodParams) (bool, error)
+	// CASH INPUT VAT. BILL_PAYMENT / BILL_REFUND bank explanations (linked to the bill
+	// via paid_bill_id) in the period; the engine apportions the bill's VAT to the
+	// amount paid. gross_value_minor is SIGNED (− payment out / + refund in), so a
+	// refund correctly reduces the reclaim.
+	ListBillPaymentsForVatReturn(ctx context.Context, arg ListBillPaymentsForVatReturnParams) ([]ListBillPaymentsForVatReturnRow, error)
 	// INPUT VAT. Bills have no status machine (live = not soft-deleted) and no
 	// vat_status / ec_status, so they are always UK-standard TAXABLE input. Amounts are
 	// positive for a normal bill (negative only for a credit note).
@@ -48,9 +66,31 @@ type Querier interface {
 	// is SIGNED (+ money in = output / − money out = input); sales_tax_value_minor is a
 	// positive magnitude. sales_tax_status / ec_status drive the routing.
 	ListExplanationsForVatReturn(ctx context.Context, arg ListExplanationsForVatReturnParams) ([]ListExplanationsForVatReturnRow, error)
+	// =============================================================================
+	// CASH BASIS — invoices/bills are NOT counted as documents; instead the bank
+	// transactions that SETTLE them are, with the document's VAT apportioned to the
+	// amount that actually moved (the paid fraction). Expenses + direct-category bank
+	// explanations are identical to the accrual basis, so the two queries above are
+	// reused on cash too; only the two below replace the invoice/bill document queries.
+	// =============================================================================
+	// CASH OUTPUT VAT. INVOICE_RECEIPT bank explanations (linked to the sales invoice
+	// via paid_invoice_id) in the period; the engine apportions the invoice's VAT to
+	// the received amount. gross_value_minor is the receipt (positive, money in).
+	ListInvoiceReceiptsForVatReturn(ctx context.Context, arg ListInvoiceReceiptsForVatReturnParams) ([]ListInvoiceReceiptsForVatReturnRow, error)
 	// OUTPUT VAT. Only SENT (issued) invoices count; invoices carry no vat_status /
 	// ec_status, so they are always UK-standard TAXABLE output. Amounts are positive.
 	ListInvoicesForVatReturn(ctx context.Context, arg ListInvoicesForVatReturnParams) ([]ListInvoicesForVatReturnRow, error)
+	// The (period, filing_status) of every saved return for the org — the period list
+	// joins these in to show each period's real status.
+	ListVatReturnSummaries(ctx context.Context, organisationID uuid.UUID) ([]ListVatReturnSummariesRow, error)
+	// =============================================================================
+	// vat_returns — the saved snapshot + the filed-period lock.
+	// =============================================================================
+	// Persists the computed return for a period and marks it FILED. One live row per
+	// (org, period) — re-filing overwrites the snapshot (ON CONFLICT on the partial
+	// unique index). The boxes are passed in already-computed (pence); filed_at is set
+	// by the DB. Once written, the period is locked (see IsDateInFiledPeriod).
+	UpsertVatReturnFiled(ctx context.Context, arg UpsertVatReturnFiledParams) error
 }
 
 var _ Querier = (*Queries)(nil)

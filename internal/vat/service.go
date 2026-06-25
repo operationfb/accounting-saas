@@ -210,23 +210,33 @@ func (s *Service) ListPeriods(ctx context.Context, authUserID, authOrgID uuid.UU
 		org.VatReturnFrequency.String,
 	)
 
+	// Overlay the saved filing status onto each period (a filed period shows
+	// "Marked as filed" instead of "Unfiled"), keyed by the period-end date.
+	summaries, err := s.queries.ListVatReturnSummaries(ctx, authOrgID)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	filed := make(map[string]string, len(summaries))
+	for _, sm := range summaries {
+		if sm.PeriodEnd.Valid {
+			filed[sm.PeriodEnd.Time.Format("2006-01-02")] = sm.FilingStatus
+		}
+	}
+
 	// Map to DTOs, reversing to newest-first.
 	out := make([]VatPeriodResponse, 0, len(periods))
 	for i := len(periods) - 1; i >= 0; i-- {
 		p := periods[i]
 		ended := p.End.Before(today)
-		status := "Open"
-		if ended {
-			status = "Unfiled"
-		}
+		key := p.End.Format("2006-01-02")
 		out = append(out, VatPeriodResponse{
-			PeriodKey:     p.End.Format("2006-01-02"),
+			PeriodKey:     key,
 			Label:         p.End.Format("01 06"), // "MM YY", e.g. "05 26"
 			StartDate:     p.Start.Format("2006-01-02"),
-			EndDate:       p.End.Format("2006-01-02"),
+			EndDate:       key,
 			DueOn:         p.Due.Format("2006-01-02"),
 			Ended:         ended,
-			DisplayStatus: status,
+			DisplayStatus: displayStatusFor(filed[key], ended),
 		})
 	}
 	return out, nil
@@ -242,88 +252,288 @@ func (s *Service) ListPeriods(ctx context.Context, authUserID, authOrgID uuid.UU
 // read. The period is resolved from the settings-generated schedule; an unknown key
 // (or a not-registered / incompletely-configured org) is 404.
 //
-// v1 computes the INVOICE/ACCRUAL basis: the documents (invoices SENT, bills,
-// expenses APPROVED/PAID) by date + direct-category bank explanations. It reports
-// the org's configured basis in the response, but the cash-basis computation is the
-// next slice — until then the figures are accrual regardless of the setting.
+// The org's vat_accounting_basis selects the computation:
+//   - invoice/accrual: the documents (invoices SENT, bills, expenses APPROVED/PAID)
+//     by date + direct-category bank explanations.
+//   - cash: invoices/bills via the bank transactions that settle them (receipts /
+//     payments, apportioned), + expenses by date + the same direct-category entries.
 func (s *Service) GetReturn(ctx context.Context, authUserID, authOrgID uuid.UUID, periodKey string) (*VatReturnResponse, error) {
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
 	}
-	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	org, err := s.loadOrg(ctx, authOrgID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+		return nil, err
+	}
+	period, err := s.resolvePeriod(org, periodKey)
+	if err != nil {
+		return nil, err
+	}
+
+	today := dateOnlyUTC(time.Now().UTC())
+
+	// A saved return overlays the display status; a FILED one also takes over the FIGURES.
+	saved, err := s.savedReturn(ctx, authOrgID, period)
+	if err != nil {
+		return nil, err
+	}
+
+	// FILED period → render from the frozen snapshot, NOT a live recompute, so the boxes
+	// shown are exactly what was filed and can't drift (even if the lock is ever bypassed).
+	// The basis is the one used at filing time; the Full-Report lines are recomputed on
+	// THAT basis — the period is locked, so they reproduce the filed breakdown — while the
+	// boxes come straight from the stored snapshot.
+	if saved != nil && isFiledStatus(saved.FilingStatus) {
+		_, sales, purchases, err := s.computeBoxes(ctx, authOrgID, saved.AccountingBasis, period)
+		if err != nil {
+			return nil, err
 		}
+		resp := buildReturnResponse(period, saved.AccountingBasis, today, savedBoxes(saved), sales, purchases)
+		resp.DisplayStatus = displayStatusFor(saved.FilingStatus, period.End.Before(today))
+		return resp, nil
+	}
+
+	// UNFILED (or rejected) → compute live on the org's CURRENT basis, overlaying any
+	// saved display status (e.g. a Phase-2 "Rejected").
+	basis := accountingBasis(org)
+	boxes, sales, purchases, err := s.computeBoxes(ctx, authOrgID, basis, period)
+	if err != nil {
+		return nil, err
+	}
+	resp := buildReturnResponse(period, basis, today, boxes, sales, purchases)
+	if saved != nil {
+		resp.DisplayStatus = displayStatusFor(saved.FilingStatus, period.End.Before(today))
+	}
+	return resp, nil
+}
+
+// =============================================================================
+// MARK AS FILED — persists the snapshot + LOCKS the period.
+// =============================================================================
+
+// MarkFiled snapshots the computed return for a period into vat_returns and sets its
+// filing_status to marked_as_filed. That makes the period a FILED PERIOD: the source
+// domains then refuse to edit or delete any record dated inside it (the lock). Owner/
+// admin only. Returns the now-filed return.
+func (s *Service) MarkFiled(ctx context.Context, authUserID, authOrgID uuid.UUID, periodKey string) (*VatReturnResponse, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !kernel.IsOrgAdmin(role) {
+		return nil, kernel.ErrForbidden("only owners and admins can file a VAT return")
+	}
+	org, err := s.loadOrg(ctx, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	period, err := s.resolvePeriod(org, periodKey)
+	if err != nil {
+		return nil, err
+	}
+	basis := accountingBasis(org)
+	boxes, sales, purchases, err := s.computeBoxes(ctx, authOrgID, basis, period)
+	if err != nil {
+		return nil, err
+	}
+
+	// A payment is owed to HMRC only when the net VAT (Box 5) is positive; a refund or
+	// nil return has no payment status.
+	var paymentStatus pgtype.Text
+	if boxes.Box5 > 0 {
+		paymentStatus = pgtype.Text{String: "unpaid", Valid: true}
+	}
+
+	if err := s.queries.UpsertVatReturnFiled(ctx, vatdb.UpsertVatReturnFiledParams{
+		OrganisationID:        authOrgID,
+		CreatedByUserID:       pgtype.UUID{Bytes: authUserID, Valid: true},
+		PeriodStart:           pgtype.Date{Time: period.Start, Valid: true},
+		PeriodEnd:             pgtype.Date{Time: period.End, Valid: true},
+		PeriodKey:             period.End.Format("2006-01-02"),
+		AccountingBasis:       basis,
+		Box1:                  boxes.Box1,
+		Box2:                  boxes.Box2,
+		Box3:                  boxes.Box3,
+		Box4:                  boxes.Box4,
+		Box5:                  boxes.Box5,
+		Box6:                  boxes.Box6,
+		Box7:                  boxes.Box7,
+		Box8:                  boxes.Box8,
+		Box9:                  boxes.Box9,
+		FilingDueOn:           pgtype.Date{Time: period.Due, Valid: true},
+		PaymentDueOn:          pgtype.Date{Time: period.Due, Valid: true},
+		PaymentAmountDueMinor: pgtype.Int8{Int64: boxes.Box5, Valid: true},
+		PaymentStatus:         paymentStatus,
+	}); err != nil {
 		return nil, kernel.ErrInternal(err)
 	}
+
+	resp := buildReturnResponse(period, basis, dateOnlyUTC(time.Now().UTC()), boxes, sales, purchases)
+	resp.DisplayStatus = "Marked as filed"
+	return resp, nil
+}
+
+// =============================================================================
+// RETURN HELPERS (shared by GetReturn + MarkFiled)
+// =============================================================================
+
+// loadOrg fetches the caller's organisation (404 if soft-deleted).
+func (s *Service) loadOrg(ctx context.Context, orgID uuid.UUID) (auth.Organisation, error) {
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.Organisation{}, kernel.ErrNotFound("organisation", orgID.String())
+		}
+		return auth.Organisation{}, kernel.ErrInternal(err)
+	}
+	return org, nil
+}
+
+// accountingBasis returns the org's configured basis, defaulting to invoice.
+func accountingBasis(org auth.Organisation) string {
+	if org.VatAccountingBasis.Valid && org.VatAccountingBasis.String != "" {
+		return org.VatAccountingBasis.String
+	}
+	return "invoice"
+}
+
+// resolvePeriod finds the period whose end == periodKey in the org's generated
+// schedule. 404 when the org isn't configured or the key isn't a real period.
+func (s *Service) resolvePeriod(org auth.Organisation, periodKey string) (*vatPeriod, error) {
 	if !org.VatRegistered || !org.VatEffectiveDate.Valid ||
 		!org.VatFirstReturnPeriodEnd.Valid || !org.VatReturnFrequency.Valid {
 		return nil, kernel.ErrNotFound("vat return period", periodKey)
 	}
-
-	today := dateOnlyUTC(time.Now().UTC())
 	periods := generateVATPeriods(
 		org.VatEffectiveDate.Time,
 		org.VatFirstReturnPeriodEnd.Time,
-		today,
+		dateOnlyUTC(time.Now().UTC()),
 		org.VatReturnFrequency.String,
 	)
-	var period *vatPeriod
 	for i := range periods {
 		if periods[i].End.Format("2006-01-02") == periodKey {
-			period = &periods[i]
-			break
+			return &periods[i], nil
 		}
 	}
-	if period == nil {
-		return nil, kernel.ErrNotFound("vat return period", periodKey)
+	return nil, kernel.ErrNotFound("vat return period", periodKey)
+}
+
+// computeBoxes fetches the period's source rows for the basis and runs the engine.
+func (s *Service) computeBoxes(ctx context.Context, orgID uuid.UUID, basis string, p *vatPeriod) (vatBoxes, []vatLine, []vatLine, error) {
+	from := pgtype.Date{Time: p.Start, Valid: true}
+	to := pgtype.Date{Time: p.End, Valid: true}
+
+	// Both bases share expenses (by date) + direct-category bank explanations.
+	expenses, err := s.queries.ListExpensesForVatReturn(ctx, vatdb.ListExpensesForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
+	}
+	bankLines, err := s.queries.ListExplanationsForVatReturn(ctx, vatdb.ListExplanationsForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
 	}
 
-	from := pgtype.Date{Time: period.Start, Valid: true}
-	to := pgtype.Date{Time: period.End, Valid: true}
+	if basis == "cash" {
+		receipts, err := s.queries.ListInvoiceReceiptsForVatReturn(ctx, vatdb.ListInvoiceReceiptsForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
+		if err != nil {
+			return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
+		}
+		payments, err := s.queries.ListBillPaymentsForVatReturn(ctx, vatdb.ListBillPaymentsForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
+		if err != nil {
+			return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
+		}
+		b, sales, purchases := computeReturnCash(expenses, receipts, payments, bankLines)
+		return b, sales, purchases, nil
+	}
 
-	expenses, err := s.queries.ListExpensesForVatReturn(ctx, vatdb.ListExpensesForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
+	invoices, err := s.queries.ListInvoicesForVatReturn(ctx, vatdb.ListInvoicesForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
 	if err != nil {
+		return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
+	}
+	bills, err := s.queries.ListBillsForVatReturn(ctx, vatdb.ListBillsForVatReturnParams{OrganisationID: orgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return vatBoxes{}, nil, nil, kernel.ErrInternal(err)
+	}
+	b, sales, purchases := computeReturnAccrual(expenses, invoices, bills, bankLines)
+	return b, sales, purchases, nil
+}
+
+// savedReturn fetches the saved vat_returns row for the period, or nil if none has
+// been filed/saved (a never-filed period computes live).
+func (s *Service) savedReturn(ctx context.Context, orgID uuid.UUID, p *vatPeriod) (*vatdb.GetVatReturnByPeriodRow, error) {
+	saved, err := s.queries.GetVatReturnByPeriod(ctx, vatdb.GetVatReturnByPeriodParams{
+		OrganisationID: orgID,
+		PeriodStart:    pgtype.Date{Time: p.Start, Valid: true},
+		PeriodEnd:      pgtype.Date{Time: p.End, Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, kernel.ErrInternal(err)
 	}
-	invoices, err := s.queries.ListInvoicesForVatReturn(ctx, vatdb.ListInvoicesForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
-	if err != nil {
-		return nil, kernel.ErrInternal(err)
-	}
-	bills, err := s.queries.ListBillsForVatReturn(ctx, vatdb.ListBillsForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
-	if err != nil {
-		return nil, kernel.ErrInternal(err)
-	}
-	bankLines, err := s.queries.ListExplanationsForVatReturn(ctx, vatdb.ListExplanationsForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
-	if err != nil {
-		return nil, kernel.ErrInternal(err)
-	}
+	return &saved, nil
+}
 
-	boxes, sales, purchases := computeReturn(expenses, invoices, bills, bankLines)
-
-	basis := "invoice"
-	if org.VatAccountingBasis.Valid && org.VatAccountingBasis.String != "" {
-		basis = org.VatAccountingBasis.String
+// isFiledStatus reports whether a saved filing_status means the return has been
+// SUBMITTED — marked as filed, or (Phase 2) pending/filed with HMRC. For these the
+// stored snapshot is authoritative (shown instead of a live recompute) and the period
+// is locked against edits. It mirrors EXACTLY the predicate IsDateInFiledPeriod uses,
+// so "rendered from snapshot" and "locked" are the same set of states. unfiled and
+// rejected fall through to a live recompute (a rejection is fixed by re-deriving).
+func isFiledStatus(status string) bool {
+	switch status {
+	case "marked_as_filed", "filed", "pending":
+		return true
 	}
-	status := "Open"
-	if period.End.Before(today) {
-		status = "Unfiled"
-	}
+	return false
+}
 
+// savedBoxes lifts the stored 9-box snapshot into the engine's vatBoxes shape so it
+// renders through the same boxesToResponse path as a live computation — boxes 6–9 were
+// stored RAW (unrounded) pence and are rounded to whole pounds at render time, exactly
+// as they were when the return was filed.
+func savedBoxes(r *vatdb.GetVatReturnByPeriodRow) vatBoxes {
+	return vatBoxes{
+		Box1: r.Box1, Box2: r.Box2, Box3: r.Box3, Box4: r.Box4, Box5: r.Box5,
+		Box6: r.Box6, Box7: r.Box7, Box8: r.Box8, Box9: r.Box9,
+	}
+}
+
+// buildReturnResponse assembles the DTO with a default Open/Unfiled status.
+func buildReturnResponse(p *vatPeriod, basis string, today time.Time, boxes vatBoxes, sales, purchases []vatLine) *VatReturnResponse {
 	resp := &VatReturnResponse{
-		PeriodKey:       period.End.Format("2006-01-02"),
-		Label:           period.End.Format("01 06"),
-		StartDate:       period.Start.Format("2006-01-02"),
-		EndDate:         period.End.Format("2006-01-02"),
-		DueOn:           period.Due.Format("2006-01-02"),
-		DisplayStatus:   status,
+		PeriodKey:       p.End.Format("2006-01-02"),
+		Label:           p.End.Format("01 06"),
+		StartDate:       p.Start.Format("2006-01-02"),
+		EndDate:         p.End.Format("2006-01-02"),
+		DueOn:           p.Due.Format("2006-01-02"),
+		DisplayStatus:   displayStatusFor("", p.End.Before(today)),
 		AccountingBasis: basis,
 		SalesLines:      linesToResponse(sales),
 		PurchaseLines:   linesToResponse(purchases),
 	}
 	boxesToResponse(boxes, resp)
-	return resp, nil
+	return resp
+}
+
+// displayStatusFor maps a saved filing_status (or "" for none) + whether the period
+// has ended into the user-facing display label.
+func displayStatusFor(filingStatus string, ended bool) string {
+	switch filingStatus {
+	case "marked_as_filed":
+		return "Marked as filed"
+	case "filed":
+		return "Filed"
+	case "pending":
+		return "Pending"
+	case "rejected":
+		return "Rejected"
+	}
+	if ended {
+		return "Unfiled"
+	}
+	return "Open"
 }
 
 // =============================================================================

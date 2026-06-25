@@ -12,6 +12,171 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getVatReturnByPeriod = `-- name: GetVatReturnByPeriod :one
+SELECT
+    filing_status,
+    filed_at,
+    filed_reference,
+    payment_status,
+    accounting_basis,
+    box1_vat_due_sales          AS box1,
+    box2_vat_due_acquisitions   AS box2,
+    box3_total_vat_due          AS box3,
+    box4_vat_reclaimed          AS box4,
+    box5_net_vat                AS box5,
+    box6_total_sales_ex_vat     AS box6,
+    box7_total_purchases_ex_vat AS box7,
+    box8_ec_dispatches_ex_vat   AS box8,
+    box9_ec_acquisitions_ex_vat AS box9
+FROM vat_returns
+WHERE organisation_id = $1
+  AND period_start    = $2
+  AND period_end      = $3
+  AND deleted_at IS NULL
+`
+
+type GetVatReturnByPeriodParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	PeriodStart    pgtype.Date `json:"period_start"`
+	PeriodEnd      pgtype.Date `json:"period_end"`
+}
+
+type GetVatReturnByPeriodRow struct {
+	FilingStatus    string             `json:"filing_status"`
+	FiledAt         pgtype.Timestamptz `json:"filed_at"`
+	FiledReference  pgtype.Text        `json:"filed_reference"`
+	PaymentStatus   pgtype.Text        `json:"payment_status"`
+	AccountingBasis string             `json:"accounting_basis"`
+	Box1            int64              `json:"box1"`
+	Box2            int64              `json:"box2"`
+	Box3            int64              `json:"box3"`
+	Box4            int64              `json:"box4"`
+	Box5            int64              `json:"box5"`
+	Box6            int64              `json:"box6"`
+	Box7            int64              `json:"box7"`
+	Box8            int64              `json:"box8"`
+	Box9            int64              `json:"box9"`
+}
+
+// The saved snapshot + filing/payment status for one period (NULL row if never
+// filed). For an UNFILED period this just supplies the display status over a live
+// recompute; for a FILED period (filing_status in the submitted set) the boxes here
+// are AUTHORITATIVE — the return is rendered from this frozen snapshot, never a live
+// recompute, so a filed return can't drift from what was actually filed. accounting_basis
+// is the basis used at filing time (so the Full-Report lines are recomputed on it).
+func (q *Queries) GetVatReturnByPeriod(ctx context.Context, arg GetVatReturnByPeriodParams) (GetVatReturnByPeriodRow, error) {
+	row := q.db.QueryRow(ctx, getVatReturnByPeriod, arg.OrganisationID, arg.PeriodStart, arg.PeriodEnd)
+	var i GetVatReturnByPeriodRow
+	err := row.Scan(
+		&i.FilingStatus,
+		&i.FiledAt,
+		&i.FiledReference,
+		&i.PaymentStatus,
+		&i.AccountingBasis,
+		&i.Box1,
+		&i.Box2,
+		&i.Box3,
+		&i.Box4,
+		&i.Box5,
+		&i.Box6,
+		&i.Box7,
+		&i.Box8,
+		&i.Box9,
+	)
+	return i, err
+}
+
+const isDateInFiledPeriod = `-- name: IsDateInFiledPeriod :one
+SELECT EXISTS (
+    SELECT 1 FROM vat_returns
+    WHERE organisation_id = $1
+      AND deleted_at IS NULL
+      AND filing_status IN ('marked_as_filed','filed','pending')
+      AND $2::date BETWEEN period_start AND period_end
+) AS locked
+`
+
+type IsDateInFiledPeriodParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	DatedOn        pgtype.Date `json:"dated_on"`
+}
+
+// The lock check: TRUE when `dated_on` falls inside a SUBMITTED (marked_as_filed /
+// filed / pending) return for the org. The source domains call this in their
+// update/delete to refuse changing a record in a filed VAT period.
+func (q *Queries) IsDateInFiledPeriod(ctx context.Context, arg IsDateInFiledPeriodParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isDateInFiledPeriod, arg.OrganisationID, arg.DatedOn)
+	var locked bool
+	err := row.Scan(&locked)
+	return locked, err
+}
+
+const listBillPaymentsForVatReturn = `-- name: ListBillPaymentsForVatReturn :many
+SELECT
+    x.id,
+    x.dated_on,
+    x.gross_value_minor,
+    b.reference,
+    b.comments,
+    b.sales_tax_value_minor AS bill_vat_minor,
+    b.total_value_minor     AS bill_total_minor
+FROM bank_transaction_explanations x
+JOIN bills b ON b.id = x.paid_bill_id
+WHERE x.organisation_id = $1
+  AND x.dated_on BETWEEN $2 AND $3
+  AND x.deleted_at IS NULL
+  AND x.paid_bill_id IS NOT NULL
+ORDER BY x.dated_on, x.id
+`
+
+type ListBillPaymentsForVatReturnParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	FromDate       pgtype.Date `json:"from_date"`
+	ToDate         pgtype.Date `json:"to_date"`
+}
+
+type ListBillPaymentsForVatReturnRow struct {
+	ID              uuid.UUID   `json:"id"`
+	DatedOn         pgtype.Date `json:"dated_on"`
+	GrossValueMinor int64       `json:"gross_value_minor"`
+	Reference       pgtype.Text `json:"reference"`
+	Comments        pgtype.Text `json:"comments"`
+	BillVatMinor    int64       `json:"bill_vat_minor"`
+	BillTotalMinor  int64       `json:"bill_total_minor"`
+}
+
+// CASH INPUT VAT. BILL_PAYMENT / BILL_REFUND bank explanations (linked to the bill
+// via paid_bill_id) in the period; the engine apportions the bill's VAT to the
+// amount paid. gross_value_minor is SIGNED (− payment out / + refund in), so a
+// refund correctly reduces the reclaim.
+func (q *Queries) ListBillPaymentsForVatReturn(ctx context.Context, arg ListBillPaymentsForVatReturnParams) ([]ListBillPaymentsForVatReturnRow, error) {
+	rows, err := q.db.Query(ctx, listBillPaymentsForVatReturn, arg.OrganisationID, arg.FromDate, arg.ToDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBillPaymentsForVatReturnRow
+	for rows.Next() {
+		var i ListBillPaymentsForVatReturnRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DatedOn,
+			&i.GrossValueMinor,
+			&i.Reference,
+			&i.Comments,
+			&i.BillVatMinor,
+			&i.BillTotalMinor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBillsForVatReturn = `-- name: ListBillsForVatReturn :many
 SELECT
     b.id,
@@ -238,6 +403,76 @@ func (q *Queries) ListExplanationsForVatReturn(ctx context.Context, arg ListExpl
 	return items, nil
 }
 
+const listInvoiceReceiptsForVatReturn = `-- name: ListInvoiceReceiptsForVatReturn :many
+
+SELECT
+    x.id,
+    x.dated_on,
+    x.gross_value_minor,
+    i.reference,
+    i.sales_tax_value_minor AS invoice_vat_minor,
+    i.total_value_minor     AS invoice_total_minor
+FROM bank_transaction_explanations x
+JOIN invoices i ON i.id = x.paid_invoice_id
+WHERE x.organisation_id = $1
+  AND x.dated_on BETWEEN $2 AND $3
+  AND x.deleted_at IS NULL
+  AND x.paid_invoice_id IS NOT NULL
+ORDER BY x.dated_on, x.id
+`
+
+type ListInvoiceReceiptsForVatReturnParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	FromDate       pgtype.Date `json:"from_date"`
+	ToDate         pgtype.Date `json:"to_date"`
+}
+
+type ListInvoiceReceiptsForVatReturnRow struct {
+	ID                uuid.UUID   `json:"id"`
+	DatedOn           pgtype.Date `json:"dated_on"`
+	GrossValueMinor   int64       `json:"gross_value_minor"`
+	Reference         pgtype.Text `json:"reference"`
+	InvoiceVatMinor   int64       `json:"invoice_vat_minor"`
+	InvoiceTotalMinor int64       `json:"invoice_total_minor"`
+}
+
+// =============================================================================
+// CASH BASIS — invoices/bills are NOT counted as documents; instead the bank
+// transactions that SETTLE them are, with the document's VAT apportioned to the
+// amount that actually moved (the paid fraction). Expenses + direct-category bank
+// explanations are identical to the accrual basis, so the two queries above are
+// reused on cash too; only the two below replace the invoice/bill document queries.
+// =============================================================================
+// CASH OUTPUT VAT. INVOICE_RECEIPT bank explanations (linked to the sales invoice
+// via paid_invoice_id) in the period; the engine apportions the invoice's VAT to
+// the received amount. gross_value_minor is the receipt (positive, money in).
+func (q *Queries) ListInvoiceReceiptsForVatReturn(ctx context.Context, arg ListInvoiceReceiptsForVatReturnParams) ([]ListInvoiceReceiptsForVatReturnRow, error) {
+	rows, err := q.db.Query(ctx, listInvoiceReceiptsForVatReturn, arg.OrganisationID, arg.FromDate, arg.ToDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListInvoiceReceiptsForVatReturnRow
+	for rows.Next() {
+		var i ListInvoiceReceiptsForVatReturnRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DatedOn,
+			&i.GrossValueMinor,
+			&i.Reference,
+			&i.InvoiceVatMinor,
+			&i.InvoiceTotalMinor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInvoicesForVatReturn = `-- name: ListInvoicesForVatReturn :many
 SELECT
     i.id,
@@ -293,4 +528,130 @@ func (q *Queries) ListInvoicesForVatReturn(ctx context.Context, arg ListInvoices
 		return nil, err
 	}
 	return items, nil
+}
+
+const listVatReturnSummaries = `-- name: ListVatReturnSummaries :many
+SELECT period_end, filing_status
+FROM vat_returns
+WHERE organisation_id = $1
+  AND deleted_at IS NULL
+`
+
+type ListVatReturnSummariesRow struct {
+	PeriodEnd    pgtype.Date `json:"period_end"`
+	FilingStatus string      `json:"filing_status"`
+}
+
+// The (period, filing_status) of every saved return for the org — the period list
+// joins these in to show each period's real status.
+func (q *Queries) ListVatReturnSummaries(ctx context.Context, organisationID uuid.UUID) ([]ListVatReturnSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listVatReturnSummaries, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVatReturnSummariesRow
+	for rows.Next() {
+		var i ListVatReturnSummariesRow
+		if err := rows.Scan(&i.PeriodEnd, &i.FilingStatus); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const upsertVatReturnFiled = `-- name: UpsertVatReturnFiled :exec
+
+INSERT INTO vat_returns (
+    organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis,
+    box1_vat_due_sales, box2_vat_due_acquisitions, box3_total_vat_due, box4_vat_reclaimed, box5_net_vat,
+    box6_total_sales_ex_vat, box7_total_purchases_ex_vat, box8_ec_dispatches_ex_vat, box9_ec_acquisitions_ex_vat,
+    filing_due_on, filing_status, filed_at,
+    payment_due_on, payment_amount_due_minor, payment_status
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13, $14, $15,
+    $16, 'marked_as_filed', now(),
+    $17, $18, $19
+)
+ON CONFLICT (organisation_id, period_start, period_end) WHERE deleted_at IS NULL
+DO UPDATE SET
+    created_by_user_id          = EXCLUDED.created_by_user_id,
+    period_key                  = EXCLUDED.period_key,
+    accounting_basis            = EXCLUDED.accounting_basis,
+    box1_vat_due_sales          = EXCLUDED.box1_vat_due_sales,
+    box2_vat_due_acquisitions   = EXCLUDED.box2_vat_due_acquisitions,
+    box3_total_vat_due          = EXCLUDED.box3_total_vat_due,
+    box4_vat_reclaimed          = EXCLUDED.box4_vat_reclaimed,
+    box5_net_vat                = EXCLUDED.box5_net_vat,
+    box6_total_sales_ex_vat     = EXCLUDED.box6_total_sales_ex_vat,
+    box7_total_purchases_ex_vat = EXCLUDED.box7_total_purchases_ex_vat,
+    box8_ec_dispatches_ex_vat   = EXCLUDED.box8_ec_dispatches_ex_vat,
+    box9_ec_acquisitions_ex_vat = EXCLUDED.box9_ec_acquisitions_ex_vat,
+    filing_due_on               = EXCLUDED.filing_due_on,
+    filing_status               = 'marked_as_filed',
+    filed_at                    = now(),
+    payment_due_on              = EXCLUDED.payment_due_on,
+    payment_amount_due_minor    = EXCLUDED.payment_amount_due_minor,
+    payment_status              = EXCLUDED.payment_status,
+    updated_at                  = now()
+`
+
+type UpsertVatReturnFiledParams struct {
+	OrganisationID        uuid.UUID   `json:"organisation_id"`
+	CreatedByUserID       pgtype.UUID `json:"created_by_user_id"`
+	PeriodStart           pgtype.Date `json:"period_start"`
+	PeriodEnd             pgtype.Date `json:"period_end"`
+	PeriodKey             string      `json:"period_key"`
+	AccountingBasis       string      `json:"accounting_basis"`
+	Box1                  int64       `json:"box1"`
+	Box2                  int64       `json:"box2"`
+	Box3                  int64       `json:"box3"`
+	Box4                  int64       `json:"box4"`
+	Box5                  int64       `json:"box5"`
+	Box6                  int64       `json:"box6"`
+	Box7                  int64       `json:"box7"`
+	Box8                  int64       `json:"box8"`
+	Box9                  int64       `json:"box9"`
+	FilingDueOn           pgtype.Date `json:"filing_due_on"`
+	PaymentDueOn          pgtype.Date `json:"payment_due_on"`
+	PaymentAmountDueMinor pgtype.Int8 `json:"payment_amount_due_minor"`
+	PaymentStatus         pgtype.Text `json:"payment_status"`
+}
+
+// =============================================================================
+// vat_returns — the saved snapshot + the filed-period lock.
+// =============================================================================
+// Persists the computed return for a period and marks it FILED. One live row per
+// (org, period) — re-filing overwrites the snapshot (ON CONFLICT on the partial
+// unique index). The boxes are passed in already-computed (pence); filed_at is set
+// by the DB. Once written, the period is locked (see IsDateInFiledPeriod).
+func (q *Queries) UpsertVatReturnFiled(ctx context.Context, arg UpsertVatReturnFiledParams) error {
+	_, err := q.db.Exec(ctx, upsertVatReturnFiled,
+		arg.OrganisationID,
+		arg.CreatedByUserID,
+		arg.PeriodStart,
+		arg.PeriodEnd,
+		arg.PeriodKey,
+		arg.AccountingBasis,
+		arg.Box1,
+		arg.Box2,
+		arg.Box3,
+		arg.Box4,
+		arg.Box5,
+		arg.Box6,
+		arg.Box7,
+		arg.Box8,
+		arg.Box9,
+		arg.FilingDueOn,
+		arg.PaymentDueOn,
+		arg.PaymentAmountDueMinor,
+		arg.PaymentStatus,
+	)
+	return err
 }

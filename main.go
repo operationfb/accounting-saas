@@ -135,7 +135,11 @@ func main() {
 	// -------------------------------------------------------------------------
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
-	service := expenses.NewService(pool, queries, authQueries)
+	// vatQueries is shared across domains: it backs the VAT screens AND the filed-period
+	// lock (the read-only IsDateInFiledPeriod check that expenses/invoices/bills/banking
+	// each call before mutating a record dated in an already-submitted VAT return).
+	vatQueries := dbvat.New(pool)
+	service := expenses.NewService(pool, queries, authQueries, vatQueries)
 
 	// Contacts + Projects each have their own sqlc package + internal service and
 	// self-register routes after NewServer (per-domain pattern). They share
@@ -154,7 +158,7 @@ func main() {
 	// Invoices: sales documents an org issues to its contacts. Like projects it
 	// needs the contacts querier to validate an invoice's contact belongs to the
 	// same org. Self-registers /api/v1/invoices after NewServer.
-	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries)
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries, vatQueries)
 
 	// Members: a thin, read-only internal/members service over the auth queries for
 	// listing an organisation's members (owner/admin only). Reuses the shared
@@ -170,8 +174,9 @@ func main() {
 	// Registration" screen). Read by any active member; edit by owner/admin. The
 	// settings live on the organisations table, so it reuses the shared authQueries
 	// (the calculation engine + return screens land in this package later).
-	// Self-registers /api/v1/vat/* after NewServer.
-	vatSvc := vat.NewService(authQueries, dbvat.New(pool))
+	// Self-registers /api/v1/vat/* after NewServer. (vatQueries was built above — it's
+	// shared with the filed-period lock in expenses/invoices/bills/banking.)
+	vatSvc := vat.NewService(authQueries, vatQueries)
 
 	// User profile: read/update the caller's own "My Details" (first/last name; the
 	// login email is read-only). Always self-scoped via the token, so no role check.
@@ -427,7 +432,7 @@ func main() {
 	categoryQueries := dbcategories.New(pool)
 	// dbinvoices.New(pool) is the cross-domain dependency for the Invoice Receipt
 	// explanation: validate the target invoice + keep its paid_value_minor in sync.
-	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool)))
+	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its
@@ -438,7 +443,7 @@ func main() {
 	// invoices it validates its contact against the org; it also validates the spending
 	// category + VAT rate (the categories querier, which also serves GetVatRate) and the
 	// optional project link. Self-registers /api/v1/bills + /api/v1/bill-categories.
-	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, contactQueries, projectQueries, categoryQueries)
+	billSvc := bills.NewService(pool, dbbills.New(pool), authQueries, contactQueries, projectQueries, categoryQueries, vatQueries)
 	bills.NewHandler(billSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Auth (login + password reset, PUBLIC routes) + the user profile, plus Contacts
