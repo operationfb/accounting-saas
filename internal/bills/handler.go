@@ -43,6 +43,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		// PUT    /api/v1/bills/:id  → full update (while unpaid)
 		// DELETE /api/v1/bills/:id  → soft-delete (while unpaid)
 		g.GET("", h.ListBills)
+		// Static route before the /:id wildcard so "outstanding" isn't captured as an id.
+		g.GET("/outstanding", h.ListOutstandingBills)
 		g.POST("", h.CreateBill)
 		g.GET("/:id", h.GetBill)
 		g.PUT("/:id", h.UpdateBill)
@@ -56,6 +58,17 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 // ListBills handles GET /api/v1/bills.
 func (h *Handler) ListBills(c *gin.Context) {
 	list, err := h.svc.ListBills(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"bills": list})
+}
+
+// ListOutstandingBills handles GET /api/v1/bills/outstanding — bills still owing
+// money (the banking Bill Payment explanation picker).
+func (h *Handler) ListOutstandingBills(c *gin.Context) {
+	list, err := h.svc.ListOutstandingBills(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

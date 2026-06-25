@@ -22,6 +22,8 @@ import BankTransactionEntryView from '@/views/BankTransactionEntryView.vue'
 import BankStatementImportView from '@/views/BankStatementImportView.vue'
 import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import VatSettingsView from '@/views/VatSettingsView.vue'
+import VatReturnListView from '@/views/VatReturnListView.vue'
+import VatReturnDetailView from '@/views/VatReturnDetailView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -64,6 +66,11 @@ const router = createRouter({
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
+    // VAT returns: the list of return periods generated from the org's VAT settings.
+    // The per-period detail (Preview / Full Report) is a later slice.
+    { path: '/vat-returns', name: 'vat-returns', component: VatReturnListView, meta: { requiresAuth: true, title: 'VAT' } },
+    // Per-period return detail (Preview + Full Report). :periodKey is the period-end date.
+    { path: '/vat-returns/:periodKey', name: 'vat-return-detail', component: VatReturnDetailView, meta: { requiresAuth: true, title: 'VAT' } },
     // The organisation's own "Company Details" — a singleton settings screen
     // (the org comes from the token, so there's no id in the path).
     { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },

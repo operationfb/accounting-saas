@@ -644,3 +644,36 @@ func assertMoney(t *testing.T, field, got, want string) {
 		t.Errorf("%s: got %q, want %q", field, got, want)
 	}
 }
+
+// =============================================================================
+// OUTSTANDING (the banking Bill Payment picker)
+// =============================================================================
+
+func TestListOutstandingBills(t *testing.T) {
+	ts := newTestServer(t)
+	auth := bearer(t, ts, devUserID, devOrgID)
+	categoryID := spendingCategoryID(t, ts, devOrgID)
+	contactID := createContactAs(t, ts, devUserID, devOrgID)
+
+	// createBillAs makes a £100 bill. Vary paid_value via SQL (the banking module's job).
+	unpaid := createBillAs(t, ts, devUserID, devOrgID, contactID, categoryID)
+	partPaid := createBillAs(t, ts, devUserID, devOrgID, contactID, categoryID)
+	setBillPaid(t, ts, partPaid, 4000) // £40 of £100 → still owes £60
+	fullyPaid := createBillAs(t, ts, devUserID, devOrgID, contactID, categoryID)
+	setBillPaid(t, ts, fullyPaid, 10000) // £100 of £100 → due 0
+
+	rec := doBillReq(t, ts, http.MethodGet, "/api/v1/bills/outstanding", auth, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 — body: %s", rec.Code, rec.Body.String())
+	}
+	ids := billIDsFromList(t, rec.Body.Bytes())
+	if !contains(ids, unpaid) {
+		t.Errorf("outstanding list missing the unpaid bill %s", unpaid)
+	}
+	if !contains(ids, partPaid) {
+		t.Errorf("outstanding list missing the part-paid bill %s", partPaid)
+	}
+	if contains(ids, fullyPaid) {
+		t.Errorf("outstanding list leaked the fully-paid bill %s", fullyPaid)
+	}
+}

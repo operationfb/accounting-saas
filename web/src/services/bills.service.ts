@@ -16,6 +16,13 @@ export async function listBills(): Promise<Bill[]> {
   return ListBillsResponseSchema.parse(data).bills ?? []
 }
 
+// GET /api/v1/bills/outstanding — the org's bills that still owe money (due > 0).
+// Backs the banking "Bill Payment" explanation picker (mirrors listOutstandingInvoices).
+export async function listOutstandingBills(): Promise<Bill[]> {
+  const data = await apiFetch<unknown>('/bills/outstanding', { method: 'GET' })
+  return ListBillsResponseSchema.parse(data).bills ?? []
+}
+
 // GET /api/v1/bills/:id — one bill. A 404 surfaces as an ApiError for the caller.
 export async function getBill(id: string): Promise<Bill> {
   const data = await apiFetch<unknown>(`/bills/${encodeURIComponent(id)}`, { method: 'GET' })

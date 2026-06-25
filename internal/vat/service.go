@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
+	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
@@ -50,17 +51,18 @@ var (
 // vrnDigits matches a bare 9-digit VRN — exactly what HMRC's MTD API expects.
 var vrnDigits = regexp.MustCompile(`^\d{9}$`)
 
-// Service holds only the auth query set: reading/updating the organisation is a
-// single-table, single-statement operation, so there is no pool/transaction to
-// keep (same shape as the organisation and member services).
+// Service holds the auth query set (VAT settings live on the organisations table)
+// plus the cross-domain VAT read queries (db/vat) used by the calculation engine.
+// All reads are single-statement, so there is no pool/transaction to keep.
 type Service struct {
 	authQueries auth.Querier
+	queries     *vatdb.Queries
 }
 
-// NewService is the constructor, called once in main.go. authQueries is the same
-// auth.Querier already shared with the other services.
-func NewService(authQueries auth.Querier) *Service {
-	return &Service{authQueries: authQueries}
+// NewService is the constructor, called once in main.go. authQueries is the shared
+// auth.Querier; queries is the VAT read-query set (db/vat) used by GetReturn.
+func NewService(authQueries auth.Querier, queries *vatdb.Queries) *Service {
+	return &Service{authQueries: authQueries, queries: queries}
 }
 
 // authorize confirms the caller is an ACTIVE member and returns their role
@@ -171,6 +173,157 @@ func (s *Service) UpdateSettings(ctx context.Context, authUserID, authOrgID uuid
 		return nil, kernel.ErrInternal(err)
 	}
 	return vatSettingsToResponse(updated), nil
+}
+
+// =============================================================================
+// PERIODS
+// =============================================================================
+
+// ListPeriods returns the org's VAT return periods, generated locally from its
+// settings (effective date / first-return end / frequency). Any active member may
+// read. The list is newest-first (most recent period at the top, like FreeAgent).
+// It is empty when the org is not VAT-registered or its settings are incomplete —
+// the frontend then points the user at the VAT Registration screen.
+func (s *Service) ListPeriods(ctx context.Context, authUserID, authOrgID uuid.UUID) ([]VatPeriodResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// Can't generate a schedule without the certificate settings.
+	if !org.VatRegistered || !org.VatEffectiveDate.Valid ||
+		!org.VatFirstReturnPeriodEnd.Valid || !org.VatReturnFrequency.Valid {
+		return []VatPeriodResponse{}, nil
+	}
+
+	today := dateOnlyUTC(time.Now().UTC())
+	periods := generateVATPeriods(
+		org.VatEffectiveDate.Time,
+		org.VatFirstReturnPeriodEnd.Time,
+		today,
+		org.VatReturnFrequency.String,
+	)
+
+	// Map to DTOs, reversing to newest-first.
+	out := make([]VatPeriodResponse, 0, len(periods))
+	for i := len(periods) - 1; i >= 0; i-- {
+		p := periods[i]
+		ended := p.End.Before(today)
+		status := "Open"
+		if ended {
+			status = "Unfiled"
+		}
+		out = append(out, VatPeriodResponse{
+			PeriodKey:     p.End.Format("2006-01-02"),
+			Label:         p.End.Format("01 06"), // "MM YY", e.g. "05 26"
+			StartDate:     p.Start.Format("2006-01-02"),
+			EndDate:       p.End.Format("2006-01-02"),
+			DueOn:         p.Due.Format("2006-01-02"),
+			Ended:         ended,
+			DisplayStatus: status,
+		})
+	}
+	return out, nil
+}
+
+// =============================================================================
+// RETURN (computed)
+// =============================================================================
+
+// GetReturn computes the VAT return for one period — identified by its period-end
+// key (the period-end date, e.g. "2026-05-31") — and returns the 9 boxes plus the
+// contributing lines (driving the Preview + Full Report). Any active member may
+// read. The period is resolved from the settings-generated schedule; an unknown key
+// (or a not-registered / incompletely-configured org) is 404.
+//
+// v1 computes the INVOICE/ACCRUAL basis: the documents (invoices SENT, bills,
+// expenses APPROVED/PAID) by date + direct-category bank explanations. It reports
+// the org's configured basis in the response, but the cash-basis computation is the
+// next slice — until then the figures are accrual regardless of the setting.
+func (s *Service) GetReturn(ctx context.Context, authUserID, authOrgID uuid.UUID, periodKey string) (*VatReturnResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+	if !org.VatRegistered || !org.VatEffectiveDate.Valid ||
+		!org.VatFirstReturnPeriodEnd.Valid || !org.VatReturnFrequency.Valid {
+		return nil, kernel.ErrNotFound("vat return period", periodKey)
+	}
+
+	today := dateOnlyUTC(time.Now().UTC())
+	periods := generateVATPeriods(
+		org.VatEffectiveDate.Time,
+		org.VatFirstReturnPeriodEnd.Time,
+		today,
+		org.VatReturnFrequency.String,
+	)
+	var period *vatPeriod
+	for i := range periods {
+		if periods[i].End.Format("2006-01-02") == periodKey {
+			period = &periods[i]
+			break
+		}
+	}
+	if period == nil {
+		return nil, kernel.ErrNotFound("vat return period", periodKey)
+	}
+
+	from := pgtype.Date{Time: period.Start, Valid: true}
+	to := pgtype.Date{Time: period.End, Valid: true}
+
+	expenses, err := s.queries.ListExpensesForVatReturn(ctx, vatdb.ListExpensesForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	invoices, err := s.queries.ListInvoicesForVatReturn(ctx, vatdb.ListInvoicesForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	bills, err := s.queries.ListBillsForVatReturn(ctx, vatdb.ListBillsForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	bankLines, err := s.queries.ListExplanationsForVatReturn(ctx, vatdb.ListExplanationsForVatReturnParams{OrganisationID: authOrgID, FromDate: from, ToDate: to})
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	boxes, sales, purchases := computeReturn(expenses, invoices, bills, bankLines)
+
+	basis := "invoice"
+	if org.VatAccountingBasis.Valid && org.VatAccountingBasis.String != "" {
+		basis = org.VatAccountingBasis.String
+	}
+	status := "Open"
+	if period.End.Before(today) {
+		status = "Unfiled"
+	}
+
+	resp := &VatReturnResponse{
+		PeriodKey:       period.End.Format("2006-01-02"),
+		Label:           period.End.Format("01 06"),
+		StartDate:       period.Start.Format("2006-01-02"),
+		EndDate:         period.End.Format("2006-01-02"),
+		DueOn:           period.Due.Format("2006-01-02"),
+		DisplayStatus:   status,
+		AccountingBasis: basis,
+		SalesLines:      linesToResponse(sales),
+		PurchaseLines:   linesToResponse(purchases),
+	}
+	boxesToResponse(boxes, resp)
+	return resp, nil
 }
 
 // =============================================================================

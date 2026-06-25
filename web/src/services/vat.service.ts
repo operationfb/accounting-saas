@@ -1,8 +1,12 @@
 import { apiFetch } from '@/lib/api'
 import {
   GetVatSettingsResponseSchema,
+  ListVatPeriodsResponseSchema,
+  GetVatReturnResponseSchema,
   type VatSettings,
   type VatSettingsRequest,
+  type VatPeriod,
+  type VatReturn,
 } from '@/types/vat'
 
 // GET /api/v1/vat/settings — the caller's own VAT registration settings. Any
@@ -21,4 +25,22 @@ export async function getVatSettings(): Promise<VatSettings> {
 export async function updateVatSettings(payload: VatSettingsRequest): Promise<VatSettings> {
   const data = await apiFetch<unknown>('/vat/settings', { method: 'PUT', body: payload })
   return GetVatSettingsResponseSchema.parse(data).vat_settings
+}
+
+// GET /api/v1/vat/periods — the org's VAT return periods, generated from its
+// settings (newest-first). Any ACTIVE member may read. Empty when the org isn't
+// VAT-registered or its settings are incomplete.
+export async function listVatPeriods(): Promise<VatPeriod[]> {
+  const data = await apiFetch<unknown>('/vat/periods', { method: 'GET' })
+  return ListVatPeriodsResponseSchema.parse(data).periods ?? []
+}
+
+// GET /api/v1/vat/returns/:periodKey — the computed return (9 boxes + the
+// contributing lines) for one period. Any ACTIVE member may read. An unknown
+// period (or a not-registered org) is a 404 ApiError.
+export async function getVatReturn(periodKey: string): Promise<VatReturn> {
+  const data = await apiFetch<unknown>(`/vat/returns/${encodeURIComponent(periodKey)}`, {
+    method: 'GET',
+  })
+  return GetVatReturnResponseSchema.parse(data).vat_return
 }

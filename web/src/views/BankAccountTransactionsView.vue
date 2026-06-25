@@ -31,12 +31,14 @@ import {
 import { listVatRates } from '@/services/expenses.service'
 import { listMembers } from '@/services/members.service'
 import { listOutstandingInvoices } from '@/services/invoices.service'
+import { listOutstandingBills } from '@/services/bills.service'
 import { formatMoney, formatDate, computeFixedVatPounds } from '@/lib/format'
 import { useAuthStore } from '@/stores/auth'
 import type { BankAccount, BankTransaction } from '@/types/bank-account'
 import type { TransactionType, ExplanationCategory, Explanation, TransactionExplanations, CreateExplanationRequest } from '@/types/explanation'
 import type { VatRate } from '@/types/expense'
 import type { Invoice } from '@/types/invoice'
+import type { Bill } from '@/types/bill'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
@@ -270,7 +272,7 @@ const members = ref<{ id: string; name: string }[]>([])
 const refLoaded = ref(false)
 
 // the add/edit form
-const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', invoiceId: '', amount: '', vatRateId: '', vatAmount: '', description: '' })
+const form = reactive({ type: '', categoryId: '', transferAccountId: '', paidUserId: '', invoiceId: '', billId: '', amount: '', vatRateId: '', vatAmount: '', description: '' })
 const editingId = ref<string | null>(null)
 const saving = ref(false)
 const formError = ref('')
@@ -280,6 +282,9 @@ const catsForType = ref<ExplanationCategory[]>([])
 // selectable while editing its own receipt (it has dropped off the outstanding list).
 const outstandingInvoices = ref<Invoice[]>([])
 const editingInvoiceOption = ref<{ label: string; value: string } | null>(null)
+// Bill Payment picker (the money-out mirror): outstanding bills + the editing fallback.
+const outstandingBills = ref<Bill[]>([])
+const editingBillOption = ref<{ label: string; value: string } | null>(null)
 
 const expandedTxn = computed(() => transactions.value.find((t) => t.id === expandedId.value) ?? null)
 const lineDirection = computed(() => (expandedTxn.value?.money_out ? 'out' : 'in'))
@@ -340,6 +345,17 @@ const invoiceOptions = computed(() => {
   }))
   if (editingInvoiceOption.value && !opts.some((o) => o.value === editingInvoiceOption.value!.value)) {
     opts.unshift(editingInvoiceOption.value)
+  }
+  return opts
+})
+// Bill Payment picker: each outstanding bill as "#ref — £due due" (mirror of invoiceOptions).
+const billOptions = computed(() => {
+  const opts = outstandingBills.value.map((b) => ({
+    label: `${b.reference ? '#' + b.reference : 'Bill'} — ${currencySymbol.value}${b.due_value} due`,
+    value: b.id,
+  }))
+  if (editingBillOption.value && !opts.some((o) => o.value === editingBillOption.value!.value)) {
+    opts.unshift(editingBillOption.value)
   }
   return opts
 })
@@ -431,6 +447,7 @@ function resetForm() {
   form.transferAccountId = ''
   form.paidUserId = ''
   form.invoiceId = ''
+  form.billId = ''
   form.amount = ''
   form.vatRateId = ''
   form.vatAmount = ''
@@ -438,6 +455,8 @@ function resetForm() {
   catsForType.value = []
   outstandingInvoices.value = []
   editingInvoiceOption.value = null
+  outstandingBills.value = []
+  editingBillOption.value = null
   formError.value = ''
 }
 
@@ -448,14 +467,24 @@ async function onTypeChange() {
   form.transferAccountId = ''
   form.paidUserId = ''
   form.invoiceId = ''
+  form.billId = ''
   catsForType.value = []
   outstandingInvoices.value = []
+  outstandingBills.value = []
   if (!form.type) return
   if (entityLink.value === 'INVOICE') {
     try {
       outstandingInvoices.value = await listOutstandingInvoices()
     } catch {
       outstandingInvoices.value = []
+    }
+    return
+  }
+  if (entityLink.value === 'BILL') {
+    try {
+      outstandingBills.value = await listOutstandingBills()
+    } catch {
+      outstandingBills.value = []
     }
     return
   }
@@ -510,6 +539,12 @@ async function submitForm() {
       return
     }
     payload.paid_invoice_id = form.invoiceId // no category / VAT for an invoice receipt
+  } else if (entityLink.value === 'BILL') {
+    if (!form.billId) {
+      formError.value = 'Choose a bill.'
+      return
+    }
+    payload.paid_bill_id = form.billId // no category / VAT for a bill payment
   } else {
     if (!form.categoryId) {
       formError.value = 'Choose a category.'
@@ -548,10 +583,14 @@ async function startEdit(e: Explanation) {
   form.transferAccountId = e.transfer_bank_account_id ?? ''
   form.paidUserId = e.paid_user_id ?? ''
   form.invoiceId = e.paid_invoice_id ?? ''
-  // The invoice this receipt settled may now be fully paid (off the outstanding list) —
+  form.billId = e.paid_bill_id ?? ''
+  // The invoice/bill this settled may now be fully paid (off the outstanding list) —
   // keep it selectable so the link stays visible while editing.
   editingInvoiceOption.value = e.paid_invoice_id
     ? { value: e.paid_invoice_id, label: e.invoice_reference ? `#${e.invoice_reference}` : 'Invoice' }
+    : null
+  editingBillOption.value = e.paid_bill_id
+    ? { value: e.paid_bill_id, label: e.bill_reference ? `#${e.bill_reference}` : 'Bill' }
     : null
 }
 
@@ -771,8 +810,8 @@ async function removeEditing() {
                             <Select v-model="form.type" :options="typeOptions" option-label="label" option-value="value" placeholder="Choose…" class="w-full max-w-xs" @change="onTypeChange" />
 
                             <!-- VAT: rate + amount (amount editable only for a manual rate). An
-                                 invoice receipt carries no VAT of its own, so the row is hidden. -->
-                            <template v-if="entityLink !== 'INVOICE'">
+                                 invoice receipt / bill payment carries no VAT of its own, so it's hidden. -->
+                            <template v-if="entityLink !== 'INVOICE' && entityLink !== 'BILL'">
                               <label class="text-right text-fa-muted">VAT</label>
                               <div class="flex items-center gap-2">
                                 <Select v-model="form.vatRateId" :options="vatOptions" option-label="label" option-value="value" class="w-52" />
@@ -819,6 +858,20 @@ async function removeEditing() {
                                 scroll-height="320px"
                                 class="w-full max-w-xs"
                                 empty-message="No outstanding invoices"
+                              />
+                            </template>
+                            <template v-else-if="entityLink === 'BILL'">
+                              <label class="text-right text-fa-muted">Bill</label>
+                              <Select
+                                v-model="form.billId"
+                                :options="billOptions"
+                                option-label="label"
+                                option-value="value"
+                                placeholder="Choose a bill"
+                                filter
+                                scroll-height="320px"
+                                class="w-full max-w-xs"
+                                empty-message="No outstanding bills"
                               />
                             </template>
                             <template v-else>

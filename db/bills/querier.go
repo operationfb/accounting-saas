@@ -137,6 +137,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListBillsByContact(ctx context.Context, arg ListBillsByContactParams) ([]Bill, error)
 	// -----------------------------------------------------------------------------
+	// ListOutstandingBills
+	// The org's bills that still owe money (due_value_minor > 0 = total − paid). Backs
+	// the banking "Bill Payment" explanation picker. Unlike invoices there is NO status
+	// filter — bills have no lifecycle; any unpaid/part-paid bill is payable. Oldest
+	// first (the natural "pay these next" order). :many.
+	// -----------------------------------------------------------------------------
+	ListOutstandingBills(ctx context.Context, organisationID uuid.UUID) ([]Bill, error)
+	// -----------------------------------------------------------------------------
 	// MarkBillAttachmentOCRProcessing
 	// Flips an attachment from PENDING to PROCESSING when the OCR worker picks it up.
 	// Deliberately separate from UpdateBillAttachmentOCRStatus: a non-terminal

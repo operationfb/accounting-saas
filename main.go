@@ -39,6 +39,7 @@ import (
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
+	dbvat "github.com/operationfb/accounting-saas/db/vat"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	bills "github.com/operationfb/accounting-saas/internal/bills"
@@ -170,7 +171,7 @@ func main() {
 	// settings live on the organisations table, so it reuses the shared authQueries
 	// (the calculation engine + return screens land in this package later).
 	// Self-registers /api/v1/vat/* after NewServer.
-	vatSvc := vat.NewService(authQueries)
+	vatSvc := vat.NewService(authQueries, dbvat.New(pool))
 
 	// User profile: read/update the caller's own "My Details" (first/last name; the
 	// login email is read-only). Always self-scoped via the token, so no role check.
@@ -426,7 +427,7 @@ func main() {
 	categoryQueries := dbcategories.New(pool)
 	// dbinvoices.New(pool) is the cross-domain dependency for the Invoice Receipt
 	// explanation: validate the target invoice + keep its paid_value_minor in sync.
-	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool)))
+	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool)))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its

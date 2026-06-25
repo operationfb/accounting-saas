@@ -667,6 +667,64 @@ func (q *Queries) ListBillsByContact(ctx context.Context, arg ListBillsByContact
 	return items, nil
 }
 
+const listOutstandingBills = `-- name: ListOutstandingBills :many
+SELECT id, organisation_id, created_by_user_id, contact_id, reference, dated_on, due_on, currency, comments, is_hire_purchase, category_id, vat_rate_id, vat_rate_bps, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, project_id, deleted_at, created_at, updated_at FROM bills
+WHERE organisation_id = $1
+  AND due_value_minor > 0
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC
+`
+
+// -----------------------------------------------------------------------------
+// ListOutstandingBills
+// The org's bills that still owe money (due_value_minor > 0 = total − paid). Backs
+// the banking "Bill Payment" explanation picker. Unlike invoices there is NO status
+// filter — bills have no lifecycle; any unpaid/part-paid bill is payable. Oldest
+// first (the natural "pay these next" order). :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListOutstandingBills(ctx context.Context, organisationID uuid.UUID) ([]Bill, error) {
+	rows, err := q.db.Query(ctx, listOutstandingBills, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Bill
+	for rows.Next() {
+		var i Bill
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrganisationID,
+			&i.CreatedByUserID,
+			&i.ContactID,
+			&i.Reference,
+			&i.DatedOn,
+			&i.DueOn,
+			&i.Currency,
+			&i.Comments,
+			&i.IsHirePurchase,
+			&i.CategoryID,
+			&i.VatRateID,
+			&i.VatRateBps,
+			&i.NetValueMinor,
+			&i.SalesTaxValueMinor,
+			&i.TotalValueMinor,
+			&i.PaidValueMinor,
+			&i.DueValueMinor,
+			&i.ProjectID,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markBillAttachmentOCRProcessing = `-- name: MarkBillAttachmentOCRProcessing :exec
 UPDATE bill_attachments SET
     ocr_status = 'PROCESSING',

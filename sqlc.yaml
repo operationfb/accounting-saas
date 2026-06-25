@@ -424,6 +424,55 @@ sql:
             go_type: "string"
 
   # ===========================================================================
+  # VAT MODULE
+  # Cross-domain READ queries for the VAT-return calculation engine, generated into
+  # package `vat` at db/vat (imported as `vatdb` in internal/vat). The engine sums
+  # VAT-relevant rows from four domains into the 9 HMRC boxes; all its SQL lives in
+  # db/queries/vat.sql (VAT is inherently a cross-domain report, so its reads are
+  # centralised here rather than scattered across each domain's query file).
+  #
+  # Loads every schema the queries touch, in dependency order: schema.sql (expenses,
+  # expense_categories), auth_schema.sql (organisations/users), contacts_schema.sql,
+  # categories_schema.sql (categories + transaction_types), projects_schema.sql
+  # (bills → projects FK), invoices_schema.sql, bills_schema.sql, banking_schema.sql
+  # (bank_transaction_explanations). omit_unused_structs keeps the other domains'
+  # models out of db/vat — only the four …ForVatReturn row structs are emitted.
+  # Nothing here writes, so there is no FK/write coupling.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
+      - "db/schema/categories_schema.sql"
+      - "db/schema/projects_schema.sql"
+      - "db/schema/invoices_schema.sql"
+      - "db/schema/bills_schema.sql"
+      - "db/schema/banking_schema.sql"
+
+    queries: "db/queries/vat.sql"
+
+    gen:
+      go:
+        package: "vat"
+        out: "db/vat"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        omit_unused_structs: true
+
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+
+  # ===========================================================================
   # BANKING MODULE
   # Generates the data layer for the bank_accounts + bank_transactions +
   # bank_transaction_explanations tables into package `banking` at db/banking.
@@ -432,9 +481,10 @@ sql:
   # invoices_schema.sql + banking_schema.sql in dependency order: banking_schema.sql
   # references set_updated_at() + vat_rates (schema.sql), the organisations / users
   # tables (auth_schema.sql), the categories / transaction_types (categories_schema.sql)
-  # and now the invoices table that bank_transaction_explanations.paid_invoice_id FKs
-  # (invoices_schema.sql, which itself needs contacts_schema.sql for its contact_id FK).
-  # The detailed explanations query also LEFT JOINs invoices for the reference label.
+  # and now the invoices + bills tables that bank_transaction_explanations.paid_invoice_id
+  # / paid_bill_id FK (invoices_schema.sql needs contacts_schema.sql for its contact_id FK;
+  # bills_schema.sql needs projects_schema.sql for its project_id FK). The detailed
+  # explanations query also LEFT JOINs invoices + bills for the reference label.
   # omit_unused_structs keeps the other domains' structs out of db/banking — only the
   # banking structs + List/Get *Row structs are emitted.
   # ===========================================================================
@@ -446,6 +496,8 @@ sql:
       - "db/schema/contacts_schema.sql"
       - "db/schema/categories_schema.sql"
       - "db/schema/invoices_schema.sql"
+      - "db/schema/projects_schema.sql"
+      - "db/schema/bills_schema.sql"
       - "db/schema/banking_schema.sql"
 
     queries: "db/queries/banking.sql"

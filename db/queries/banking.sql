@@ -375,14 +375,16 @@ INSERT INTO bank_transaction_explanations (
     sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax,
     ec_status, place_of_supply,
     transfer_bank_account_id, paid_user_id, paid_invoice_id,
-    marked_for_review, cheque_number, receipt_reference
+    marked_for_review, cheque_number, receipt_reference,
+    paid_bill_id
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
     $6,  $7,  $8,
     $9,  $10, $11, $12,
     $13, $14,
     $15, $16, $17,
-    $18, $19, $20
+    $18, $19, $20,
+    $21
 )
 RETURNING *;
 
@@ -432,7 +434,8 @@ UPDATE bank_transaction_explanations SET
     paid_invoice_id          = $16,
     marked_for_review        = $17,
     cheque_number            = $18,
-    receipt_reference        = $19
+    receipt_reference        = $19,
+    paid_bill_id             = $20
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
@@ -469,13 +472,15 @@ SELECT
     u.last_name    AS paid_user_last_name,
     vr.name        AS vat_rate_name,
     vr.rate_bps    AS vat_rate_bps,
-    inv.reference  AS invoice_reference
+    inv.reference  AS invoice_reference,
+    bl.reference   AS bill_reference
 FROM bank_transaction_explanations e
 LEFT JOIN categories    c   ON c.id   = e.category_id
 LEFT JOIN bank_accounts ta  ON ta.id  = e.transfer_bank_account_id
 LEFT JOIN users         u   ON u.id   = e.paid_user_id
 LEFT JOIN vat_rates     vr  ON vr.id  = e.sales_tax_rate_id
 LEFT JOIN invoices      inv ON inv.id = e.paid_invoice_id
+LEFT JOIN bills         bl  ON bl.id  = e.paid_bill_id
 WHERE e.bank_transaction_id = $1
   AND e.organisation_id     = $2
   AND e.deleted_at IS NULL
@@ -496,4 +501,22 @@ FROM bank_transaction_explanations
 WHERE paid_invoice_id  = $1
   AND organisation_id  = $2
   AND type             = 'INVOICE_RECEIPT'
+  AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- SumBillPaymentsForBill — the total paid against ONE bill by live BILL_PAYMENT
+-- explanations (the new paid_value_minor for that bill). Mirror of
+-- SumInvoiceReceiptsForInvoice, but BILL_PAYMENT is money-OUT so gross_value_minor is
+-- NEGATIVE — we NEGATE the sum so bills.paid_value_minor is the POSITIVE amount paid.
+-- The explain service recomputes this inside the explanation's transaction and pushes
+-- it onto bills.paid_value_minor (UpdateBillPaidValue), so the figure is drift-free
+-- across split/edit/re-point/delete. Org-scoped. :one.
+-- -----------------------------------------------------------------------------
+-- name: SumBillPaymentsForBill :one
+SELECT COALESCE(-SUM(gross_value_minor), 0)::bigint AS total_minor
+FROM bank_transaction_explanations
+WHERE paid_bill_id     = $1
+  AND organisation_id  = $2
+  AND type             = 'BILL_PAYMENT'
   AND deleted_at IS NULL;

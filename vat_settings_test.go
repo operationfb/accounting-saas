@@ -102,6 +102,30 @@ func registeredBody() vat.VatSettingsRequest {
 	}
 }
 
+// getVatPeriodsReq sends GET /api/v1/vat/periods.
+func getVatPeriodsReq(t *testing.T, ts *testServer, authHeader string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/vat/periods", nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// decodeVatPeriods pulls the { "periods": [...] } envelope.
+func decodeVatPeriods(t *testing.T, body []byte) []vat.VatPeriodResponse {
+	t.Helper()
+	var resp struct {
+		Periods []vat.VatPeriodResponse `json:"periods"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode periods: %v — body: %s", err, string(body))
+	}
+	return resp.Periods
+}
+
 // =============================================================================
 // GET
 // =============================================================================
@@ -369,4 +393,93 @@ func TestVatSettingsMultiTenantIsolation(t *testing.T) {
 	if gotA.Vrn == nil || *gotA.Vrn != "111111111" {
 		t.Errorf("org A vrn: got %v, want %q", gotA.Vrn, "111111111")
 	}
+}
+
+// =============================================================================
+// PERIODS (GET /api/v1/vat/periods)
+// =============================================================================
+
+// TestHandleListVatPeriods covers the generated period schedule. Assertions are
+// robust to the wall-clock "today" (the number of elapsed periods grows over time):
+// it checks the OLDEST period — the first return, always present once today is past
+// the effective date — and the ended↔status invariant, rather than a fixed count.
+func TestHandleListVatPeriods(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("registered org generates periods, newest-first, with deadlines", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		authHeader := bearer(t, ts, ownerID, orgID)
+		// Register: effective 2026-03-01, first return ends 2026-05-31, quarterly.
+		if rec := putVatSettings(t, ts, authHeader, registeredBody()); rec.Code != http.StatusOK {
+			t.Fatalf("register: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+
+		rec := getVatPeriodsReq(t, ts, authHeader)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		periods := decodeVatPeriods(t, rec.Body.Bytes())
+		if len(periods) == 0 {
+			t.Fatal("expected at least one period for a registered org")
+		}
+
+		// Newest-first: end dates non-increasing. And the ended↔status invariant
+		// holds for every row (time-independent).
+		for i, p := range periods {
+			if i > 0 && periods[i-1].EndDate < p.EndDate {
+				t.Errorf("periods not newest-first: %q before %q", periods[i-1].EndDate, p.EndDate)
+			}
+			wantStatus := "Open"
+			if p.Ended {
+				wantStatus = "Unfiled"
+			}
+			if p.DisplayStatus != wantStatus {
+				t.Errorf("period %s: status %q, want %q (ended=%v)", p.EndDate, p.DisplayStatus, wantStatus, p.Ended)
+			}
+		}
+
+		// The OLDEST period (last in the list) is the first return: Mar1–May31, due
+		// 7 Jul, labelled "05 26" — fixed by the settings, independent of "today".
+		oldest := periods[len(periods)-1]
+		if oldest.StartDate != "2026-03-01" || oldest.EndDate != "2026-05-31" {
+			t.Errorf("first period: got %s–%s, want 2026-03-01–2026-05-31", oldest.StartDate, oldest.EndDate)
+		}
+		if oldest.DueOn != "2026-07-07" {
+			t.Errorf("first period due_on: got %q, want 2026-07-07", oldest.DueOn)
+		}
+		if oldest.Label != "05 26" {
+			t.Errorf("first period label: got %q, want %q", oldest.Label, "05 26")
+		}
+	})
+
+	t.Run("not-registered org → empty list", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		rec := getVatPeriodsReq(t, ts, bearer(t, ts, ownerID, orgID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		if periods := decodeVatPeriods(t, rec.Body.Bytes()); len(periods) != 0 {
+			t.Errorf("expected empty list for a not-registered org, got %d periods", len(periods))
+		}
+	})
+
+	t.Run("plain member may read", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		if rec := putVatSettings(t, ts, bearer(t, ts, ownerID, orgID), registeredBody()); rec.Code != http.StatusOK {
+			t.Fatalf("register: %d — %s", rec.Code, rec.Body.String())
+		}
+		memberID := newMemberUser(t, ts, orgID)
+		rec := getVatPeriodsReq(t, ts, bearer(t, ts, memberID, orgID))
+		if rec.Code != http.StatusOK {
+			t.Errorf("member GET periods: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated → 401", func(t *testing.T) {
+		rec := getVatPeriodsReq(t, ts, "")
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", rec.Code)
+		}
+	})
 }

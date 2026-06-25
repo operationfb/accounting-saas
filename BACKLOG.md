@@ -228,11 +228,13 @@ module's to write. Tested in `bill_service_test.go` + `money/money_test.go` (`Ex
 - **Bill attachments service** (GCS upload + Smart Capture / OCR). `bill_attachments.ocr_*` columns +
   queries exist, but the upload + Document AI + skeleton-draft pipeline isn't wired (mirrors the
   expenses capture path). _Files: an `internal/attachments`-style bill service, `internal/ocr`, `internal/storage`._
-- **Banking writes `paid_value_minor`.** Nothing populates it yet (defaults 0, so a bill always derives
-  as Unpaid/Overdue, never Paid, and is always editable/deletable). Wire from the banking `BILL_PAYMENT`
-  explanation link (see the banking backlog's "future-entity explanation links" — add `paid_bill_id` to
-  `bank_transaction_explanations`); add a `paid_on` column then. `UpdateBillPaidValue` is the seam.
-  _Files: schema, `db/queries/bills.sql`, banking._
+- **Banking writes `paid_value_minor` — LANDED (2026-06-25).** Explaining a money-out bank line as a
+  **Bill Payment** (`BILL_PAYMENT`, entity_link `BILL`) links it via `bank_transaction_explanations.paid_bill_id`
+  and re-syncs `bills.paid_value_minor = Σ(-live BILL_PAYMENT grosses)` (negated, since money-out grosses
+  are negative) in the explanation's transaction — the money-out mirror of the Invoice Receipt flow.
+  `GET /api/v1/bills/outstanding` backs the picker; overpayment is rejected; a paid bill locks. Tested in
+  `banking_service_test.go` (`TestBillPaymentExplain`) + `bill_service_test.go` (`TestListOutstandingBills`).
+  Still deferred: a `paid_on` column (the date the payment cleared), and the `BILL_PAYMENT_REFUND` reverse.
 - **Wire `ContactHasBills` into the contacts in-use guard.** The datalayer query exists but is unused;
   inject the bills querier into `contacts.NewService` and OR it into the existing
   `ContactHasProjects` / `ContactHasInvoices` check so a contact with bills can't be soft-deleted and
@@ -355,12 +357,12 @@ remains is the reconciliation/feed richness:
     is currently reference metadata only — no journal lines are posted. A future ledger
     posts balanced debits/credits across nominals (incl. the per-entity sub-accounts
     750-x bank / 900-x user / 602-x asset that are represented by entity links today).
-  - **Future-entity explanation links.** `INVOICE_RECEIPT` landed (2026-06-24): `paid_invoice_id`
-    on `bank_transaction_explanations`, wired to `invoices.paid_value_minor`, `INVOICE` added to
-    `SupportedEntityLinks`. Remaining: `BILL_PAYMENT` / `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds)
-    are valid `type`s but still carry no dedicated link — add `paid_bill_id` / … to
-    `bank_transaction_explanations` when those modules land. Likewise a capital-asset
-    register (Purchase/Disposal) and `project_id` + rebilling.
+  - **Future-entity explanation links.** `INVOICE_RECEIPT` landed (2026-06-24) and `BILL_PAYMENT`
+    landed (2026-06-25): `paid_invoice_id` / `paid_bill_id` on `bank_transaction_explanations`, wired to
+    `invoices.paid_value_minor` / `bills.paid_value_minor`, `INVOICE` + `BILL` in `SupportedEntityLinks`.
+    Remaining: `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds) are valid `type`s but still carry no
+    dedicated link — add `paid_credit_note_id` / … to `bank_transaction_explanations` when those modules
+    land. Likewise a capital-asset register (Purchase/Disposal) and `project_id` + rebilling.
   - **`expense_categories` → `categories` unification.** Two category tables coexist
     (different code schemes: our `365 Travel` vs FreeAgent `254`). Merge into one CoA,
     mapping the expenses module + `supplier_category_map` + OCR across.

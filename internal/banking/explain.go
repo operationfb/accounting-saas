@@ -30,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	banking "github.com/operationfb/accounting-saas/db/banking"
+	billsdb "github.com/operationfb/accounting-saas/db/bills"
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	categories "github.com/operationfb/accounting-saas/internal/categories"
@@ -44,6 +45,7 @@ import (
 const (
 	typeInvoiceReceipt = "INVOICE_RECEIPT"
 	invoiceStatusSent  = "SENT"
+	typeBillPayment    = "BILL_PAYMENT"
 )
 
 // =============================================================================
@@ -61,6 +63,7 @@ type CreateExplanationRequest struct {
 	TransferBankAccountID *string `json:"transfer_bank_account_id"`  // transfers
 	PaidUserID            *string `json:"paid_user_id"`              // user payments
 	PaidInvoiceID         *string `json:"paid_invoice_id"`           // invoice receipts
+	PaidBillID            *string `json:"paid_bill_id"`              // bill payments
 	VATRateID             *string `json:"vat_rate_id"`               // optional
 	VATAmount             *string `json:"vat_amount"`                // manual (non-fixed) rate only
 	Description           *string `json:"description"`
@@ -83,6 +86,8 @@ type ExplanationResponse struct {
 	PaidUserName          *string `json:"paid_user_name,omitempty"`
 	PaidInvoiceID         *string `json:"paid_invoice_id,omitempty"`
 	InvoiceReference      *string `json:"invoice_reference,omitempty"`
+	PaidBillID            *string `json:"paid_bill_id,omitempty"`
+	BillReference         *string `json:"bill_reference,omitempty"`
 	VATRateID             *string `json:"vat_rate_id,omitempty"`
 	VATRate               *string `json:"vat_rate,omitempty"` // e.g. "20%"
 	VATValue              string  `json:"vat_value"`          // pounds
@@ -151,7 +156,10 @@ func (s *Service) CreateExplanation(ctx context.Context, authUserID, authOrgID u
 		if _, err := qtx.CreateExplanation(ctx, params); err != nil {
 			return kernel.ErrInternal(err)
 		}
-		return s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, params.PaidInvoiceID)
+		if err := s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, params.PaidInvoiceID); err != nil {
+			return err
+		}
+		return s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, params.PaidBillID)
 	})
 	if err != nil {
 		return nil, err
@@ -192,6 +200,7 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		qtx := s.queries.WithTx(tx)
 		itx := s.invoiceQueries.WithTx(tx)
+		btx := s.billQueries.WithTx(tx)
 		if _, err := qtx.UpdateExplanation(ctx, banking.UpdateExplanationParams{
 			ID:                    explUUID,
 			OrganisationID:        authOrgID,
@@ -209,6 +218,7 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 			TransferBankAccountID: params.TransferBankAccountID,
 			PaidUserID:            params.PaidUserID,
 			PaidInvoiceID:         params.PaidInvoiceID,
+			PaidBillID:            params.PaidBillID,
 			MarkedForReview:       params.MarkedForReview,
 			ChequeNumber:          params.ChequeNumber,
 			ReceiptReference:      params.ReceiptReference,
@@ -223,6 +233,14 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 		}
 		if existing.PaidInvoiceID.Valid && existing.PaidInvoiceID != params.PaidInvoiceID {
 			if err := s.resyncInvoicePaid(ctx, qtx, itx, authOrgID, existing.PaidInvoiceID); err != nil {
+				return err
+			}
+		}
+		if err := s.resyncBillPaid(ctx, qtx, btx, authOrgID, params.PaidBillID); err != nil {
+			return err
+		}
+		if existing.PaidBillID.Valid && existing.PaidBillID != params.PaidBillID {
+			if err := s.resyncBillPaid(ctx, qtx, btx, authOrgID, existing.PaidBillID); err != nil {
 				return err
 			}
 		}
@@ -261,7 +279,10 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 		if err := qtx.SoftDeleteExplanation(ctx, banking.SoftDeleteExplanationParams{ID: explUUID, OrganisationID: authOrgID}); err != nil {
 			return kernel.ErrInternal(err)
 		}
-		return s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, existing.PaidInvoiceID)
+		if err := s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, existing.PaidInvoiceID); err != nil {
+			return err
+		}
+		return s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, existing.PaidBillID)
 	})
 	if err != nil {
 		return nil, err
@@ -327,7 +348,7 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 	}
 
 	// 4. category / entity, by the type's entity_link.
-	var categoryID, transferAccountID, paidUserID, paidInvoiceID pgtype.UUID
+	var categoryID, transferAccountID, paidUserID, paidInvoiceID, paidBillID pgtype.UUID
 	switch tt.EntityLink {
 	case "BANK_ACCOUNT": // Transfer to/from Another Account
 		transferAccountID, err = s.resolveTransferAccount(ctx, orgID, accountUUID, req.TransferBankAccountID)
@@ -348,6 +369,11 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		if err != nil {
 			return zero, err
 		}
+	case "BILL": // Bill Payment — settle an unpaid purchase bill (no category, no VAT)
+		paidBillID, err = s.resolveBill(ctx, orgID, req.PaidBillID, grossMinor, existing)
+		if err != nil {
+			return zero, err
+		}
 	default: // NONE, CAPITAL_ASSET → a plain category pick
 		categoryID, err = s.requireOfferedCategory(ctx, orgID, typeCode, req.CategoryID)
 		if err != nil {
@@ -357,11 +383,11 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 
 	// 5. VAT: optional rate → a fixed rate extracts the VAT from the portion gross;
 	// a manual (non-fixed) rate stores the client-entered amount. An invoice receipt
-	// carries no VAT of its own (the VAT lived on the invoice), so it is skipped.
+	// carries no VAT of its own (the VAT lived on the invoice/bill), so it is skipped.
 	var vatRateID pgtype.UUID
 	var vatValueMinor int64
 	var isManualVAT bool
-	if tt.EntityLink != "INVOICE" {
+	if tt.EntityLink != "INVOICE" && tt.EntityLink != "BILL" {
 		vatRateID, vatValueMinor, isManualVAT, err = s.resolveExplanationVAT(ctx, req.VATRateID, req.VATAmount, grossMinor)
 		if err != nil {
 			return zero, err
@@ -394,6 +420,7 @@ func (s *Service) resolveExplanationFields(ctx context.Context, authUserID, orgI
 		TransferBankAccountID: transferAccountID,
 		PaidUserID:            paidUserID,
 		PaidInvoiceID:         paidInvoiceID,
+		PaidBillID:            paidBillID,
 		MarkedForReview:       false,
 	}, nil
 }
@@ -502,11 +529,50 @@ func (s *Service) resolveInvoice(ctx context.Context, orgID uuid.UUID, invoiceID
 	return link, nil
 }
 
+// resolveBill validates the Bill Payment link and returns the bill's id to store. The
+// bill must be a live bill in the caller's org (cross-tenant → 422) that still owes
+// money. Unlike invoices there is NO status check (bills have no lifecycle). The payment
+// portion may not exceed the bill's OUTSTANDING balance — overpayment is rejected (split
+// the bank line instead). On an EDIT, this explanation's own prior portion against the
+// SAME bill is given back to the outstanding first. NB grossMinor is NEGATIVE here (a
+// money-out line), so we compare its MAGNITUDE (absInt64) to the outstanding.
+func (s *Service) resolveBill(ctx context.Context, orgID uuid.UUID, billID *string, grossMinor int64, existing *banking.BankTransactionExplanation) (pgtype.UUID, error) {
+	if billID == nil || strings.TrimSpace(*billID) == "" {
+		return pgtype.UUID{}, kernel.ErrValidation("paid_bill_id is required for a bill payment", nil)
+	}
+	bUUID, err := uuid.Parse(strings.TrimSpace(*billID))
+	if err != nil {
+		return pgtype.UUID{}, kernel.ErrValidation("paid_bill_id is not a valid UUID", err)
+	}
+	// Org-scoped fetch (soft-delete aware): a cross-tenant or missing id returns no row.
+	bill, err := s.billQueries.GetBill(ctx, billsdb.GetBillParams{ID: bUUID, OrganisationID: orgID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return pgtype.UUID{}, kernel.ErrValidation("bill not found", nil)
+		}
+		return pgtype.UUID{}, kernel.ErrInternal(err)
+	}
+
+	link := pgtype.UUID{Bytes: bUUID, Valid: true}
+	// Outstanding = total - paid (what the generated due_value_minor column holds).
+	outstanding := bill.TotalValueMinor - bill.PaidValueMinor
+	if existing != nil && existing.Type == typeBillPayment && existing.PaidBillID == link {
+		outstanding += absInt64(existing.GrossValueMinor) // editing the same bill: give the old portion back
+	}
+	if outstanding <= 0 {
+		return pgtype.UUID{}, kernel.ErrValidation("that bill is already fully paid", nil)
+	}
+	if absInt64(grossMinor) > outstanding {
+		return pgtype.UUID{}, kernel.ErrValidation("that's more than the bill's outstanding balance — split the transaction instead", nil)
+	}
+	return link, nil
+}
+
 // resolveExplanationVAT turns an optional vat_rate_id (+ optional vat_amount) into the
 // stored rate id, VAT value, and the is_manual flag — mirroring expenses.resolveVAT:
 //   - no rate              → (NULL, 0, false)
 //   - fixed-ratio rate     → VAT EXTRACTED from the inclusive gross (money.ComputeFixedVAT);
-//                            any client amount is ignored; is_manual = false
+//     any client amount is ignored; is_manual = false
 //   - non-fixed-ratio rate → value = the client vat_amount (0 if omitted); is_manual = true
 func (s *Service) resolveExplanationVAT(ctx context.Context, vatRateID, vatAmount *string, grossMinor int64) (pgtype.UUID, int64, bool, error) {
 	if vatRateID == nil || strings.TrimSpace(*vatRateID) == "" {
@@ -544,7 +610,7 @@ func (s *Service) resolveExplanationVAT(ctx context.Context, vatRateID, vatAmoun
 	return id, valueMinor, true, nil
 }
 
-// orgCompanyType reads the org's company_type ('' if unset → only the 'ALL'
+// orgCompanyType reads the org's company_type (” if unset → only the 'ALL'
 // mapping rows match). Best-effort.
 func (s *Service) orgCompanyType(ctx context.Context, orgID uuid.UUID) string {
 	org, err := s.authQueries.GetOrganisation(ctx, orgID)
@@ -583,6 +649,41 @@ func (s *Service) resyncInvoicePaid(ctx context.Context, qtx *banking.Queries, i
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil // invoice no longer live — nothing to update
+		}
+		return kernel.ErrInternal(err)
+	}
+	return nil
+}
+
+// resyncBillPaid recomputes ONE bill's paid_value_minor = Σ(its live BILL_PAYMENT
+// explanations) and writes it via UpdateBillPaidValue, inside the caller's transaction
+// (qtx/btx are the banking + bills query sets bound to that tx). The money-out gross is
+// negative, so SumBillPaymentsForBill NEGATES it → a POSITIVE paid value. A no-op when
+// billID is NULL (the explanation isn't a bill payment). Recomputing from the Σ — rather
+// than incrementing — keeps the figure drift-free across split/edit/re-point/delete.
+// Tolerates a vanished bill (concurrently soft-deleted).
+func (s *Service) resyncBillPaid(ctx context.Context, qtx *banking.Queries, btx *billsdb.Queries, orgID uuid.UUID, billID pgtype.UUID) error {
+	if !billID.Valid {
+		return nil
+	}
+	sum, err := qtx.SumBillPaymentsForBill(ctx, banking.SumBillPaymentsForBillParams{
+		PaidBillID:     billID,
+		OrganisationID: orgID,
+	})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	bUUID, err := uuid.FromBytes(billID.Bytes[:])
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if _, err := btx.UpdateBillPaidValue(ctx, billsdb.UpdateBillPaidValueParams{
+		ID:             bUUID,
+		OrganisationID: orgID,
+		PaidValueMinor: sum,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // bill no longer live — nothing to update
 		}
 		return kernel.ErrInternal(err)
 	}
@@ -680,6 +781,10 @@ func explanationRowToResponse(r banking.ListExplanationsForTransactionDetailedRo
 	if r.PaidInvoiceID.Valid {
 		resp.PaidInvoiceID = uuidPtr(r.PaidInvoiceID)
 		resp.InvoiceReference = kernel.NullTextToPtr(r.InvoiceReference)
+	}
+	if r.PaidBillID.Valid {
+		resp.PaidBillID = uuidPtr(r.PaidBillID)
+		resp.BillReference = kernel.NullTextToPtr(r.BillReference)
 	}
 	resp.VATRateID = uuidPtr(r.SalesTaxRateID)
 	if r.VatRateBps.Valid {

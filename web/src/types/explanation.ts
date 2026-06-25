@@ -50,6 +50,8 @@ export const ExplanationSchema = z.object({
   paid_user_name: z.string().nullish(),
   paid_invoice_id: z.string().nullish(),
   invoice_reference: z.string().nullish(), // the settled invoice's number, for display
+  paid_bill_id: z.string().nullish(),
+  bill_reference: z.string().nullish(), // the settled bill's reference, for display
   vat_rate_id: z.string().nullish(),
   vat_rate: z.string().nullish(), // "20%"
   vat_value: z.string(),
@@ -78,6 +80,7 @@ export interface CreateExplanationRequest {
   transfer_bank_account_id?: string
   paid_user_id?: string
   paid_invoice_id?: string // invoice receipts
+  paid_bill_id?: string // bill payments
   vat_rate_id?: string
   vat_amount?: string // manual (non-fixed) rate only
   description?: string

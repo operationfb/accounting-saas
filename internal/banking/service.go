@@ -41,6 +41,7 @@ import (
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	banking "github.com/operationfb/accounting-saas/db/banking"
+	billsdb "github.com/operationfb/accounting-saas/db/bills"
 	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	"github.com/operationfb/accounting-saas/internal/kernel"
@@ -53,18 +54,20 @@ import (
 // type, offered-category check, VAT rate), and the invoices query set (the
 // cross-domain dependency for the Invoice Receipt explanation: validate the target
 // invoice + keep its paid_value_minor in sync — the concrete *Queries, not the
-// interface, so it can join the explanation write's transaction via WithTx).
+// interface, so it can join the explanation write's transaction via WithTx). billQueries
+// is the same cross-domain dependency for the Bill Payment explanation (the money-OUT twin).
 type Service struct {
 	pool           *pgxpool.Pool
 	queries        *banking.Queries
 	authQueries    auth.Querier
 	catQueries     *categoriesdb.Queries
 	invoiceQueries *invoicesdb.Queries
+	billQueries    *billsdb.Queries
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
-func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries) *Service {
-	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries}
+func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries, billQueries *billsdb.Queries) *Service {
+	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries, billQueries: billQueries}
 }
 
 // =============================================================================

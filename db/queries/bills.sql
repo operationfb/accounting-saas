@@ -111,6 +111,21 @@ ORDER BY dated_on DESC, created_at DESC;
 
 
 -- -----------------------------------------------------------------------------
+-- ListOutstandingBills
+-- The org's bills that still owe money (due_value_minor > 0 = total − paid). Backs
+-- the banking "Bill Payment" explanation picker. Unlike invoices there is NO status
+-- filter — bills have no lifecycle; any unpaid/part-paid bill is payable. Oldest
+-- first (the natural "pay these next" order). :many.
+-- -----------------------------------------------------------------------------
+-- name: ListOutstandingBills :many
+SELECT * FROM bills
+WHERE organisation_id = $1
+  AND due_value_minor > 0
+  AND deleted_at IS NULL
+ORDER BY dated_on ASC, created_at ASC;
+
+
+-- -----------------------------------------------------------------------------
 -- UpdateBill  (the "update" — editable header + single-line body)
 -- Full update of the caller-editable fields (PUT semantics). Deliberately does
 -- NOT touch paid_value_minor (banking owns it) nor organisation_id /

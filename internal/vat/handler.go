@@ -38,6 +38,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 	{
 		g.GET("/settings", h.GetSettings)
 		g.PUT("/settings", h.UpdateSettings)
+		g.GET("/periods", h.ListPeriods)
+		g.GET("/returns/:periodKey", h.GetReturn)
 	}
 }
 
@@ -65,4 +67,28 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"vat_settings": res})
+}
+
+// ListPeriods handles GET /api/v1/vat/periods — the org's VAT return periods,
+// generated from its settings. The org is taken from the token; any active member
+// may read.
+func (h *Handler) ListPeriods(c *gin.Context) {
+	periods, err := h.svc.ListPeriods(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"periods": periods})
+}
+
+// GetReturn handles GET /api/v1/vat/returns/:periodKey — the computed return (9
+// boxes + contributing lines) for the period whose end date is :periodKey. The org
+// is taken from the token; any active member may read. An unknown period is 404.
+func (h *Handler) GetReturn(c *gin.Context) {
+	ret, err := h.svc.GetReturn(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("periodKey"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"vat_return": ret})
 }

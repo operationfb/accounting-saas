@@ -26,6 +26,73 @@ export const GetVatSettingsResponseSchema = z.object({
   vat_settings: VatSettingsSchema,
 })
 
+// --- VAT return periods (GET /api/v1/vat/periods) ---
+
+// Mirrors the backend's VatPeriodResponse (internal/vat/dto.go). A generated return
+// period: `period_key` is the synthetic id (the period-end date) used to address
+// the return; `label` is "MM YY" of the period end (e.g. "05 26"); `display_status`
+// is "Open" (in progress) or "Unfiled" (ended) in v1.
+export const VatPeriodSchema = z.object({
+  period_key: z.string(),
+  label: z.string(),
+  start_date: z.string(),
+  end_date: z.string(),
+  due_on: z.string(),
+  ended: z.boolean(),
+  display_status: z.string(),
+})
+export type VatPeriod = z.infer<typeof VatPeriodSchema>
+
+// GET /api/v1/vat/periods returns { "periods": [...] } (possibly null/empty).
+export const ListVatPeriodsResponseSchema = z.object({
+  periods: z.array(VatPeriodSchema).nullish(),
+})
+
+// --- the computed VAT return (GET /api/v1/vat/returns/:periodKey) ---
+
+// One contributing transaction in the Full Report. Money is exact 2dp pound strings.
+export const VatReturnLineSchema = z.object({
+  date: z.string(),
+  source: z.string(), // invoice | expense | bill | bank
+  description: z.string(),
+  reference: z.string().nullish(),
+  net: z.string(),
+  vat: z.string(),
+})
+export type VatReturnLine = z.infer<typeof VatReturnLineSchema>
+
+// Mirrors the backend's VatReturnResponse (internal/vat/dto.go). Boxes 1–5 are VAT
+// amounts (2dp); boxes 6–9 are net values rounded to whole pounds. `net_due` is the
+// signed Box 5 (negative = a reclaim/refund), `is_reclaim` the sign as a bool.
+export const VatReturnSchema = z.object({
+  period_key: z.string(),
+  label: z.string(),
+  start_date: z.string(),
+  end_date: z.string(),
+  due_on: z.string(),
+  display_status: z.string(),
+  accounting_basis: z.string(), // invoice | cash
+  box1_vat_due_sales: z.string(),
+  box2_vat_due_acquisitions: z.string(),
+  box3_total_vat_due: z.string(),
+  box4_vat_reclaimed: z.string(),
+  box5_net_vat: z.string(),
+  box6_total_sales_ex_vat: z.string(),
+  box7_total_purchases_ex_vat: z.string(),
+  box8_ec_dispatches_ex_vat: z.string(),
+  box9_ec_acquisitions_ex_vat: z.string(),
+  net_due: z.string(),
+  is_reclaim: z.boolean(),
+  sales_lines: z.array(VatReturnLineSchema).nullish(),
+  purchase_lines: z.array(VatReturnLineSchema).nullish(),
+})
+export type VatReturn = z.infer<typeof VatReturnSchema>
+
+// GET /api/v1/vat/returns/:periodKey returns { "vat_return": {...} }.
+export const GetVatReturnResponseSchema = z.object({
+  vat_return: VatReturnSchema,
+})
+
 // PUT body — mirrors the backend's VatSettingsRequest. `vat_registered` is the
 // master switch; when true the certificate fields (vrn, the two dates, frequency,
 // accounting basis) are required — the backend enforces this too. Empty optionals

@@ -54,6 +54,7 @@ import (
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
+	dbvat "github.com/operationfb/accounting-saas/db/vat"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	banking "github.com/operationfb/accounting-saas/internal/banking"
 	bills "github.com/operationfb/accounting-saas/internal/bills"
@@ -205,7 +206,7 @@ func newTestServer(t *testing.T) *testServer {
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool))
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
-	vatSvc := vat.NewService(authQueries)
+	vatSvc := vat.NewService(authQueries, dbvat.New(pool))
 	userSvc := userauth.NewService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
@@ -237,7 +238,7 @@ func newTestServer(t *testing.T) *testServer {
 	// harness so the service-level tests can call it directly. The explain flow needs
 	// the categories query set; the categories reference endpoints register too.
 	categoryQueries := dbcategories.New(pool)
-	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool))
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool))
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 

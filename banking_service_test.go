@@ -558,11 +558,11 @@ func TestBankAccountService(t *testing.T) {
 		}
 		cleanupBankAccount(t, ts, acc.ID)
 		for _, bad := range []string{
-			"description,amount\nSalary,10.00\n",            // missing date column
-			"date,description\n11/06/2026,NoAmountCol\n",    // missing amount column
-			"date,description,amount\n11/06/2026,Empty,\n",  // empty amount cell
-			"date,description,amount\n11/06/2026,Bad,abc\n", // non-numeric amount
-			"date,description,amount\n11/06/2026,Zero,0\n",  // zero amount
+			"description,amount\nSalary,10.00\n",                  // missing date column
+			"date,description\n11/06/2026,NoAmountCol\n",          // missing amount column
+			"date,description,amount\n11/06/2026,Empty,\n",        // empty amount cell
+			"date,description,amount\n11/06/2026,Bad,abc\n",       // non-numeric amount
+			"date,description,amount\n11/06/2026,Zero,0\n",        // zero amount
 			"date,description,amount\n2026-06-11,BadDate,10.00\n", // wrong date format
 		} {
 			if _, err := importCSV(t, user, org, acc.ID, bad); err == nil {
@@ -896,14 +896,15 @@ func TestExplainService(t *testing.T) {
 	})
 
 	t.Run("direction mismatch is rejected", func(t *testing.T) {
-		txn := newTxn(acc.ID, -5000) // money OUT
+		txn := newTxn(acc.ID, -5000)                                                                                                                                      // money OUT
 		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "SALES", Amount: "50.00", CategoryID: ptr(catID("001"))}) // SALES is money-in
 		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
 	t.Run("unsupported (future-entity) type is rejected", func(t *testing.T) {
 		txn := newTxn(acc.ID, -5000)
-		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "BILL_PAYMENT", Amount: "50.00", CategoryID: ptr(catID("254"))})
+		// CREDIT_NOTE_REFUND (entity_link CREDIT_NOTE) is still future-entity (BILL_PAYMENT is now supported).
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, banking.CreateExplanationRequest{Type: "CREDIT_NOTE_REFUND", Amount: "50.00", CategoryID: ptr(catID("254"))})
 		assertAppCode(t, err, kernel.ErrCodeValidation)
 	})
 
@@ -1235,5 +1236,170 @@ func TestInvoiceReceiptExplain(t *testing.T) {
 		// Caller is `org`; the invoice belongs to otherOrg → the org-scoped GetInvoice misses → 422.
 		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(5000), receipt("50.00", ptr(foreign)))
 		assertAppCode(t, err, kernel.ErrCodeValidation)
+	})
+}
+
+// TestBillPaymentExplain mirrors TestInvoiceReceiptExplain on the money-OUT side:
+// explaining a bank line as BILL_PAYMENT settles an unpaid bill and keeps the bill's
+// paid_value_minor in sync. Key difference: a money-out gross is negative, so the
+// service negates the sum → a POSITIVE paid value, and the overpayment guard compares
+// magnitudes. Real Postgres via the harness.
+func TestBillPaymentExplain(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	ctx := context.Background()
+	svc := ts.bankingService
+
+	org, user := newOrgWithOwner(t, ts)
+	userID, orgID := mustUUID(t, user), mustUUID(t, org)
+
+	acc, err := svc.CreateBankAccount(ctx, userID, orgID, bankReq("Main", nil))
+	if err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	cleanupBankAccount(t, ts, acc.ID)
+	contactID := createContactAs(t, ts, user, org)
+
+	// A spending category for the fresh org (bills require category_id NOT NULL).
+	var catID string
+	if err := ts.pool.QueryRow(ctx,
+		`INSERT INTO categories (organisation_id, nominal_code, name, account_type)
+		 VALUES ($1,'254','Test Spend','ADMIN_EXPENSE') RETURNING id::text`, org).Scan(&catID); err != nil {
+		t.Fatalf("seed category: %v", err)
+	}
+
+	// LIFO cleanup: explanations → bills → categories (bills.category_id FK) before the
+	// contact (createContactAs) + account cleanups registered earlier.
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(bg, `DELETE FROM bills WHERE organisation_id=$1`, org)
+		_, _ = ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1`, org)
+	})
+
+	ptr := func(s string) *string { return &s }
+	newTxn := func(amountMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO bank_transactions (organisation_id, bank_account_id, dated_on, amount_minor, status, source)
+			 VALUES ($1,$2,CURRENT_DATE,$3,'unexplained','manual') RETURNING id::text`, org, acc.ID, amountMinor).Scan(&id); err != nil {
+			t.Fatalf("new txn: %v", err)
+		}
+		return id
+	}
+	newBill := func(totalMinor int64) string {
+		var id string
+		if err := ts.pool.QueryRow(ctx,
+			`INSERT INTO bills (organisation_id, created_by_user_id, contact_id, dated_on, category_id,
+			        net_value_minor, sales_tax_value_minor, total_value_minor, reference)
+			 VALUES ($1,$2,$3,CURRENT_DATE,$4,$5,0,$5,$6) RETURNING id::text`,
+			org, user, contactID, catID, totalMinor, randomRef()).Scan(&id); err != nil {
+			t.Fatalf("seed bill: %v", err)
+		}
+		return id
+	}
+	paidOf := func(billID string) int64 {
+		var p int64
+		if err := ts.pool.QueryRow(ctx, `SELECT paid_value_minor FROM bills WHERE id=$1`, billID).Scan(&p); err != nil {
+			t.Fatalf("read paid: %v", err)
+		}
+		return p
+	}
+	dueOf := func(billID string) int64 {
+		var d int64
+		if err := ts.pool.QueryRow(ctx, `SELECT due_value_minor FROM bills WHERE id=$1`, billID).Scan(&d); err != nil {
+			t.Fatalf("read due: %v", err)
+		}
+		return d
+	}
+	pay := func(amount string, billID *string) banking.CreateExplanationRequest {
+		return banking.CreateExplanationRequest{Type: "BILL_PAYMENT", Amount: amount, PaidBillID: billID}
+	}
+
+	t.Run("full payment records paid (positive) + drives due to 0", func(t *testing.T) {
+		bill := newBill(12000) // £120 owed
+		txn := newTxn(-12000)  // £120 OUT
+		resp, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, pay("120.00", ptr(bill)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if resp.Status != "explained" || resp.UnexplainedAmount != "0.00" {
+			t.Errorf("line: status=%q unexplained=%q, want explained / 0.00", resp.Status, resp.UnexplainedAmount)
+		}
+		if got := paidOf(bill); got != 12000 {
+			t.Errorf("paid_value_minor: got %d, want 12000 (positive)", got)
+		}
+		if got := dueOf(bill); got != 0 {
+			t.Errorf("due_value_minor: got %d, want 0", got)
+		}
+		e := resp.Explanations[0]
+		if e.PaidBillID == nil || *e.PaidBillID != bill {
+			t.Errorf("paid_bill_id not echoed: %+v", e)
+		}
+		if e.CategoryID != nil {
+			t.Errorf("a bill payment should carry no category, got %v", *e.CategoryID)
+		}
+	})
+
+	t.Run("partial payments accumulate; due shrinks", func(t *testing.T) {
+		bill := newBill(10000) // £100
+		if _, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(-4000), pay("40.00", ptr(bill))); err != nil {
+			t.Fatalf("first payment: %v", err)
+		}
+		if got := paidOf(bill); got != 4000 {
+			t.Errorf("paid after £40: got %d, want 4000", got)
+		}
+		if got := dueOf(bill); got != 6000 {
+			t.Errorf("due after £40: got %d, want 6000", got)
+		}
+		if _, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, newTxn(-6000), pay("60.00", ptr(bill))); err != nil {
+			t.Fatalf("second payment: %v", err)
+		}
+		if got := paidOf(bill); got != 10000 {
+			t.Errorf("paid after £100: got %d, want 10000", got)
+		}
+		if got := dueOf(bill); got != 0 {
+			t.Errorf("due after £100: got %d, want 0", got)
+		}
+	})
+
+	t.Run("overpayment is rejected", func(t *testing.T) {
+		bill := newBill(5000) // £50 owed
+		txn := newTxn(-10000) // £100 line (room to over-explain → the cap is the bill's outstanding)
+		_, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, pay("60.00", ptr(bill)))
+		assertAppCode(t, err, kernel.ErrCodeValidation)
+		if got := paidOf(bill); got != 0 {
+			t.Errorf("paid after rejected overpayment: got %d, want 0", got)
+		}
+	})
+
+	t.Run("deleting a payment restores paid to 0", func(t *testing.T) {
+		bill := newBill(5000)
+		txn := newTxn(-5000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, pay("50.00", ptr(bill)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if _, err := svc.DeleteExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if got := paidOf(bill); got != 0 {
+			t.Errorf("paid after delete: got %d, want 0", got)
+		}
+	})
+
+	t.Run("editing the payment amount re-syncs paid", func(t *testing.T) {
+		bill := newBill(10000)
+		txn := newTxn(-10000)
+		r, err := svc.CreateExplanation(ctx, userID, orgID, acc.ID, txn, pay("100.00", ptr(bill)))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if _, err := svc.UpdateExplanation(ctx, userID, orgID, acc.ID, txn, r.Explanations[0].ID, pay("60.00", ptr(bill))); err != nil {
+			t.Fatalf("edit: %v", err)
+		}
+		if got := paidOf(bill); got != 6000 {
+			t.Errorf("paid after edit to £60: got %d, want 6000", got)
+		}
 	})
 }

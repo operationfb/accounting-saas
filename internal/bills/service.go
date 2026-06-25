@@ -364,6 +364,23 @@ func (s *Service) ListBills(ctx context.Context, authUserID, authOrgID uuid.UUID
 	return out, nil
 }
 
+// ListOutstandingBills returns the org's bills that still owe money (due_value > 0),
+// oldest first. Backs the banking "Bill Payment" explanation picker. Any active member.
+func (s *Service) ListOutstandingBills(ctx context.Context, authUserID, authOrgID uuid.UUID) ([]*BillResponse, error) {
+	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListOutstandingBills(ctx, authOrgID)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	out := make([]*BillResponse, 0, len(rows))
+	for _, b := range rows {
+		out = append(out, billToResponse(b))
+	}
+	return out, nil
+}
+
 // =============================================================================
 // UPDATE
 // =============================================================================

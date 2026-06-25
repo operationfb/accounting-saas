@@ -226,6 +226,10 @@ CREATE TABLE bank_transaction_explanations (
     -- type. The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT
     -- explanations for the invoice) in the same transaction as the explanation write.
     paid_invoice_id     UUID REFERENCES invoices(id),                    -- Invoice Receipt → invoices(id)
+    -- Bill Payment: the accounts-payable bill this payment settles. NULL for every
+    -- other type. The explain service keeps bills.paid_value_minor = Σ(live BILL_PAYMENT
+    -- explanations for the bill) in the same transaction as the explanation write.
+    paid_bill_id        UUID REFERENCES bills(id),                       -- Bill Payment → bills(id)
 
     -- Misc (FreeAgent). marked_for_review = a guessed explanation pending a human OK.
     marked_for_review   BOOLEAN NOT NULL DEFAULT FALSE,
@@ -252,7 +256,9 @@ CREATE INDEX idx_explanations_txn
 --   3. contacts_schema.sql   (contacts — needed by invoices_schema.sql)
 --   4. categories_schema.sql (categories, transaction_types — referenced below)
 --   5. invoices_schema.sql   (invoices — referenced by paid_invoice_id below)
---   6. banking_schema.sql    (this file)
+--   6. projects_schema.sql   (projects — needed by bills_schema.sql)
+--   7. bills_schema.sql      (bills — referenced by paid_bill_id below)
+--   8. banking_schema.sql    (this file)
 -- =============================================================================
 CREATE TRIGGER trg_bank_accounts_updated_at
     BEFORE UPDATE ON bank_accounts
@@ -333,3 +339,4 @@ COMMENT ON COLUMN bank_transaction_explanations.gross_value_minor IS 'This expla
 COMMENT ON COLUMN bank_transaction_explanations.category_id IS 'CoA account (categories) this posts to. NULL for entity-link types (Transfer / Invoice Receipt / Bill Payment / …), whose account comes from the linked entity.';
 COMMENT ON COLUMN bank_transaction_explanations.marked_for_review IS 'TRUE = a guessed/auto explanation pending human approval; drives the parent transaction''s status = for_approval (see recompute trigger).';
 COMMENT ON COLUMN bank_transaction_explanations.paid_invoice_id IS 'Invoice Receipt only: the sales invoice this receipt settles (NULL for every other type). The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT explanations for the invoice) in the same transaction as the explanation write.';
+COMMENT ON COLUMN bank_transaction_explanations.paid_bill_id IS 'Bill Payment only: the accounts-payable bill this payment settles (NULL for every other type). The explain service keeps bills.paid_value_minor = Σ(live BILL_PAYMENT explanations for the bill) in the same transaction as the explanation write.';

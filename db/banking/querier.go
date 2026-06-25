@@ -163,6 +163,16 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	SoftDeleteExplanation(ctx context.Context, arg SoftDeleteExplanationParams) error
 	// -----------------------------------------------------------------------------
+	// SumBillPaymentsForBill — the total paid against ONE bill by live BILL_PAYMENT
+	// explanations (the new paid_value_minor for that bill). Mirror of
+	// SumInvoiceReceiptsForInvoice, but BILL_PAYMENT is money-OUT so gross_value_minor is
+	// NEGATIVE — we NEGATE the sum so bills.paid_value_minor is the POSITIVE amount paid.
+	// The explain service recomputes this inside the explanation's transaction and pushes
+	// it onto bills.paid_value_minor (UpdateBillPaidValue), so the figure is drift-free
+	// across split/edit/re-point/delete. Org-scoped. :one.
+	// -----------------------------------------------------------------------------
+	SumBillPaymentsForBill(ctx context.Context, arg SumBillPaymentsForBillParams) (int64, error)
+	// -----------------------------------------------------------------------------
 	// SumInvoiceReceiptsForInvoice — the total settled against ONE invoice by live
 	// INVOICE_RECEIPT explanations (the new paid_value_minor for that invoice). The
 	// explain service recomputes this inside the same transaction as the explanation
