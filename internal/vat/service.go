@@ -216,7 +216,16 @@ func (s *Service) UpdateSettings(ctx context.Context, authUserID, authOrgID uuid
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-	return vatSettingsToResponse(updated), nil
+	resp := vatSettingsToResponse(updated)
+	if s.hmrc != nil {
+		connected, connectedAt := s.hmrc.IsConnected(ctx, authOrgID)
+		resp.HMRCConnected = connected
+		if connectedAt != nil {
+			ts := connectedAt.Format(time.RFC3339)
+			resp.HMRCConnectedAt = &ts
+		}
+	}
+	return resp, nil
 }
 
 // =============================================================================

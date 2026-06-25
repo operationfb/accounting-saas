@@ -209,7 +209,7 @@ URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value
 gcloud run services update "$SERVICE" --region="$REGION" --update-env-vars="APP_BASE_URL=https://kontala.com"
 echo "Deployed at: $URL"
 ```
-
+gcloud run services update "accounting-saas-dev" --region="europe-west1" --update-env-vars="HMRC_SANDBOX=true"
 ---
 
 ## Verify

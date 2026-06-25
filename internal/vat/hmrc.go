@@ -97,11 +97,15 @@ type hmrcAPIError struct {
 // obligation whose period-end date equals the given periodEnd (YYYY-MM-DD).
 // Returns a 409 AppError if no matching open obligation is found.
 func fetchHMRCObligation(ctx context.Context, client *http.Client, apiBaseURL, vrn, accessToken, periodEnd string) (*hmrcObligation, error) {
-	// Query a 6-year window — wide enough to cover back-filings and the upcoming
-	// period, without overfetching. HMRC /obligations filters by the obligation's
-	// start date falling in [from, to].
-	to := time.Now().AddDate(1, 0, 0).Format("2006-01-02")
-	from := time.Now().AddDate(-5, 0, 0).Format("2006-01-02")
+	// HMRC caps the obligations query window at 366 days. We centre a ~9-month
+	// window on the target period end so we catch any stagger: 200 days before
+	// the period end to 30 days after (total ~230 days — well within the limit).
+	periodTime, err := time.Parse("2006-01-02", periodEnd)
+	if err != nil {
+		return nil, kernel.ErrInternal(fmt.Errorf("parse period end %q: %w", periodEnd, err))
+	}
+	from := periodTime.AddDate(0, 0, -200).Format("2006-01-02")
+	to := periodTime.AddDate(0, 0, 30).Format("2006-01-02")
 
 	u, _ := url.Parse(fmt.Sprintf("%s/%s/obligations", apiBaseURL, vrn))
 	q := u.Query()
