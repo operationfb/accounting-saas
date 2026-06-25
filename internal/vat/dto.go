@@ -110,6 +110,8 @@ type VatReturnLineResponse struct {
 
 // VatSettingsResponse is the JSON returned by GET/PUT /api/v1/vat/settings.
 // Nullable columns are omitempty pointers; the toggles are plain bools.
+// HMRCConnected reflects whether this org has an active HMRC MTD connection
+// (from the integrations table) — used by the SPA to enable the Submit button.
 type VatSettingsResponse struct {
 	VatRegistered        bool    `json:"vat_registered"`
 	Vrn                  *string `json:"vrn,omitempty"`
@@ -121,4 +123,18 @@ type VatSettingsResponse struct {
 	FlatRateScheme       bool    `json:"flat_rate_scheme"`
 	FlatRatePercentage   *string `json:"flat_rate_percentage,omitempty"`
 	PreRegExpenseMonths  *int32  `json:"pre_reg_expense_months,omitempty"`
+
+	HMRCConnected   bool    `json:"hmrc_connected"`
+	HMRCConnectedAt *string `json:"hmrc_connected_at,omitempty"`
+}
+
+// VatSubmitResponse is returned by POST /api/v1/vat/returns/:periodKey/submit
+// after a successful HMRC MTD submission. The form_bundle_number is the HMRC
+// reference the taxpayer should keep; charge_ref_number is present when HMRC
+// issues a payment charge.
+type VatSubmitResponse struct {
+	PeriodKey        string  `json:"period_key"`
+	FormBundleNumber string  `json:"form_bundle_number"`
+	ProcessingDate   string  `json:"processing_date"`
+	ChargeRefNumber  *string `json:"charge_ref_number,omitempty"`
 }

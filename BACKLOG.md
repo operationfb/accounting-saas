@@ -589,3 +589,29 @@ remains is the reconciliation/feed richness:
 - **Encrypt MTD OAuth tokens at rest.** `organisations.mtd_access_token` /
   `mtd_refresh_token` are stored in plaintext; the schema flags encrypting them
   before production. _File: `db/schema/auth_schema.sql`._
+
+## HMRC Making Tax Digital
+
+- **Drop `mtd_*` orphan columns from `organisations`.** `mtd_access_token`,
+  `mtd_refresh_token`, `mtd_token_expires_at`, `is_mtd_vat_enrolled` are
+  placeholder columns never wired up — tokens now live in `organisation_integrations`
+  (provider='hmrc'). Drop them in a clean-up migration.
+  _File: `db/schema/auth_schema.sql`._
+- **HMRC fraud-prevention headers.** Production HMRC APIs require
+  `Gov-Client-Connection-Method`, `Gov-Client-Timezone`, and other headers on
+  every VAT API call (obligations + submit). The sandbox does not enforce them.
+  Add them before live production use. _File: `internal/vat/hmrc.go`._
+- **Register the redirect URI in HMRC Developer Hub.** The sandbox app must have
+  `{API_PUBLIC_URL}/api/v1/hmrc/callback` (and `http://localhost:8080/api/v1/hmrc/callback`
+  for local dev) registered under Applications → Redirect URIs.
+- **Fetch obligations from HMRC in `ListPeriods()`.** Currently periods are
+  generated locally from VAT settings. When HMRC is connected, call
+  `GET /organisations/vat/{vrn}/obligations` and use the real HMRC periods
+  (which carry the correct filing deadlines) instead of local generation.
+  Fall back to local if HMRC is unreachable.
+  _File: `internal/vat/service.go` `ListPeriods()`._
+- **Show `VatReturnDetailView` submit button.** The backend `POST /returns/:periodKey/submit`
+  endpoint is live but the SPA's VAT return detail page does not yet have a
+  "Submit to HMRC" button. Add it alongside "Mark as filed", enabled only when
+  `hmrc_connected=true` from the settings response.
+  _Files: `web/src/views/VatReturnDetailView.vue`, `web/src/services/vat.service.ts`._

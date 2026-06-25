@@ -202,6 +202,53 @@ DO UPDATE SET
     updated_at                  = now();
 
 
+-- name: UpsertVatReturnHmrcFiled :exec
+-- Persists the computed return when submitted online to HMRC. Like
+-- UpsertVatReturnFiled but sets filing_status = 'filed' and also stores
+-- the HMRC response fields (processing date, form bundle number, charge ref).
+-- One live row per (org, period) — re-submission overwrites (ON CONFLICT).
+INSERT INTO vat_returns (
+    organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis,
+    box1_vat_due_sales, box2_vat_due_acquisitions, box3_total_vat_due, box4_vat_reclaimed, box5_net_vat,
+    box6_total_sales_ex_vat, box7_total_purchases_ex_vat, box8_ec_dispatches_ex_vat, box9_ec_acquisitions_ex_vat,
+    filing_due_on, filing_status, filed_at, filed_reference,
+    payment_due_on, payment_amount_due_minor, payment_status,
+    hmrc_processing_date, hmrc_charge_ref, finalised
+) VALUES (
+    sqlc.arg(organisation_id), sqlc.arg(created_by_user_id), sqlc.arg(period_start), sqlc.arg(period_end), sqlc.arg(period_key), sqlc.arg(accounting_basis),
+    sqlc.arg(box1), sqlc.arg(box2), sqlc.arg(box3), sqlc.arg(box4), sqlc.arg(box5),
+    sqlc.arg(box6), sqlc.arg(box7), sqlc.arg(box8), sqlc.arg(box9),
+    sqlc.arg(filing_due_on), 'filed', sqlc.arg(processing_date), sqlc.arg(form_bundle_number),
+    sqlc.arg(payment_due_on), sqlc.arg(payment_amount_due_minor), sqlc.arg(payment_status),
+    sqlc.arg(processing_date), sqlc.arg(charge_ref_number), true
+)
+ON CONFLICT (organisation_id, period_start, period_end) WHERE deleted_at IS NULL
+DO UPDATE SET
+    created_by_user_id          = EXCLUDED.created_by_user_id,
+    period_key                  = EXCLUDED.period_key,
+    accounting_basis            = EXCLUDED.accounting_basis,
+    box1_vat_due_sales          = EXCLUDED.box1_vat_due_sales,
+    box2_vat_due_acquisitions   = EXCLUDED.box2_vat_due_acquisitions,
+    box3_total_vat_due          = EXCLUDED.box3_total_vat_due,
+    box4_vat_reclaimed          = EXCLUDED.box4_vat_reclaimed,
+    box5_net_vat                = EXCLUDED.box5_net_vat,
+    box6_total_sales_ex_vat     = EXCLUDED.box6_total_sales_ex_vat,
+    box7_total_purchases_ex_vat = EXCLUDED.box7_total_purchases_ex_vat,
+    box8_ec_dispatches_ex_vat   = EXCLUDED.box8_ec_dispatches_ex_vat,
+    box9_ec_acquisitions_ex_vat = EXCLUDED.box9_ec_acquisitions_ex_vat,
+    filing_due_on               = EXCLUDED.filing_due_on,
+    filing_status               = 'filed',
+    filed_at                    = EXCLUDED.filed_at,
+    filed_reference             = EXCLUDED.filed_reference,
+    payment_due_on              = EXCLUDED.payment_due_on,
+    payment_amount_due_minor    = EXCLUDED.payment_amount_due_minor,
+    payment_status              = EXCLUDED.payment_status,
+    hmrc_processing_date        = EXCLUDED.hmrc_processing_date,
+    hmrc_charge_ref             = EXCLUDED.hmrc_charge_ref,
+    finalised                   = true,
+    updated_at                  = now();
+
+
 -- name: IsDateInFiledPeriod :one
 -- The lock check: TRUE when `dated_on` falls inside a SUBMITTED (marked_as_filed /
 -- filed / pending) return for the org. The source domains call this in their

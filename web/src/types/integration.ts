@@ -40,3 +40,17 @@ export type FreeAgentPushStatus = z.infer<typeof FreeAgentPushStatusSchema>
 export const GetFreeAgentPushStatusResponseSchema = z.object({
   push: FreeAgentPushStatusSchema,
 })
+
+// HMRC MTD integration status — mirrors integrations.StatusResponse on the backend.
+// Identical shape to FreeAgentStatus (same generic endpoint, different provider slug).
+export const HmrcStatusSchema = z.object({
+  has_credentials: z.boolean(),
+  connected: z.boolean(),
+  connected_at: z.string().nullish(),
+})
+export type HmrcStatus = z.infer<typeof HmrcStatusSchema>
+
+// GET /api/v1/integrations/hmrc → { "integration": {...} }.
+export const GetHmrcStatusResponseSchema = z.object({
+  integration: HmrcStatusSchema,
+})

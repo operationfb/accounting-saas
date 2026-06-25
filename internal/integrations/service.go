@@ -241,6 +241,37 @@ func (s *Service) GetExpensePushStatus(ctx context.Context, authUserID, authOrgI
 }
 
 // =============================================================================
+// CROSS-DOMAIN SEAM (no admin gate — used by other service packages)
+// =============================================================================
+
+// IsConnected reports whether this org has an active connection for this
+// provider. No admin gate — any service may check. Returns the connected-at
+// time when true.
+func (s *Service) IsConnected(ctx context.Context, orgID uuid.UUID) (bool, *time.Time) {
+	row, err := s.iq.GetIntegration(ctx, integrationsdb.GetIntegrationParams{
+		OrganisationID: orgID,
+		Provider:       s.provider,
+	})
+	if err != nil || !row.ConnectedAt.Valid {
+		return false, nil
+	}
+	t := row.ConnectedAt.Time
+	return true, &t
+}
+
+// GetToken returns a valid access token and the provider's API base URL for
+// the given org, refreshing the token server-side if it is near expiry. Returns
+// a 409 AppError when the org is not connected. No admin gate — called by other
+// service packages (e.g. the VAT service for HMRC submissions).
+func (s *Service) GetToken(ctx context.Context, orgID uuid.UUID) (accessToken, apiBaseURL string, err error) {
+	tok, err := s.TokenForOrg(ctx, orgID)
+	if err != nil {
+		return "", "", err
+	}
+	return tok.AccessToken, tok.APIBaseURL, nil
+}
+
+// =============================================================================
 // OAUTH CONNECT FLOW
 // =============================================================================
 

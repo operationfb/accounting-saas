@@ -52,6 +52,7 @@ import (
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
+	hmrc "github.com/operationfb/accounting-saas/internal/integrations/hmrc"
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
@@ -176,7 +177,10 @@ func main() {
 	// (the calculation engine + return screens land in this package later).
 	// Self-registers /api/v1/vat/* after NewServer. (vatQueries was built above — it's
 	// shared with the filed-period lock in expenses/invoices/bills/banking.)
-	vatSvc := vat.NewService(authQueries, vatQueries)
+	// vatSvc is constructed before hmrcIntegrationSvc (which is built in the
+	// integrations block below), so the HMRC seam is injected via SetHMRC after
+	// both are available. The service works with hmrc=nil (hmrc_connected=false).
+	vatSvc := vat.NewService(authQueries, vatQueries, nil /* hmrc set below */)
 
 	// User profile: read/update the caller's own "My Details" (first/last name; the
 	// login email is read-only). Always self-scoped via the token, so no role check.
@@ -359,17 +363,33 @@ func main() {
 	// the client talks to.
 	// -------------------------------------------------------------------------
 	integrationQueries := dbintegrations.New(pool)
-	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
-	faClient := freeagent.NewClient(freeAgentSandbox)
 	// apiPublicURL is OUR backend's externally reachable base URL — it builds the
 	// OAuth redirect_uri the provider sends the browser back to (the BACKEND, distinct
 	// from the frontend appBaseURL). Defaults to the production host so a deployment
 	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
 	// local dev sets it in .env.
 	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
+
+	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
+	faClient := freeagent.NewClient(freeAgentSandbox)
 	integrationSvc := integrations.NewService(integrationQueries, authQueries, faClient, attachmentService, freeagent.MaxAttachmentBytes, freeagent.ProviderKey, tokenMaker, apiPublicURL, appBaseURL)
 	integrationHandler := integrations.NewHandler(integrationSvc, service)
 	log.Printf("FreeAgent integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/%s/callback)", freeAgentSandbox, strings.TrimRight(apiPublicURL, "/"), freeagent.ProviderKey)
+
+	// HMRC Making Tax Digital — OAuth connect + token storage (same pattern as
+	// FreeAgent). The provider_credentials row (provider='hmrc') must exist in the
+	// DB; HMRC_SANDBOX=true points the client at the sandbox host. Submission is
+	// synchronous in-process (no Pub/Sub/Workflow needed — HMRC responds with a form
+	// bundle number immediately). Credentials already in DB via provider_credentials.
+	hmrcSandbox := os.Getenv("HMRC_SANDBOX") == "true"
+	hmrcClient := hmrc.NewClient(hmrcSandbox)
+	hmrcIntegrationSvc := integrations.NewService(integrationQueries, authQueries, hmrcClient, nil, 0, hmrc.ProviderKey, tokenMaker, apiPublicURL, appBaseURL)
+	hmrcIntegrationHandler := integrations.NewHandler(hmrcIntegrationSvc, service)
+	log.Printf("HMRC MTD integration: enabled (sandbox=%v, redirect_uri=%s/api/v1/%s/callback)", hmrcSandbox, strings.TrimRight(apiPublicURL, "/"), hmrc.ProviderKey)
+
+	// Wire the HMRC seam into the VAT service now that both are built.
+	// This is the same late-inject pattern as service.SetPublisher above.
+	vatSvc.SetHMRC(hmrcIntegrationSvc)
 
 	// -------------------------------------------------------------------------
 	// Pub/Sub publisher for the "expense.approved" event (the trigger that drives
@@ -417,6 +437,7 @@ func main() {
 	// per-domain pattern) — after NewServer so the global middleware (CORS) is in
 	// place. Adding a provider is another NewService/NewHandler + these two calls.
 	integrationHandler.RegisterRoutes(server.Router(), tokenMaker)
+	hmrcIntegrationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	integrationHandler.RegisterInternalRoutes(server.Router(), workflowServiceAccount)
 
 	// Currencies: a thin read-only service over the GLOBAL ISO 4217 reference

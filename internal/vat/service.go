@@ -26,6 +26,7 @@ package vat
 import (
 	"context"
 	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -39,6 +40,18 @@ import (
 	"github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/money"
 )
+
+// HMRCConnector is the narrow cross-domain seam from the VAT service to the
+// HMRC integration. Defined here (not in internal/integrations) to avoid a
+// domain import cycle. *integrations.Service satisfies this interface via its
+// IsConnected and GetToken methods added in internal/integrations/service.go.
+type HMRCConnector interface {
+	// IsConnected reports whether this org has an active HMRC OAuth connection.
+	IsConnected(ctx context.Context, orgID uuid.UUID) (bool, *time.Time)
+	// GetToken returns a valid access token and the HMRC VAT API base URL.
+	// Auto-refreshes if the token is near expiry. Returns 409 if not connected.
+	GetToken(ctx context.Context, orgID uuid.UUID) (accessToken, apiBaseURL string, err error)
+}
 
 // The allowed enum sets — defence-in-depth behind the handler's `oneof` binding
 // and the DB CHECK constraints, so the service is correct when called directly
@@ -57,13 +70,29 @@ var vrnDigits = regexp.MustCompile(`^\d{9}$`)
 type Service struct {
 	authQueries auth.Querier
 	queries     *vatdb.Queries
+	// hmrc is the cross-domain seam to the HMRC integration service — used to
+	// check connection status (in GetSettings) and obtain access tokens (in
+	// SubmitReturn). nil when HMRC is not wired (graceful: hmrc_connected = false).
+	hmrc       HMRCConnector
+	httpClient *http.Client
 }
 
 // NewService is the constructor, called once in main.go. authQueries is the shared
 // auth.Querier; queries is the VAT read-query set (db/vat) used by GetReturn.
-func NewService(authQueries auth.Querier, queries *vatdb.Queries) *Service {
-	return &Service{authQueries: authQueries, queries: queries}
+// hmrc may be nil — it disables the HMRC connection check and submission.
+func NewService(authQueries auth.Querier, queries *vatdb.Queries, hmrc HMRCConnector) *Service {
+	return &Service{
+		authQueries: authQueries,
+		queries:     queries,
+		hmrc:        hmrc,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+	}
 }
+
+// SetHMRC wires the HMRC integration seam after construction. Used by main.go
+// because vatSvc is built before hmrcIntegrationSvc in the dependency graph
+// (same pattern as expenses.SetPublisher for the Pub/Sub publisher).
+func (s *Service) SetHMRC(connector HMRCConnector) { s.hmrc = connector }
 
 // authorize confirms the caller is an ACTIVE member and returns their role
 // (the role lets UpdateSettings gate editing to owners/admins).
@@ -76,7 +105,9 @@ func (s *Service) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.
 // =============================================================================
 
 // GetSettings returns the caller's organisation's VAT settings. Any active
-// member may read; the org is taken from the token.
+// member may read; the org is taken from the token. The response includes
+// hmrc_connected — derived live from the integrations table — so the SPA can
+// enable the "Submit to HMRC" button without a separate API call.
 func (s *Service) GetSettings(ctx context.Context, authUserID, authOrgID uuid.UUID) (*VatSettingsResponse, error) {
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
@@ -88,7 +119,20 @@ func (s *Service) GetSettings(ctx context.Context, authUserID, authOrgID uuid.UU
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-	return vatSettingsToResponse(org), nil
+	resp := vatSettingsToResponse(org)
+
+	// Merge the HMRC connection status. The check is a light DB read that never
+	// fails the whole request — if the seam is absent (nil) or the DB errors, we
+	// just leave hmrc_connected=false.
+	if s.hmrc != nil {
+		connected, connectedAt := s.hmrc.IsConnected(ctx, authOrgID)
+		resp.HMRCConnected = connected
+		if connectedAt != nil {
+			ts := connectedAt.Format(time.RFC3339)
+			resp.HMRCConnectedAt = &ts
+		}
+	}
+	return resp, nil
 }
 
 // =============================================================================
@@ -370,6 +414,134 @@ func (s *Service) MarkFiled(ctx context.Context, authUserID, authOrgID uuid.UUID
 
 	resp := buildReturnResponse(period, basis, dateOnlyUTC(time.Now().UTC()), boxes, sales, purchases)
 	resp.DisplayStatus = "Marked as filed"
+	return resp, nil
+}
+
+// =============================================================================
+// SUBMIT TO HMRC — online MTD submission.
+// =============================================================================
+
+// SubmitReturn submits the computed VAT return for a period to HMRC via the
+// Making Tax Digital API, then stores the HMRC response in vat_returns with
+// filing_status = 'filed'. Owner/admin only.
+//
+// Flow:
+//  1. Validate org has a VRN and is VAT-registered.
+//  2. Get HMRC access token (409 if not connected).
+//  3. Fetch HMRC obligations for the VRN, find one matching our period.
+//  4. Compute the 9 boxes from live data.
+//  5. POST the return to HMRC.
+//  6. On success: upsert vat_returns with the HMRC response and return
+//     the form bundle number + processing date to the caller.
+func (s *Service) SubmitReturn(ctx context.Context, authUserID, authOrgID uuid.UUID, periodKey string) (*VatSubmitResponse, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !kernel.IsOrgAdmin(role) {
+		return nil, kernel.ErrForbidden("only owners and admins can submit a VAT return to HMRC")
+	}
+
+	org, err := s.loadOrg(ctx, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !org.VatRegistered || !org.Vrn.Valid || org.Vrn.String == "" {
+		return nil, kernel.ErrValidation("a VAT registration number (VRN) must be set before submitting to HMRC", nil)
+	}
+	vrn := org.Vrn.String
+
+	// Get HMRC access token — 409 if not connected; auto-refreshes if near expiry.
+	if s.hmrc == nil {
+		return nil, kernel.ErrConflict("HMRC connection is not configured")
+	}
+	accessToken, apiBaseURL, err := s.hmrc.GetToken(ctx, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	period, err := s.resolvePeriod(org, periodKey)
+	if err != nil {
+		return nil, err
+	}
+	if !period.End.Before(dateOnlyUTC(time.Now().UTC())) {
+		return nil, kernel.ErrValidation("the period has not ended yet and cannot be submitted", nil)
+	}
+
+	// Find the HMRC obligation for this period — provides the HMRC periodKey
+	// (e.g. "18A1") required in the submission body.
+	obligation, err := fetchHMRCObligation(ctx, s.httpClient, apiBaseURL, vrn, accessToken, periodKey)
+	if err != nil {
+		return nil, err
+	}
+
+	basis := accountingBasis(org)
+	boxes, _, _, err := s.computeBoxes(ctx, authOrgID, basis, period)
+	if err != nil {
+		return nil, err
+	}
+
+	// POST to HMRC. hmrc.go converts pence boxes to the pound/whole-pound values
+	// the API expects.
+	hmrcResp, err := postHMRCReturn(ctx, s.httpClient, apiBaseURL, vrn, accessToken, obligation.PeriodKey, boxes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse HMRC's processingDate (ISO8601) to a timestamptz for DB storage.
+	processingTime, err := time.Parse(time.RFC3339, hmrcResp.ProcessingDate)
+	if err != nil {
+		// Some HMRC sandbox responses use millisecond precision.
+		processingTime, err = time.Parse("2006-01-02T15:04:05.999Z07:00", hmrcResp.ProcessingDate)
+		if err != nil {
+			// If we still can't parse it, fall back to now so the DB write doesn't fail.
+			processingTime = time.Now().UTC()
+		}
+	}
+
+	var paymentStatus pgtype.Text
+	if boxes.Box5 > 0 {
+		paymentStatus = pgtype.Text{String: "unpaid", Valid: true}
+	}
+	chargeRef := pgtype.Text{String: hmrcResp.ChargeRefNumber, Valid: hmrcResp.ChargeRefNumber != ""}
+	bundleNum := pgtype.Text{String: hmrcResp.FormBundleNumber, Valid: hmrcResp.FormBundleNumber != ""}
+
+	if err := s.queries.UpsertVatReturnHmrcFiled(ctx, vatdb.UpsertVatReturnHmrcFiledParams{
+		OrganisationID:        authOrgID,
+		CreatedByUserID:       pgtype.UUID{Bytes: authUserID, Valid: true},
+		PeriodStart:           pgtype.Date{Time: period.Start, Valid: true},
+		PeriodEnd:             pgtype.Date{Time: period.End, Valid: true},
+		PeriodKey:             periodKey,
+		AccountingBasis:       basis,
+		Box1:                  boxes.Box1,
+		Box2:                  boxes.Box2,
+		Box3:                  boxes.Box3,
+		Box4:                  boxes.Box4,
+		Box5:                  boxes.Box5,
+		Box6:                  boxes.Box6,
+		Box7:                  boxes.Box7,
+		Box8:                  boxes.Box8,
+		Box9:                  boxes.Box9,
+		FilingDueOn:           pgtype.Date{Time: period.Due, Valid: true},
+		ProcessingDate:        pgtype.Timestamptz{Time: processingTime, Valid: true},
+		FormBundleNumber:      bundleNum,
+		PaymentDueOn:          pgtype.Date{Time: period.Due, Valid: true},
+		PaymentAmountDueMinor: pgtype.Int8{Int64: boxes.Box5, Valid: true},
+		PaymentStatus:         paymentStatus,
+		ChargeRefNumber:       chargeRef,
+	}); err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	resp := &VatSubmitResponse{
+		PeriodKey:        periodKey,
+		FormBundleNumber: hmrcResp.FormBundleNumber,
+		ProcessingDate:   hmrcResp.ProcessingDate,
+	}
+	if hmrcResp.ChargeRefNumber != "" {
+		s := hmrcResp.ChargeRefNumber
+		resp.ChargeRefNumber = &s
+	}
 	return resp, nil
 }
 

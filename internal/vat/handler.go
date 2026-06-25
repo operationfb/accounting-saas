@@ -41,6 +41,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.GET("/periods", h.ListPeriods)
 		g.GET("/returns/:periodKey", h.GetReturn)
 		g.POST("/returns/:periodKey/mark-filed", h.MarkFiled)
+		g.POST("/returns/:periodKey/submit", h.SubmitReturn)
 	}
 }
 
@@ -104,4 +105,17 @@ func (h *Handler) MarkFiled(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"vat_return": ret})
+}
+
+// SubmitReturn handles POST /api/v1/vat/returns/:periodKey/submit — submits the
+// return to HMRC via Making Tax Digital, stores the HMRC form bundle number, and
+// returns the HMRC acknowledgement. Owner/admin only; requires an active HMRC
+// connection (GET /api/v1/integrations/hmrc must show connected: true).
+func (h *Handler) SubmitReturn(c *gin.Context) {
+	resp, err := h.svc.SubmitReturn(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("periodKey"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"submission": resp})
 }

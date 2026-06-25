@@ -207,7 +207,7 @@ func newTestServer(t *testing.T) *testServer {
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries)
 	memberSvc := members.NewService(authQueries)
 	organisationSvc := organisation.NewService(authQueries)
-	vatSvc := vat.NewService(authQueries, vatQueries)
+	vatSvc := vat.NewService(authQueries, vatQueries, nil /* HMRC not wired in tests */)
 	userSvc := userauth.NewService(authQueries)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature

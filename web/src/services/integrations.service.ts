@@ -1,10 +1,12 @@
 import { apiFetch } from '@/lib/api'
 import {
   GetFreeAgentStatusResponseSchema,
+  GetHmrcStatusResponseSchema,
   ConnectResponseSchema,
   GetFreeAgentPushStatusResponseSchema,
   type FreeAgentStatus,
   type FreeAgentPushStatus,
+  type HmrcStatus,
 } from '@/types/integration'
 
 // GET /api/v1/integrations/freeagent — the org's FreeAgent connection status. The
@@ -47,4 +49,28 @@ export async function repushExpense(expenseId: string): Promise<void> {
     `/integrations/freeagent/expenses/${encodeURIComponent(expenseId)}/push`,
     { method: 'POST' },
   )
+}
+
+// =============================================================================
+// HMRC Making Tax Digital
+// =============================================================================
+
+// GET /api/v1/integrations/hmrc — the org's HMRC MTD connection status.
+// Owner/admin only. Identical structure to getFreeAgentStatus.
+export async function getHmrcStatus(): Promise<HmrcStatus> {
+  const data = await apiFetch<unknown>('/integrations/hmrc', { method: 'GET' })
+  return GetHmrcStatusResponseSchema.parse(data).integration
+}
+
+// DELETE /api/v1/integrations/hmrc — disconnect this org's HMRC tokens.
+// Owner/admin only. Idempotent.
+export async function disconnectHmrc(): Promise<void> {
+  await apiFetch<unknown>('/integrations/hmrc', { method: 'DELETE' })
+}
+
+// GET /api/v1/hmrc/connect — the HMRC authorize URL to navigate to.
+// Owner/admin only; a 422 means HMRC isn't configured (no app credentials in DB).
+export async function getHmrcConnectUrl(): Promise<string> {
+  const data = await apiFetch<unknown>('/hmrc/connect', { method: 'GET' })
+  return ConnectResponseSchema.parse(data).authorize_url
 }

@@ -655,3 +655,103 @@ func (q *Queries) UpsertVatReturnFiled(ctx context.Context, arg UpsertVatReturnF
 	)
 	return err
 }
+
+const upsertVatReturnHmrcFiled = `-- name: UpsertVatReturnHmrcFiled :exec
+INSERT INTO vat_returns (
+    organisation_id, created_by_user_id, period_start, period_end, period_key, accounting_basis,
+    box1_vat_due_sales, box2_vat_due_acquisitions, box3_total_vat_due, box4_vat_reclaimed, box5_net_vat,
+    box6_total_sales_ex_vat, box7_total_purchases_ex_vat, box8_ec_dispatches_ex_vat, box9_ec_acquisitions_ex_vat,
+    filing_due_on, filing_status, filed_at, filed_reference,
+    payment_due_on, payment_amount_due_minor, payment_status,
+    hmrc_processing_date, hmrc_charge_ref, finalised
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, $10, $11,
+    $12, $13, $14, $15,
+    $16, 'filed', $17, $18,
+    $19, $20, $21,
+    $17, $22, true
+)
+ON CONFLICT (organisation_id, period_start, period_end) WHERE deleted_at IS NULL
+DO UPDATE SET
+    created_by_user_id          = EXCLUDED.created_by_user_id,
+    period_key                  = EXCLUDED.period_key,
+    accounting_basis            = EXCLUDED.accounting_basis,
+    box1_vat_due_sales          = EXCLUDED.box1_vat_due_sales,
+    box2_vat_due_acquisitions   = EXCLUDED.box2_vat_due_acquisitions,
+    box3_total_vat_due          = EXCLUDED.box3_total_vat_due,
+    box4_vat_reclaimed          = EXCLUDED.box4_vat_reclaimed,
+    box5_net_vat                = EXCLUDED.box5_net_vat,
+    box6_total_sales_ex_vat     = EXCLUDED.box6_total_sales_ex_vat,
+    box7_total_purchases_ex_vat = EXCLUDED.box7_total_purchases_ex_vat,
+    box8_ec_dispatches_ex_vat   = EXCLUDED.box8_ec_dispatches_ex_vat,
+    box9_ec_acquisitions_ex_vat = EXCLUDED.box9_ec_acquisitions_ex_vat,
+    filing_due_on               = EXCLUDED.filing_due_on,
+    filing_status               = 'filed',
+    filed_at                    = EXCLUDED.filed_at,
+    filed_reference             = EXCLUDED.filed_reference,
+    payment_due_on              = EXCLUDED.payment_due_on,
+    payment_amount_due_minor    = EXCLUDED.payment_amount_due_minor,
+    payment_status              = EXCLUDED.payment_status,
+    hmrc_processing_date        = EXCLUDED.hmrc_processing_date,
+    hmrc_charge_ref             = EXCLUDED.hmrc_charge_ref,
+    finalised                   = true,
+    updated_at                  = now()
+`
+
+type UpsertVatReturnHmrcFiledParams struct {
+	OrganisationID        uuid.UUID          `json:"organisation_id"`
+	CreatedByUserID       pgtype.UUID        `json:"created_by_user_id"`
+	PeriodStart           pgtype.Date        `json:"period_start"`
+	PeriodEnd             pgtype.Date        `json:"period_end"`
+	PeriodKey             string             `json:"period_key"`
+	AccountingBasis       string             `json:"accounting_basis"`
+	Box1                  int64              `json:"box1"`
+	Box2                  int64              `json:"box2"`
+	Box3                  int64              `json:"box3"`
+	Box4                  int64              `json:"box4"`
+	Box5                  int64              `json:"box5"`
+	Box6                  int64              `json:"box6"`
+	Box7                  int64              `json:"box7"`
+	Box8                  int64              `json:"box8"`
+	Box9                  int64              `json:"box9"`
+	FilingDueOn           pgtype.Date        `json:"filing_due_on"`
+	ProcessingDate        pgtype.Timestamptz `json:"processing_date"`
+	FormBundleNumber      pgtype.Text        `json:"form_bundle_number"`
+	PaymentDueOn          pgtype.Date        `json:"payment_due_on"`
+	PaymentAmountDueMinor pgtype.Int8        `json:"payment_amount_due_minor"`
+	PaymentStatus         pgtype.Text        `json:"payment_status"`
+	ChargeRefNumber       pgtype.Text        `json:"charge_ref_number"`
+}
+
+// Persists the computed return when submitted online to HMRC. Like
+// UpsertVatReturnFiled but sets filing_status = 'filed' and also stores
+// the HMRC response fields (processing date, form bundle number, charge ref).
+// One live row per (org, period) — re-submission overwrites (ON CONFLICT).
+func (q *Queries) UpsertVatReturnHmrcFiled(ctx context.Context, arg UpsertVatReturnHmrcFiledParams) error {
+	_, err := q.db.Exec(ctx, upsertVatReturnHmrcFiled,
+		arg.OrganisationID,
+		arg.CreatedByUserID,
+		arg.PeriodStart,
+		arg.PeriodEnd,
+		arg.PeriodKey,
+		arg.AccountingBasis,
+		arg.Box1,
+		arg.Box2,
+		arg.Box3,
+		arg.Box4,
+		arg.Box5,
+		arg.Box6,
+		arg.Box7,
+		arg.Box8,
+		arg.Box9,
+		arg.FilingDueOn,
+		arg.ProcessingDate,
+		arg.FormBundleNumber,
+		arg.PaymentDueOn,
+		arg.PaymentAmountDueMinor,
+		arg.PaymentStatus,
+		arg.ChargeRefNumber,
+	)
+	return err
+}

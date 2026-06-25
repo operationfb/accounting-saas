@@ -91,6 +91,11 @@ type Querier interface {
 	// unique index). The boxes are passed in already-computed (pence); filed_at is set
 	// by the DB. Once written, the period is locked (see IsDateInFiledPeriod).
 	UpsertVatReturnFiled(ctx context.Context, arg UpsertVatReturnFiledParams) error
+	// Persists the computed return when submitted online to HMRC. Like
+	// UpsertVatReturnFiled but sets filing_status = 'filed' and also stores
+	// the HMRC response fields (processing date, form bundle number, charge ref).
+	// One live row per (org, period) — re-submission overwrites (ON CONFLICT).
+	UpsertVatReturnHmrcFiled(ctx context.Context, arg UpsertVatReturnHmrcFiledParams) error
 }
 
 var _ Querier = (*Queries)(nil)
