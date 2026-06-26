@@ -98,8 +98,12 @@ type VatReturnResponse struct {
 }
 
 // VatReturnLineResponse is one contributing transaction in the Full Report. Money
-// is exact 2dp pound strings (the box totals do the whole-pound rounding).
+// is exact 2dp pound strings (the box totals do the whole-pound rounding). ID is the
+// underlying record's UUID — present for expense/invoice/bill lines (so the SPA can
+// link each to its detail view), omitted for bank/cash lines that have no single
+// addressable record.
 type VatReturnLineResponse struct {
+	ID          string `json:"id,omitempty"`
 	Date        string `json:"date"`
 	Source      string `json:"source"` // invoice | expense | bill | bank
 	Description string `json:"description"`

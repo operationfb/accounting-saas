@@ -8,7 +8,7 @@
 // figures are read-only; "Mark as filed" snapshots the return and LOCKS the period
 // (records dated inside it can no longer be changed). Online HMRC filing is a later slice.
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
+import { useRoute, RouterLink, type RouteLocationRaw } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import AppLayout from '@/layouts/AppLayout.vue'
@@ -23,7 +23,7 @@ import {
 import { formatMoney, formatDate } from '@/lib/format'
 import { prewarmFraudSignals } from '@/lib/fraudSignals'
 import { vatStatusClass } from '@/lib/vatStatus'
-import type { VatReturn, VatSubmitResponse } from '@/types/vat'
+import type { VatReturn, VatReturnLine, VatSubmitResponse } from '@/types/vat'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
@@ -158,6 +158,24 @@ const boxes = computed(() => {
 const basisLabel = computed(() => (ret.value?.accounting_basis === 'cash' ? 'Cash basis' : 'Invoice'))
 const salesLines = computed(() => ret.value?.sales_lines ?? [])
 const purchaseLines = computed(() => ret.value?.purchase_lines ?? [])
+
+// lineLink maps a Full Report line to its source record's detail route, so the row
+// is clickable. Only expense/invoice/bill carry an id from the backend (bank/cash
+// lines have no single addressable record); bills have no read-only detail view, so
+// they open the edit screen. Returns null → the row renders as plain text.
+function lineLink(line: VatReturnLine): RouteLocationRaw | null {
+  if (!line.id) return null
+  switch (line.source) {
+    case 'expense':
+      return { name: 'expense-detail', params: { id: line.id } }
+    case 'invoice':
+      return { name: 'invoice-detail', params: { id: line.id } }
+    case 'bill':
+      return { name: 'bill-edit', params: { id: line.id } }
+    default:
+      return null
+  }
+}
 
 async function load() {
   loading.value = true
@@ -395,7 +413,15 @@ onMounted(() => {
                       <td class="border-b border-[#eef1f4] px-4 py-2.5 text-fa-muted">
                         {{ formatDate(l.date) }}
                       </td>
-                      <td class="border-b border-[#eef1f4] px-4 py-2.5">{{ l.description }}</td>
+                      <td class="border-b border-[#eef1f4] px-4 py-2.5">
+                        <RouterLink
+                          v-if="lineLink(l)"
+                          :to="lineLink(l)!"
+                          class="font-semibold text-fa-blue hover:underline"
+                          >{{ l.description }}</RouterLink
+                        >
+                        <span v-else>{{ l.description }}</span>
+                      </td>
                       <td class="border-b border-[#eef1f4] px-4 py-2.5 text-right tabular-nums">
                         {{ formatMoney(l.vat) }}
                       </td>
@@ -438,7 +464,15 @@ onMounted(() => {
                       <td class="border-b border-[#eef1f4] px-4 py-2.5 text-fa-muted">
                         {{ formatDate(l.date) }}
                       </td>
-                      <td class="border-b border-[#eef1f4] px-4 py-2.5">{{ l.description }}</td>
+                      <td class="border-b border-[#eef1f4] px-4 py-2.5">
+                        <RouterLink
+                          v-if="lineLink(l)"
+                          :to="lineLink(l)!"
+                          class="font-semibold text-fa-blue hover:underline"
+                          >{{ l.description }}</RouterLink
+                        >
+                        <span v-else>{{ l.description }}</span>
+                      </td>
                       <td class="border-b border-[#eef1f4] px-4 py-2.5 text-right tabular-nums">
                         {{ formatMoney(l.vat) }}
                       </td>

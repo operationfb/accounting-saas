@@ -55,7 +55,10 @@ export const ListVatPeriodsResponseSchema = z.object({
 // --- the computed VAT return (GET /api/v1/vat/returns/:periodKey) ---
 
 // One contributing transaction in the Full Report. Money is exact 2dp pound strings.
+// `id` is the underlying record's UUID — present for expense/invoice/bill lines (so
+// the row can link to its detail view), absent for bank/cash lines.
 export const VatReturnLineSchema = z.object({
+  id: z.string().nullish(),
   date: z.string(),
   source: z.string(), // invoice | expense | bill | bank
   description: z.string(),

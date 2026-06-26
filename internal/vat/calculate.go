@@ -57,7 +57,11 @@ type vatBoxes struct {
 
 // vatLine is one normalised contributing transaction. The display fields feed the
 // Full Report; (Direction, VatStatus, EcStatus, NetMinor, VatMinor) feed the boxes.
+// ID is the underlying record's UUID, set only for sources that have a detail
+// route (expense/invoice/bill) so the Full Report can link each line to it; "" for
+// bank/cash lines, which have no single addressable record.
 type vatLine struct {
+	ID          string // underlying record UUID ("" = not linkable)
 	Date        string // YYYY-MM-DD
 	Source      string // "invoice" | "expense" | "bill" | "bank"
 	Description string
@@ -205,6 +209,7 @@ func computeReturnCash(
 func invoiceToLine(r vatdb.ListInvoicesForVatReturnRow) vatLine {
 	ref := textOr(r.Reference, "")
 	return vatLine{
+		ID:          r.ID.String(),
 		Date:        dateStr(r.DatedOn),
 		Source:      "invoice",
 		Description: descOr(ref, "Invoice"),
@@ -220,6 +225,7 @@ func invoiceToLine(r vatdb.ListInvoicesForVatReturnRow) vatLine {
 func billToLine(r vatdb.ListBillsForVatReturnRow) vatLine {
 	ref := textOr(r.Reference, "")
 	return vatLine{
+		ID:          r.ID.String(),
 		Date:        dateStr(r.DatedOn),
 		Source:      "bill",
 		Description: descOr(textOr(r.Comments, ""), descOr(ref, "Bill")),
@@ -238,6 +244,7 @@ func expenseToLine(r vatdb.ListExpensesForVatReturnRow) vatLine {
 	// Expenses are stored POSITIVE (the entered VAT-inclusive amount), like a bill,
 	// so net = gross − vat as-is. (A refund/credit, stored negative, then nets.)
 	return vatLine{
+		ID:          r.ID.String(),
 		Date:        dateStr(r.DatedOn),
 		Source:      "expense",
 		Description: descOr(r.Description, r.CategoryName),
@@ -380,6 +387,7 @@ func linesToResponse(lines []vatLine) []VatReturnLineResponse {
 	out := make([]VatReturnLineResponse, 0, len(lines))
 	for _, l := range lines {
 		out = append(out, VatReturnLineResponse{
+			ID:          l.ID,
 			Date:        l.Date,
 			Source:      l.Source,
 			Description: l.Description,

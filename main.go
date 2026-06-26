@@ -368,7 +368,7 @@ func main() {
 	// from the frontend appBaseURL). Defaults to the production host so a deployment
 	// that omits API_PUBLIC_URL degrades to the live host rather than localhost;
 	// local dev sets it in .env.
-	apiPublicURL := envOr("API_PUBLIC_URL", "https://kontala.com")
+	apiPublicURL := envOr("API_PUBLIC_URL", "https://app.kontala.com")
 
 	freeAgentSandbox := os.Getenv("FREEAGENT_SANDBOX") == "true"
 	faClient := freeagent.NewClient(freeAgentSandbox)

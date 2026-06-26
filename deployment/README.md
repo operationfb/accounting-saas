@@ -206,7 +206,7 @@ resolves to a real SPA route. Set it after the first deploy:
 
 ```bash
 URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
-gcloud run services update "$SERVICE" --region="$REGION" --update-env-vars="APP_BASE_URL=https://kontala.com"
+gcloud run services update "$SERVICE" --region="$REGION" --update-env-vars="APP_BASE_URL=https://app.kontala.com"
 echo "Deployed at: $URL"
 ```
 gcloud run services update "accounting-saas-dev" --region="europe-west1" --update-env-vars="HMRC_SANDBOX=true"

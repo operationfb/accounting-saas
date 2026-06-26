@@ -27,8 +27,11 @@ main:
   steps:
     - init:
         assign:
-          # ↓↓↓ REPLACE with the monolith's Cloud Run URL (no trailing slash). ↓↓↓
-          - MONOLITH: "https://kontala.com"
+          # The deployed monolith's base URL (API + SPA), no trailing slash. This
+          # is the API host app.kontala.com — NOT the marketing apex kontala.com,
+          # which answers /internal/v1/* with index.html (200 text/html) and so
+          # breaks the JSON body lookups below (see the assertExpenseJson guard).
+          - MONOLITH: "https://app.kontala.com"
           # Eventarc delivers the Pub/Sub message base64-encoded in event.data.message.data.
           - msg: ${json.decode(base64.decode(event.data.message.data))}
           - org: ${msg.organisation_id}
@@ -42,6 +45,19 @@ main:
           auth:
             type: OIDC
         result: exp
+
+    # ---- 1a. Guard: the /internal response MUST be JSON. ------------------------
+    #     If MONOLITH ever points at the SPA / marketing host by mistake, that host
+    #     answers /internal/v1/* with index.html (HTTP 200, text/html). Cloud
+    #     Workflows only parses a body into a dictionary when the Content-Type is
+    #     application/json — otherwise exp.body stays a STRING, and the dict lookups
+    #     below fail with the cryptic "in lookup, expecting dictionary, got: str".
+    #     Catch that here and fail with an actionable message instead. (Header key
+    #     casing varies, so we check both "Content-Type" and "content-type".)
+    - assertExpenseJson:
+        switch:
+          - condition: ${not(text.match_regex(text.to_lower(default(map.get(exp.headers, "Content-Type"), default(map.get(exp.headers, "content-type"), ""))), "application/json"))}
+            raise: "freeagent-push: /internal/v1/expenses returned a non-JSON response (Content-Type was not application/json) — MONOLITH is likely pointing at the SPA/marketing host instead of the API host. Check the MONOLITH constant in this workflow."
 
     - skipIfAlreadyPushed:
         switch:
