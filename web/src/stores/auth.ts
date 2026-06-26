@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { Organisation, User } from '@/types/auth'
 import { login as loginRequest } from '@/services/auth.service'
+import { resetFraudSignals } from '@/lib/fraudSignals'
 
 // One JSON blob persisted under this key, in local- OR sessionStorage.
 const STORAGE_KEY = 'auth'
@@ -143,6 +144,9 @@ export const useAuthStore = defineStore('auth', {
       this.expiresAt = null
       localStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(STORAGE_KEY)
+      // Drop the in-memory HMRC fraud-signal pack so a different user on this tab
+      // rebuilds it (the persisted device id is intentionally kept).
+      resetFraudSignals()
     },
 
     // Re-hydrate from storage on app boot (local first, then session).

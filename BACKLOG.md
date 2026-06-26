@@ -597,10 +597,22 @@ remains is the reconciliation/feed richness:
   placeholder columns never wired up — tokens now live in `organisation_integrations`
   (provider='hmrc'). Drop them in a clean-up migration.
   _File: `db/schema/auth_schema.sql`._
-- **HMRC fraud-prevention headers.** Production HMRC APIs require
-  `Gov-Client-Connection-Method`, `Gov-Client-Timezone`, and other headers on
-  every VAT API call (obligations + submit). The sandbox does not enforce them.
-  Add them before live production use. _File: `internal/vat/hmrc.go`._
+- **HMRC fraud-prevention headers — DONE for the data APIs; Phase-2 items remain.**
+  The full `WEB_APP_VIA_SERVER` header set is now assembled per request (`internal/vat/fraud.go`,
+  browser signals via `web/src/lib/fraudSignals.ts`) and applied to every HMRC data call
+  (submit + dashboard + reconcile), validated against HMRC's Test Fraud Prevention Headers
+  API (no errors). Still to do before/at production:
+  - **Provision Cloud Run static egress** + set `HMRC_VENDOR_PUBLIC_IP` (blank today, so
+    `Gov-Vendor-Public-IP`/`Gov-Vendor-Forwarded` are omitted).
+  - **`Gov-Client-Public-Port` behind the proxy.** We derive it from `RemoteAddr` — correct
+    for a direct connection, but behind Cloud Run's proxy that's the proxy's port, not the
+    user's. HMRC documents this private-network case as "contact us to explain".
+  - **Inform HMRC of the two legitimate omissions:** `Gov-Client-Multi-Factor` (we're
+    single-factor email+password) and `Gov-Vendor-License-IDs` (no vendor licences). Both
+    are HMRC warnings that need a written explanation at onboarding, not code.
+  - **Fraud headers on the OAuth token calls** (`internal/integrations/hmrc/client.go`
+    `postToken`): the connect/callback are browser redirects (no `X-Client-Fraud-Signals`)
+    and refresh runs server-side; best-effort headers there are deferred.
 - **Register the redirect URI in HMRC Developer Hub.** The sandbox app must have
   `{API_PUBLIC_URL}/api/v1/hmrc/callback` (and `http://localhost:8080/api/v1/hmrc/callback`
   for local dev) registered under Applications → Redirect URIs.

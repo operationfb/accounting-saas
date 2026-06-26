@@ -21,6 +21,7 @@ import {
   submitVatReturn,
 } from '@/services/vat.service'
 import { formatMoney, formatDate } from '@/lib/format'
+import { prewarmFraudSignals } from '@/lib/fraudSignals'
 import { vatStatusClass } from '@/lib/vatStatus'
 import type { VatReturn, VatSubmitResponse } from '@/types/vat'
 import type { ApiError } from '@/lib/api'
@@ -82,6 +83,9 @@ async function markFiled() {
 function openDeclaration() {
   submitError.value = ''
   showDeclaration.value = true
+  // Pre-warm the HMRC fraud-prevention signals while the user reads the declaration,
+  // so "Agree and submit" doesn't wait on the WebRTC local-IP gather.
+  prewarmFraudSignals()
 }
 
 // confirmSubmit fires the actual HMRC submission after the user agrees to the

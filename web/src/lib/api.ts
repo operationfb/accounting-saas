@@ -11,6 +11,7 @@
 // fully initialised by the time a request actually runs.
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
+import { getFraudSignals } from '@/lib/fraudSignals'
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) ?? '/api/v1'
 
@@ -30,13 +31,17 @@ export interface RequestOptions {
   // Skip the global 401 → logout+redirect. The login call sets this true, so a
   // 401 there (bad credentials) is shown on the form instead of bouncing.
   skipAuthRedirect?: boolean
+  // Attach the HMRC fraud-prevention browser signals (X-Client-Fraud-Signals). Set
+  // only on calls that reach HMRC (the VAT submit + dashboard + reconcile endpoints).
+  fraudHeaders?: boolean
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, auth = true, skipAuthRedirect = false } = options
+  const { method = 'GET', body, auth = true, skipAuthRedirect = false, fraudHeaders = false } = options
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (auth) attachBearer(headers)
+  if (fraudHeaders) await attachFraudSignals(headers)
 
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
@@ -117,6 +122,17 @@ export async function apiDownload(
 function attachBearer(headers: Record<string, string>): void {
   const token = useAuthStore().token
   if (token) headers.Authorization = `Bearer ${token}`
+}
+
+// Attach the consolidated HMRC fraud-prevention signals header. Best-effort: a
+// collection failure must never block the API call (the server still sends the
+// values it can derive itself), so we swallow errors here.
+async function attachFraudSignals(headers: Record<string, string>): Promise<void> {
+  try {
+    headers['X-Client-Fraud-Signals'] = JSON.stringify(await getFraudSignals())
+  } catch {
+    /* ignore — server-side fraud headers still apply */
+  }
 }
 
 // Shared response handling for apiFetch + apiUpload: parse the (possibly empty)

@@ -21,20 +21,25 @@ import (
 
 // Handler is the HTTP boundary for the VAT endpoints.
 type Handler struct {
-	svc *Service
+	svc   *Service
+	fraud FraudConfig
 }
 
-// NewHandler builds the Handler.
-func NewHandler(svc *Service) *Handler {
-	return &Handler{svc: svc}
+// NewHandler builds the Handler. fraud carries the static HMRC fraud-prevention
+// vendor identity (product/version/egress IP); the per-request bits are derived in
+// fraudHeadersMiddleware.
+func NewHandler(svc *Service, fraud FraudConfig) *Handler {
+	return &Handler{svc: svc, fraud: fraud}
 }
 
 // RegisterRoutes mounts the VAT routes behind bearer-token auth. The settings are
 // a singleton resource (the org comes from the token), so there is no id in the
-// path.
+// path. fraudHeadersMiddleware runs after auth (it needs the user id) and assembles
+// the HMRC Gov-* headers into the request context for the HMRC-calling routes.
 func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 	g := r.Group("/api/v1/vat")
 	g.Use(kernel.AuthMiddleware(tokenMaker))
+	g.Use(fraudHeadersMiddleware(h.fraud))
 	{
 		g.GET("/settings", h.GetSettings)
 		g.PUT("/settings", h.UpdateSettings)

@@ -258,7 +258,7 @@ func newTestServer(t *testing.T) *testServer {
 	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
-	vat.NewHandler(vatSvc).RegisterRoutes(server.Router(), tokenMaker)
+	vat.NewHandler(vatSvc, vat.FraudConfig{}).RegisterRoutes(server.Router(), tokenMaker)
 
 	return &testServer{
 		server:              server,

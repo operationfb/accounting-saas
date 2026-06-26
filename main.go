@@ -477,7 +477,17 @@ func main() {
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
-	vat.NewHandler(vatSvc).RegisterRoutes(server.Router(), tokenMaker)
+	// HMRC fraud-prevention vendor identity (static half of the Gov-* headers; the
+	// per-request half is derived in the VAT fraud middleware). HMRC_VENDOR_PUBLIC_IP
+	// is our Cloud Run static-egress IP — blank until provisioned, in which case the
+	// vendor-IP-derived headers are omitted rather than sent wrong.
+	fraudConfig := vat.FraudConfig{
+		ProductName:      envOr("HMRC_VENDOR_PRODUCT_NAME", "Kontala"),
+		Version:          envOr("HMRC_VENDOR_VERSION", "0.0.0"),
+		VendorPublicIP:   os.Getenv("HMRC_VENDOR_PUBLIC_IP"),
+		ConnectionMethod: envOr("HMRC_CONNECTION_METHOD", "WEB_APP_VIA_SERVER"),
+	}
+	vat.NewHandler(vatSvc, fraudConfig).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

@@ -84,7 +84,7 @@ export async function markVatReturnFiled(periodKey: string): Promise<VatReturn> 
 export async function submitVatReturn(periodKey: string): Promise<VatSubmitResponse> {
   const data = await apiFetch<unknown>(
     `/vat/returns/${encodeURIComponent(periodKey)}/submit`,
-    { method: 'POST' },
+    { method: 'POST', fraudHeaders: true },
   )
   return SubmitVatReturnResponseSchema.parse(data).submission
 }
@@ -93,7 +93,7 @@ export async function submitVatReturn(periodKey: string): Promise<VatSubmitRespo
 // line up with HMRC's obligations? Drives the post-connect reconciliation modal.
 // OWNER/ADMIN only; fails open (applicable=false) when there's nothing to compare.
 export async function checkHmrcPeriods(): Promise<VatPeriodCheck> {
-  const data = await apiFetch<unknown>('/vat/hmrc/period-check', { method: 'GET' })
+  const data = await apiFetch<unknown>('/vat/hmrc/period-check', { method: 'GET', fraudHeaders: true })
   return GetVatPeriodCheckResponseSchema.parse(data).period_check
 }
 
@@ -101,7 +101,7 @@ export async function checkHmrcPeriods(): Promise<VatPeriodCheck> {
 // match HMRC's obligations (the modal's "Adjust to match HMRC" action). OWNER/ADMIN
 // only. Returns the updated settings.
 export async function syncHmrcPeriods(): Promise<VatSettings> {
-  const data = await apiFetch<unknown>('/vat/hmrc/period-sync', { method: 'POST' })
+  const data = await apiFetch<unknown>('/vat/hmrc/period-sync', { method: 'POST', fraudHeaders: true })
   return GetVatSettingsResponseSchema.parse(data).vat_settings
 }
 
@@ -115,7 +115,7 @@ export async function syncHmrcPeriods(): Promise<VatSettings> {
 // Optional status filter: "O" (open) or "F" (fulfilled).
 export async function getHmrcObligations(status?: 'O' | 'F'): Promise<HmrcObligation[]> {
   const qs = status ? `?status=${status}` : ''
-  const data = await apiFetch<unknown>(`/vat/hmrc/obligations${qs}`, { method: 'GET' })
+  const data = await apiFetch<unknown>(`/vat/hmrc/obligations${qs}`, { method: 'GET', fraudHeaders: true })
   return ListHmrcObligationsResponseSchema.parse(data).obligations ?? []
 }
 
@@ -123,25 +123,26 @@ export async function getHmrcObligations(status?: 'O' | 'F'): Promise<HmrcObliga
 export async function getHmrcReturn(periodKey: string): Promise<HmrcReturn> {
   const data = await apiFetch<unknown>(`/vat/hmrc/returns/${encodeURIComponent(periodKey)}`, {
     method: 'GET',
+    fraudHeaders: true,
   })
   return GetHmrcReturnResponseSchema.parse(data).hmrc_return
 }
 
 // GET /api/v1/vat/hmrc/liabilities — amounts owed to HMRC ("what you owe").
 export async function getHmrcLiabilities(): Promise<HmrcLiability[]> {
-  const data = await apiFetch<unknown>('/vat/hmrc/liabilities', { method: 'GET' })
+  const data = await apiFetch<unknown>('/vat/hmrc/liabilities', { method: 'GET', fraudHeaders: true })
   return ListHmrcLiabilitiesResponseSchema.parse(data).liabilities ?? []
 }
 
 // GET /api/v1/vat/hmrc/payments — payments received by HMRC.
 export async function getHmrcPayments(): Promise<HmrcPayment[]> {
-  const data = await apiFetch<unknown>('/vat/hmrc/payments', { method: 'GET' })
+  const data = await apiFetch<unknown>('/vat/hmrc/payments', { method: 'GET', fraudHeaders: true })
   return ListHmrcPaymentsResponseSchema.parse(data).payments ?? []
 }
 
 // GET /api/v1/vat/hmrc/penalties — late-submission points + penalty charges.
 export async function getHmrcPenalties(): Promise<HmrcPenalties> {
-  const data = await apiFetch<unknown>('/vat/hmrc/penalties', { method: 'GET' })
+  const data = await apiFetch<unknown>('/vat/hmrc/penalties', { method: 'GET', fraudHeaders: true })
   return GetHmrcPenaltiesResponseSchema.parse(data).penalties
 }
 
@@ -149,13 +150,13 @@ export async function getHmrcPenalties(): Promise<HmrcPenalties> {
 export async function getHmrcFinancialDetails(chargeRef: string): Promise<HmrcFinancialDetails> {
   const data = await apiFetch<unknown>(
     `/vat/hmrc/financial-details/${encodeURIComponent(chargeRef)}`,
-    { method: 'GET' },
+    { method: 'GET', fraudHeaders: true },
   )
   return GetHmrcFinancialDetailsResponseSchema.parse(data).financial_details
 }
 
 // GET /api/v1/vat/hmrc/information — the registered VAT business details.
 export async function getHmrcInformation(): Promise<HmrcInformation> {
-  const data = await apiFetch<unknown>('/vat/hmrc/information', { method: 'GET' })
+  const data = await apiFetch<unknown>('/vat/hmrc/information', { method: 'GET', fraudHeaders: true })
   return GetHmrcInformationResponseSchema.parse(data).information
 }

@@ -17,9 +17,9 @@ package vat
 //   - netVatDue (box5): always the POSITIVE magnitude (no sign) — HMRC treats
 //     negative Box5 as a repayment via the paymentIndicator field, not a sign
 //
-// NOTE: HMRC fraud-prevention headers (Gov-Client-Connection-Method etc.) are
-// REQUIRED for production but not enforced in the sandbox. They are deferred
-// to a follow-up (see BACKLOG.md).
+// HMRC fraud-prevention headers (Gov-Client-* / Gov-Vendor-*) are applied to every
+// request here via applyFraudHeaders(req, ctx) — assembled per request in fraud.go
+// and validated against HMRC's Test Fraud Prevention Headers API.
 // =============================================================================
 
 import (
@@ -112,6 +112,7 @@ func listHMRCObligations(ctx context.Context, client *http.Client, apiBaseURL, v
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.hmrc.1.0+json")
+	applyFraudHeaders(req, ctx)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -200,6 +201,7 @@ func postHMRCReturn(ctx context.Context, client *http.Client, apiBaseURL, vrn, a
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.hmrc.1.0+json")
+	applyFraudHeaders(req, ctx)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -278,6 +280,7 @@ func hmrcGet(ctx context.Context, client *http.Client, apiBaseURL, vrn, accessTo
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/vnd.hmrc.1.0+json")
+	applyFraudHeaders(req, ctx)
 
 	resp, err := client.Do(req)
 	if err != nil {

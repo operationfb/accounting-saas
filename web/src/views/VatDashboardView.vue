@@ -15,6 +15,7 @@ import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import { formatMoney, formatDate } from '@/lib/format'
+import { prewarmFraudSignals } from '@/lib/fraudSignals'
 import type { ApiError } from '@/lib/api'
 import {
   getVatSettings,
@@ -192,7 +193,12 @@ async function connect() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  // Pre-warm the HMRC fraud-prevention signals (the slow WebRTC local-IP gather)
+  // while the dashboard loads, so the live HMRC reads don't wait on it.
+  prewarmFraudSignals()
+  load()
+})
 </script>
 
 <template>

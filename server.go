@@ -15,6 +15,7 @@ package main
 // =============================================================================
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,6 +49,20 @@ func NewServer(corsOrigins []string) *Server {
 	// but Default() is the right starting point.
 	s.router = gin.Default()
 
+	// Trust only well-known proxy ranges so c.ClientIP() reflects the REAL client IP
+	// (not a spoofed X-Forwarded-For). This matters for the HMRC fraud-prevention
+	// Gov-Client-Public-IP header. Cloud Run terminates TLS at Google's front end and
+	// forwards via private ranges; trusting those (plus loopback for local dev) makes
+	// the right-most untrusted XFF entry the client. Errors here are non-fatal — fall
+	// back to Gin's default (trust all) with a warning rather than refusing to boot.
+	if err := s.router.SetTrustedProxies([]string{
+		"127.0.0.1/8", "::1/128", // local dev
+		"169.254.0.0/16",                              // GCP metadata / link-local
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", // private ranges (Cloud Run front end)
+	}); err != nil {
+		log.Printf("warning: could not set trusted proxies, client IP may be unreliable: %v", err)
+	}
+
 	// How much of a multipart upload Gin buffers in memory before spilling the
 	// rest to a temp file. We stream uploads to GCS and hard-cap the body in the
 	// handler, so a modest in-memory buffer is plenty.
@@ -62,7 +77,7 @@ func NewServer(corsOrigins []string) *Server {
 	s.router.Use(cors.New(cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Accept", "X-Client-Fraud-Signals"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: false, // Bearer-token auth only; no cookies. Keep false.
 		MaxAge:           12 * time.Hour,
