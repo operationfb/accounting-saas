@@ -33,6 +33,7 @@ interface NavItem {
   children?: NavChild[] // dropdown group (Money In, Money Out)
 }
 const navItems: NavItem[] = [
+  { label: 'Overview', to: '/overview' },
   { label: 'Contacts', to: '/contacts' },
   {
     label: 'Money In',

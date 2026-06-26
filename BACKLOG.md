@@ -604,14 +604,19 @@ remains is the reconciliation/feed richness:
 - **Register the redirect URI in HMRC Developer Hub.** The sandbox app must have
   `{API_PUBLIC_URL}/api/v1/hmrc/callback` (and `http://localhost:8080/api/v1/hmrc/callback`
   for local dev) registered under Applications → Redirect URIs.
-- **Fetch obligations from HMRC in `ListPeriods()`.** Currently periods are
-  generated locally from VAT settings. When HMRC is connected, call
-  `GET /organisations/vat/{vrn}/obligations` and use the real HMRC periods
-  (which carry the correct filing deadlines) instead of local generation.
-  Fall back to local if HMRC is unreachable.
-  _File: `internal/vat/service.go` `ListPeriods()`._
-- **Show `VatReturnDetailView` submit button.** The backend `POST /returns/:periodKey/submit`
-  endpoint is live but the SPA's VAT return detail page does not yet have a
-  "Submit to HMRC" button. Add it alongside "Mark as filed", enabled only when
-  `hmrc_connected=true` from the settings response.
-  _Files: `web/src/views/VatReturnDetailView.vue`, `web/src/services/vat.service.ts`._
+- **Fetch obligations from HMRC in `ListPeriods()`.** Periods are still generated
+  locally from VAT settings. The connect-time **period reconciliation**
+  (`internal/vat/reconcile.go`: `CheckHMRCPeriods` / `SyncHMRCPeriods`, surfaced as
+  the Accept/Reject modal on the Integrations page) now rewrites the settings to
+  match HMRC's obligations, so the generated schedule lines up with HMRC going
+  forward — but it's a point-in-time sync, anchored to HMRC's earliest **visible**
+  obligation (≤360-day window). A fuller fix would have `ListPeriods` read HMRC's
+  obligations live (cached) when connected, with `resolvePeriod` reading the same,
+  falling back to local generation when offline — so the list never drifts and
+  isn't truncated to the obligations window. _Files: `internal/vat/service.go`
+  (`ListPeriods`, `resolvePeriod`), `internal/vat/reconcile.go`._
+- **Period reconciliation history-truncation.** `SyncHMRCPeriods` anchors
+  `effective_date` to HMRC's earliest visible obligation, so for an established org
+  the regenerated period list starts from that window (older periods drop off). The
+  modal warns when already-filed `vat_returns` would be affected but does not block.
+  Revisit if/when historical period reporting matters. _File: `internal/vat/reconcile.go`._

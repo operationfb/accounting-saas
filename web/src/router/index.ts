@@ -24,6 +24,7 @@ import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import VatSettingsView from '@/views/VatSettingsView.vue'
 import VatReturnListView from '@/views/VatReturnListView.vue'
 import VatReturnDetailView from '@/views/VatReturnDetailView.vue'
+import VatDashboardView from '@/views/VatDashboardView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -38,6 +39,9 @@ const router = createRouter({
     // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
+    // The "Overview" landing — the VAT dashboard (the read layer over HMRC's MTD
+    // VAT account). First item in the top nav.
+    { path: '/overview', name: 'overview', component: VatDashboardView, meta: { requiresAuth: true, title: 'Overview' } },
     { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },

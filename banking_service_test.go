@@ -80,11 +80,15 @@ func addMember(t *testing.T, ts *testServer, orgID, role string) string {
 
 func TestBankAccountService(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// NOT defer: with parallel subtests this parent function returns BEFORE the
+	// paused subtests resume, so a defer would close the pool out from under them.
+	// t.Cleanup runs only after the test AND all its subtests finish.
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.bankingService
 
 	t.Run("create round-trips money + fields and applies defaults", func(t *testing.T) {
+		t.Parallel() // each subtest gets its own ephemeral org, so they're data-isolated and safe to overlap; the win is hiding the ~95ms-per-query latency to the remote dev DB behind concurrency
 		org, user := newOrgWithOwner(t, ts)
 		resp, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Acme Current", func(r *banking.CreateBankAccountRequest) {
@@ -115,6 +119,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("derived current_balance reflects transactions", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		resp, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Balance", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
@@ -142,6 +147,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("creating a primary unsets the previous primary (transactional)", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		primary := func(r *banking.CreateBankAccountRequest) { r.IsPrimary = true }
 		a, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("First", primary))
@@ -167,6 +173,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("update edits fields and can move the primary", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		a, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("A", func(r *banking.CreateBankAccountRequest) { r.IsPrimary = true }))
@@ -194,6 +201,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("soft-delete removes the account from get and list", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		a, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("Gone", nil))
 		if err != nil {
@@ -214,6 +222,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("a non-admin member cannot create (403)", func(t *testing.T) {
+		t.Parallel()
 		org, _ := newOrgWithOwner(t, ts)
 		member := addMember(t, ts, org, "member")
 		_, err := svc.CreateBankAccount(ctx, mustUUID(t, member), mustUUID(t, org), bankReq("Nope", nil))
@@ -221,6 +230,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("cannot read another org's account (404)", func(t *testing.T) {
+		t.Parallel()
 		orgA, userA := newOrgWithOwner(t, ts)
 		a, err := svc.CreateBankAccount(ctx, mustUUID(t, userA), mustUUID(t, orgA), bankReq("A", nil))
 		if err != nil {
@@ -234,6 +244,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("an invalid opening_balance is a 422", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		_, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Bad", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "not-a-number" }))
@@ -241,6 +252,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("ListTransactions returns the statement with a running balance", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Statement", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
@@ -302,6 +314,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("opening balance locks once the account has transactions", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Lockable", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "100.00" }))
@@ -349,6 +362,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("manual transaction add / edit / delete + new fields", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Txns", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
@@ -404,6 +418,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("only manual lines can be edited or deleted (source guard)", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("Guard", nil))
 		if err != nil {
@@ -445,6 +460,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("manual transaction authz + validation", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("AV", nil))
 		if err != nil {
@@ -486,6 +502,7 @@ func TestBankAccountService(t *testing.T) {
 	}
 
 	t.Run("statement import: valid CSV creates statement lines + is idempotent", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("Import", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
@@ -532,6 +549,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("statement import: within-file identical lines both import", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("Dup", nil))
 		if err != nil {
@@ -551,6 +569,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("statement import: an invalid CSV is a 422 and imports nothing", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("BadCSV", nil))
 		if err != nil {
@@ -577,6 +596,7 @@ func TestBankAccountService(t *testing.T) {
 	})
 
 	t.Run("statement import authz: non-admin 403, other org 404", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("ImportAuthz", nil))
 		if err != nil {
@@ -604,6 +624,7 @@ func TestBankAccountService(t *testing.T) {
 	// ImportStatement), so the CSV authz test above already covers them.
 
 	t.Run("statement import: valid OFX creates lines, derives sign + type, idempotent", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
 			bankReq("OFXImport", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
@@ -693,6 +714,7 @@ VERSION:102
 	})
 
 	t.Run("statement import: an unknown OFX TRNTYPE maps to OTHER", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("OFXType", nil))
 		if err != nil {
@@ -724,6 +746,7 @@ VERSION:102
 	})
 
 	t.Run("statement import: an OFX with no transactions is a 422 and imports nothing", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("OFXEmpty", nil))
 		if err != nil {

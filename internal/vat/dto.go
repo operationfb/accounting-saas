@@ -138,3 +138,130 @@ type VatSubmitResponse struct {
 	ProcessingDate   string  `json:"processing_date"`
 	ChargeRefNumber  *string `json:"charge_ref_number,omitempty"`
 }
+
+// VatPeriodSettings is the (frequency, first-period-end, effective-date) triple
+// that determines the generated VAT period schedule — the subset of settings the
+// reconciliation check compares and would rewrite. Dates are YYYY-MM-DD strings.
+type VatPeriodSettings struct {
+	ReturnFrequency      string `json:"return_frequency,omitempty"`
+	FirstReturnPeriodEnd string `json:"first_return_period_end,omitempty"`
+	EffectiveDate        string `json:"effective_date,omitempty"`
+}
+
+// VatPeriodCheckResponse is returned by GET /api/v1/vat/hmrc/period-check — whether
+// the org's locally-generated VAT periods line up with HMRC's obligations, and the
+// settings that would make them match. `applicable` is false when there's nothing to
+// reconcile (not connected, no VRN, no obligations, or an HMRC error — fail open).
+// `filed_periods_affected` is how many already-saved returns would no longer appear
+// after the rewrite (a warning, not a blocker).
+type VatPeriodCheckResponse struct {
+	Applicable           bool              `json:"applicable"`
+	Matches              bool              `json:"matches"`
+	Current              VatPeriodSettings `json:"current"`
+	Suggested            VatPeriodSettings `json:"suggested"`
+	FiledPeriodsAffected int               `json:"filed_periods_affected"`
+}
+
+// =============================================================================
+// HMRC VAT-account dashboard DTOs (the read layer over the MTD VAT GET APIs).
+// These mirror HMRC's own resources but in our boundary conventions: money is
+// 2-dp pound STRINGS (never float), dates are YYYY-MM-DD strings, and fields HMRC
+// omits when absent are omitempty pointers. The service (account.go) fills them
+// from the hmrc* structs in hmrc.go. See internal/vat/account.go.
+// =============================================================================
+
+// HMRCObligationResponse is one VAT obligation (a return period) from
+// GET /organisations/vat/{vrn}/obligations. Status is "O" (open) or "F" (fulfilled);
+// received is the filed date, present only when fulfilled.
+type HMRCObligationResponse struct {
+	PeriodKey string  `json:"period_key"`
+	Start     string  `json:"start"`
+	End       string  `json:"end"`
+	Due       string  `json:"due"`
+	Status    string  `json:"status"`
+	Received  *string `json:"received,omitempty"`
+}
+
+// HMRCReturnResponse is HMRC's view of a submitted return (the 9 boxes) from
+// GET /organisations/vat/{vrn}/returns/{periodKey}. Boxes 1–5 are 2-dp pound
+// strings; boxes 6–9 are whole-pound strings (HMRC's own convention).
+type HMRCReturnResponse struct {
+	PeriodKey string `json:"period_key"`
+	Box1      string `json:"box1_vat_due_sales"`
+	Box2      string `json:"box2_vat_due_acquisitions"`
+	Box3      string `json:"box3_total_vat_due"`
+	Box4      string `json:"box4_vat_reclaimed"`
+	Box5      string `json:"box5_net_vat"`
+	Box6      string `json:"box6_total_sales_ex_vat"`
+	Box7      string `json:"box7_total_purchases_ex_vat"`
+	Box8      string `json:"box8_ec_dispatches_ex_vat"`
+	Box9      string `json:"box9_ec_acquisitions_ex_vat"`
+}
+
+// HMRCLiabilityResponse is one amount owed to HMRC from
+// GET /organisations/vat/{vrn}/liabilities — the dashboard's "what you owe" card.
+// from/to bound the tax period the liability is for.
+type HMRCLiabilityResponse struct {
+	Type              string  `json:"type"`
+	From              *string `json:"from,omitempty"`
+	To                *string `json:"to,omitempty"`
+	OriginalAmount    string  `json:"original_amount"`
+	OutstandingAmount string  `json:"outstanding_amount"`
+	Due               *string `json:"due,omitempty"`
+}
+
+// HMRCPaymentResponse is one payment received by HMRC from
+// GET /organisations/vat/{vrn}/payments — the "payments to HMRC" card.
+type HMRCPaymentResponse struct {
+	Amount   string  `json:"amount"`
+	Received *string `json:"received,omitempty"`
+}
+
+// HMRCPenaltiesResponse summarises GET /organisations/vat/{vrn}/penalties — the
+// late-submission points meter (active/inactive vs threshold), the running total of
+// penalty charges, and the individual charges (each with charge_reference for the
+// financial-details drill-down).
+type HMRCPenaltiesResponse struct {
+	ActivePoints   int                         `json:"active_points"`
+	InactivePoints int                         `json:"inactive_points"`
+	Threshold      int                         `json:"threshold"`
+	TotalPenalties string                      `json:"total_penalties"`
+	Penalties      []HMRCPenaltyChargeResponse `json:"penalties"`
+}
+
+// HMRCPenaltyChargeResponse is one penalty charge. Type is "late_submission" or
+// "late_payment".
+type HMRCPenaltyChargeResponse struct {
+	Type            string `json:"type"`
+	Category        string `json:"category,omitempty"`
+	ChargeReference string `json:"charge_reference,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Amount          string `json:"amount"`
+}
+
+// HMRCFinancialDetailsResponse is the charge breakdown for one penalty from
+// GET /organisations/vat/{vrn}/financial-details/{penaltyChargeReference}.
+type HMRCFinancialDetailsResponse struct {
+	ChargeReference string                     `json:"charge_reference"`
+	Documents       []HMRCFinancialDocResponse `json:"documents"`
+}
+
+// HMRCFinancialDocResponse is one document line in a financial-details response.
+type HMRCFinancialDocResponse struct {
+	Type              string  `json:"type,omitempty"`
+	ChargeReference   string  `json:"charge_reference,omitempty"`
+	TotalAmount       string  `json:"total_amount"`
+	OutstandingAmount string  `json:"outstanding_amount"`
+	DueDate           *string `json:"due_date,omitempty"`
+}
+
+// HMRCInformationResponse is the registered VAT business details from
+// GET /organisations/vat/{vrn}/information — the "registration details" card.
+type HMRCInformationResponse struct {
+	BusinessName     string   `json:"business_name,omitempty"`
+	TradingName      string   `json:"trading_name,omitempty"`
+	AddressLines     []string `json:"address_lines,omitempty"`
+	Postcode         string   `json:"postcode,omitempty"`
+	CountryCode      string   `json:"country_code,omitempty"`
+	RegistrationDate *string  `json:"registration_date,omitempty"`
+}

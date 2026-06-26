@@ -63,6 +63,7 @@ var rootAllowlist = map[string]bool{
 	"server_test.go":               true,
 	"supplier_category_test.go":    true,
 	"user_service_test.go":         true,
+	"vat_hmrc_account_test.go":     true,
 	"vat_rates_test.go":            true,
 	"vat_return_test.go":           true,
 	"vat_settings_test.go":         true,

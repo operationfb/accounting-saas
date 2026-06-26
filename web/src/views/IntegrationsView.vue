@@ -14,6 +14,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -25,8 +26,10 @@ import {
   disconnectHmrc,
   getHmrcConnectUrl,
 } from '@/services/integrations.service'
+import { checkHmrcPeriods, syncHmrcPeriods } from '@/services/vat.service'
 import type { FreeAgentStatus, HmrcStatus } from '@/types/integration'
-import { formatDateTime } from '@/lib/format'
+import type { VatPeriodCheck } from '@/types/vat'
+import { formatDateTime, formatDate } from '@/lib/format'
 import type { ApiError } from '@/lib/api'
 
 const auth = useAuthStore()
@@ -132,6 +135,66 @@ async function disconnectHmrcOrg() {
   }
 }
 
+// --- HMRC period reconciliation (runs once, right after a fresh connect) ---
+// If our generated VAT periods don't line up with HMRC's obligations, offer to
+// rewrite the settings to match. Accept → sync; Reject → drop the connection
+// (the user asked that a rejection NOT keep the connection).
+const reconcileVisible = ref(false)
+const periodCheck = ref<VatPeriodCheck | null>(null)
+const reconcileBusy = ref(false)
+const reconcileError = ref('')
+
+// Title-case a frequency code ("quarterly" → "Quarterly"); em dash when unset.
+function freqLabel(f?: string | null): string {
+  return f ? f.charAt(0).toUpperCase() + f.slice(1) : '—'
+}
+
+async function runHmrcReconcile() {
+  try {
+    const check = await checkHmrcPeriods()
+    if (check.applicable && !check.matches) {
+      periodCheck.value = check
+      reconcileError.value = ''
+      reconcileVisible.value = true
+    }
+  } catch {
+    // Best-effort: a failed check must never block or undo the connection.
+  }
+}
+
+async function acceptReconcile() {
+  if (reconcileBusy.value) return
+  reconcileError.value = ''
+  reconcileBusy.value = true
+  try {
+    await syncHmrcPeriods()
+    reconcileVisible.value = false
+    banner.type = 'success'
+    banner.message = 'Connected to HMRC. Your VAT periods were updated to match HMRC.'
+  } catch (err) {
+    reconcileError.value = (err as ApiError)?.message ?? 'Could not update your VAT periods.'
+  } finally {
+    reconcileBusy.value = false
+  }
+}
+
+async function rejectReconcile() {
+  if (reconcileBusy.value) return
+  reconcileError.value = ''
+  reconcileBusy.value = true
+  try {
+    await disconnectHmrc() // reject = do not keep the connection
+    reconcileVisible.value = false
+    await loadHmrc()
+    banner.type = 'error'
+    banner.message = 'Connection cancelled — your VAT periods did not match HMRC.'
+  } catch (err) {
+    reconcileError.value = (err as ApiError)?.message ?? 'Could not cancel the connection.'
+  } finally {
+    reconcileBusy.value = false
+  }
+}
+
 // =============================================================================
 // FreeAgent state + actions
 // =============================================================================
@@ -185,10 +248,14 @@ async function disconnectFa() {
 }
 
 onMounted(() => {
+  // Capture this BEFORE consumeCallbackQuery strips the query params.
+  const justConnectedHmrc = route.query.hmrc === 'connected'
   consumeCallbackQuery()
   if (canManage.value) {
     loadHmrc()
     loadFa()
+    // Only reconcile right after a fresh HMRC connect — not on every visit.
+    if (justConnectedHmrc) runHmrcReconcile()
   } else {
     hmrcLoading.value = false
     faLoading.value = false
@@ -391,5 +458,80 @@ onMounted(() => {
         </template>
       </FaCard>
     </template>
+
+    <!-- ============ HMRC PERIOD RECONCILIATION (post-connect) ============ -->
+    <!-- Shown when, right after connecting, our generated VAT periods don't line
+         up with HMRC's obligations. Accept → rewrite settings; Reject → disconnect.
+         Not closable: the user must choose (reject is the "do not connect" path). -->
+    <Dialog
+      v-model:visible="reconcileVisible"
+      modal
+      header="Your VAT periods don't match HMRC"
+      :style="{ width: '34rem' }"
+      :closable="false"
+    >
+      <div v-if="periodCheck" class="flex flex-col gap-4 text-sm">
+        <p>
+          The VAT periods in your settings don't match HMRC's records. Would you like to adjust
+          Kontala's VAT settings to match HMRC?
+        </p>
+
+        <div class="overflow-hidden rounded border border-fa-border">
+          <div class="grid grid-cols-3 bg-fa-card-header px-3 py-2 text-xs font-semibold text-fa-muted">
+            <span></span>
+            <span>Your settings</span>
+            <span>HMRC</span>
+          </div>
+          <div class="grid grid-cols-3 border-t border-fa-border px-3 py-2">
+            <span class="text-fa-muted">Frequency</span>
+            <span>{{ freqLabel(periodCheck.current.return_frequency) }}</span>
+            <span class="font-semibold">{{ freqLabel(periodCheck.suggested.return_frequency) }}</span>
+          </div>
+          <div class="grid grid-cols-3 border-t border-fa-border px-3 py-2">
+            <span class="text-fa-muted">First period ends</span>
+            <span>{{
+              periodCheck.current.first_return_period_end
+                ? formatDate(periodCheck.current.first_return_period_end)
+                : '—'
+            }}</span>
+            <span class="font-semibold">{{
+              periodCheck.suggested.first_return_period_end
+                ? formatDate(periodCheck.suggested.first_return_period_end)
+                : '—'
+            }}</span>
+          </div>
+        </div>
+
+        <div
+          v-if="periodCheck.filed_periods_affected > 0"
+          class="rounded border border-[#f3dca8] bg-[#fef8ec] px-3 py-2 text-[#8a6d3b]"
+          role="note"
+        >
+          Note: {{ periodCheck.filed_periods_affected }} previously filed
+          {{ periodCheck.filed_periods_affected === 1 ? 'period' : 'periods' }} may no longer appear
+          in your VAT return list, because the period dates will change.
+        </div>
+
+        <div
+          v-if="reconcileError"
+          class="rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-[#c0392b]"
+          role="alert"
+        >
+          {{ reconcileError }}
+        </div>
+      </div>
+
+      <template #footer>
+        <button
+          type="button"
+          class="mr-3 font-semibold text-fa-green hover:underline disabled:opacity-50"
+          :disabled="reconcileBusy"
+          @click="rejectReconcile"
+        >
+          Cancel connection
+        </button>
+        <Button label="Adjust to match HMRC" :loading="reconcileBusy" @click="acceptReconcile" />
+      </template>
+    </Dialog>
   </AppLayout>
 </template>

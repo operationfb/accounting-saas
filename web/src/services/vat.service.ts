@@ -3,10 +3,28 @@ import {
   GetVatSettingsResponseSchema,
   ListVatPeriodsResponseSchema,
   GetVatReturnResponseSchema,
+  SubmitVatReturnResponseSchema,
+  GetVatPeriodCheckResponseSchema,
+  ListHmrcObligationsResponseSchema,
+  GetHmrcReturnResponseSchema,
+  ListHmrcLiabilitiesResponseSchema,
+  ListHmrcPaymentsResponseSchema,
+  GetHmrcPenaltiesResponseSchema,
+  GetHmrcFinancialDetailsResponseSchema,
+  GetHmrcInformationResponseSchema,
   type VatSettings,
   type VatSettingsRequest,
   type VatPeriod,
   type VatReturn,
+  type VatSubmitResponse,
+  type VatPeriodCheck,
+  type HmrcObligation,
+  type HmrcReturn,
+  type HmrcLiability,
+  type HmrcPayment,
+  type HmrcPenalties,
+  type HmrcFinancialDetails,
+  type HmrcInformation,
 } from '@/types/vat'
 
 // GET /api/v1/vat/settings — the caller's own VAT registration settings. Any
@@ -54,4 +72,90 @@ export async function markVatReturnFiled(periodKey: string): Promise<VatReturn> 
     { method: 'POST' },
   )
   return GetVatReturnResponseSchema.parse(data).vat_return
+}
+
+// POST /api/v1/vat/returns/:periodKey/submit — submit the return to HMRC via
+// Making Tax Digital. OWNER/ADMIN only; requires an active HMRC connection (409
+// if not connected). Returns the HMRC acknowledgement (form bundle number +
+// processing date) — NOT a VatReturn, so the caller should re-fetch the return
+// afterwards to pick up the now-"Filed" status and period lock. Errors map to
+// ApiError: 409 (not connected / duplicate / period already filed), 422 (no VRN,
+// period not ended, HMRC validation), 404 (unknown period).
+export async function submitVatReturn(periodKey: string): Promise<VatSubmitResponse> {
+  const data = await apiFetch<unknown>(
+    `/vat/returns/${encodeURIComponent(periodKey)}/submit`,
+    { method: 'POST' },
+  )
+  return SubmitVatReturnResponseSchema.parse(data).submission
+}
+
+// GET /api/v1/vat/hmrc/period-check — does the org's generated VAT period schedule
+// line up with HMRC's obligations? Drives the post-connect reconciliation modal.
+// OWNER/ADMIN only; fails open (applicable=false) when there's nothing to compare.
+export async function checkHmrcPeriods(): Promise<VatPeriodCheck> {
+  const data = await apiFetch<unknown>('/vat/hmrc/period-check', { method: 'GET' })
+  return GetVatPeriodCheckResponseSchema.parse(data).period_check
+}
+
+// POST /api/v1/vat/hmrc/period-sync — rewrite the org's VAT period settings to
+// match HMRC's obligations (the modal's "Adjust to match HMRC" action). OWNER/ADMIN
+// only. Returns the updated settings.
+export async function syncHmrcPeriods(): Promise<VatSettings> {
+  const data = await apiFetch<unknown>('/vat/hmrc/period-sync', { method: 'POST' })
+  return GetVatSettingsResponseSchema.parse(data).vat_settings
+}
+
+// =============================================================================
+// VAT dashboard — the read layer over HMRC's MTD VAT account. Each call hits HMRC
+// live (the data isn't stored on our side); any ACTIVE member may read. A VRN must
+// be set (422 otherwise) and HMRC must be connected (409 otherwise).
+// =============================================================================
+
+// GET /api/v1/vat/hmrc/obligations — the org's VAT return periods from HMRC.
+// Optional status filter: "O" (open) or "F" (fulfilled).
+export async function getHmrcObligations(status?: 'O' | 'F'): Promise<HmrcObligation[]> {
+  const qs = status ? `?status=${status}` : ''
+  const data = await apiFetch<unknown>(`/vat/hmrc/obligations${qs}`, { method: 'GET' })
+  return ListHmrcObligationsResponseSchema.parse(data).obligations ?? []
+}
+
+// GET /api/v1/vat/hmrc/returns/:periodKey — HMRC's view of a submitted return.
+export async function getHmrcReturn(periodKey: string): Promise<HmrcReturn> {
+  const data = await apiFetch<unknown>(`/vat/hmrc/returns/${encodeURIComponent(periodKey)}`, {
+    method: 'GET',
+  })
+  return GetHmrcReturnResponseSchema.parse(data).hmrc_return
+}
+
+// GET /api/v1/vat/hmrc/liabilities — amounts owed to HMRC ("what you owe").
+export async function getHmrcLiabilities(): Promise<HmrcLiability[]> {
+  const data = await apiFetch<unknown>('/vat/hmrc/liabilities', { method: 'GET' })
+  return ListHmrcLiabilitiesResponseSchema.parse(data).liabilities ?? []
+}
+
+// GET /api/v1/vat/hmrc/payments — payments received by HMRC.
+export async function getHmrcPayments(): Promise<HmrcPayment[]> {
+  const data = await apiFetch<unknown>('/vat/hmrc/payments', { method: 'GET' })
+  return ListHmrcPaymentsResponseSchema.parse(data).payments ?? []
+}
+
+// GET /api/v1/vat/hmrc/penalties — late-submission points + penalty charges.
+export async function getHmrcPenalties(): Promise<HmrcPenalties> {
+  const data = await apiFetch<unknown>('/vat/hmrc/penalties', { method: 'GET' })
+  return GetHmrcPenaltiesResponseSchema.parse(data).penalties
+}
+
+// GET /api/v1/vat/hmrc/financial-details/:chargeRef — one penalty's charge breakdown.
+export async function getHmrcFinancialDetails(chargeRef: string): Promise<HmrcFinancialDetails> {
+  const data = await apiFetch<unknown>(
+    `/vat/hmrc/financial-details/${encodeURIComponent(chargeRef)}`,
+    { method: 'GET' },
+  )
+  return GetHmrcFinancialDetailsResponseSchema.parse(data).financial_details
+}
+
+// GET /api/v1/vat/hmrc/information — the registered VAT business details.
+export async function getHmrcInformation(): Promise<HmrcInformation> {
+  const data = await apiFetch<unknown>('/vat/hmrc/information', { method: 'GET' })
+  return GetHmrcInformationResponseSchema.parse(data).information
 }

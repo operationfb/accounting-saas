@@ -10,13 +10,19 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import { useAuthStore } from '@/stores/auth'
-import { getVatReturn, markVatReturnFiled } from '@/services/vat.service'
+import {
+  getVatReturn,
+  getVatSettings,
+  markVatReturnFiled,
+  submitVatReturn,
+} from '@/services/vat.service'
 import { formatMoney, formatDate } from '@/lib/format'
 import { vatStatusClass } from '@/lib/vatStatus'
-import type { VatReturn } from '@/types/vat'
+import type { VatReturn, VatSubmitResponse } from '@/types/vat'
 import type { ApiError } from '@/lib/api'
 
 const route = useRoute()
@@ -27,6 +33,9 @@ const ret = ref<VatReturn | null>(null)
 const loading = ref(true)
 const error = ref('')
 const tab = ref<'preview' | 'full'>('preview')
+
+// HMRC connection status (from VAT settings) — drives the "Submit to HMRC" button.
+const hmrcConnected = ref(false)
 
 // Filing. "Mark as filed" is owner/admin-only and only offered while the return is
 // not already filed (a filed return shows no button — the period is locked).
@@ -40,6 +49,23 @@ const isFiled = computed(
   () => !!ret.value && filedStatuses.includes(ret.value.display_status),
 )
 
+// Online HMRC submission. Owner/admin only, requires an active HMRC connection,
+// and only for an ENDED, not-yet-filed period (display_status "Open" = still in
+// progress; the backend also 422s a not-ended period as a backstop).
+const canSubmit = computed(
+  () =>
+    auth.isOrgAdmin &&
+    hmrcConnected.value &&
+    !!ret.value &&
+    !filedStatuses.includes(ret.value.display_status) &&
+    ret.value.display_status !== 'Open',
+)
+
+const showDeclaration = ref(false) // the legal-declaration confirm modal
+const submitting = ref(false)
+const submitError = ref('')
+const receipt = ref<VatSubmitResponse | null>(null) // the HMRC acknowledgement, on success
+
 async function markFiled() {
   if (filing.value || !ret.value) return
   fileError.value = ''
@@ -50,6 +76,29 @@ async function markFiled() {
     fileError.value = (err as ApiError)?.message ?? 'Could not mark this return as filed.'
   } finally {
     filing.value = false
+  }
+}
+
+function openDeclaration() {
+  submitError.value = ''
+  showDeclaration.value = true
+}
+
+// confirmSubmit fires the actual HMRC submission after the user agrees to the
+// legal declaration. On success it stores the receipt and RELOADS the return so
+// the status flips to "Filed" and the period locks.
+async function confirmSubmit() {
+  if (submitting.value) return
+  submitError.value = ''
+  submitting.value = true
+  try {
+    receipt.value = await submitVatReturn(periodKey.value)
+    showDeclaration.value = false
+    await load() // refresh status → "Filed", period now locked
+  } catch (err) {
+    submitError.value = (err as ApiError)?.message ?? 'Could not submit this return to HMRC.'
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -118,8 +167,22 @@ async function load() {
   }
 }
 
+// loadSettings fetches the HMRC connection status once (it doesn't change per
+// period). Best-effort: a failure just leaves the Submit button hidden.
+async function loadSettings() {
+  try {
+    const settings = await getVatSettings()
+    hmrcConnected.value = settings.hmrc_connected === true
+  } catch {
+    hmrcConnected.value = false
+  }
+}
+
 watch(periodKey, load)
-onMounted(load)
+onMounted(() => {
+  load()
+  loadSettings()
+})
 </script>
 
 <template>
@@ -138,8 +201,37 @@ onMounted(load)
           :class="vatStatusClass(ret.display_status)"
           >{{ ret.display_status }}</span
         >
-        <Button v-if="canFile" label="Mark as filed" :loading="filing" @click="markFiled" />
+        <!-- Submit to HMRC — primary action when the org is connected to MTD. -->
+        <Button
+          v-if="canSubmit"
+          label="Submit to HMRC"
+          icon="pi pi-send"
+          @click="openDeclaration"
+        />
+        <!-- Mark as filed — the manual fallback (return filed elsewhere). Demoted to
+             a secondary style when "Submit to HMRC" is also offered. -->
+        <Button
+          v-if="canFile"
+          label="Mark as filed"
+          :severity="canSubmit ? 'secondary' : undefined"
+          :outlined="canSubmit"
+          :loading="filing"
+          @click="markFiled"
+        />
       </div>
+    </div>
+
+    <!-- HMRC submission receipt (form bundle number) — shown after a successful submit. -->
+    <div
+      v-if="receipt"
+      class="mb-4 rounded border border-[#cfe9c7] bg-[#eaf7e6] px-3 py-2 text-sm text-[#3f8038]"
+      role="status"
+    >
+      Submitted to HMRC. Your receipt number (form bundle number) is
+      <strong>{{ receipt.form_bundle_number }}</strong
+      ><span v-if="receipt.charge_ref_number">
+        — payment reference <strong>{{ receipt.charge_ref_number }}</strong></span
+      >. Keep this for your records.
     </div>
 
     <div
@@ -189,21 +281,36 @@ onMounted(load)
         <div>
           <!-- ---------- PREVIEW ---------- -->
           <template v-if="tab === 'preview'">
+            <!-- FILED: period is locked. -->
             <div
               v-if="isFiled"
               class="mb-4 rounded border border-[#cfe9c7] bg-[#eaf7e6] px-3 py-2 text-sm text-[#3f8038]"
               role="note"
             >
-              This return is marked as filed — the transactions in this period are now locked and can
-              no longer be changed.
+              This return is filed — the transactions in this period are now locked and can no longer
+              be changed.
             </div>
+            <!-- CONNECTED, not yet filed: prompt to submit online. -->
+            <div
+              v-else-if="hmrcConnected"
+              class="mb-4 rounded border border-[#cdebf4] bg-[#eef8fc] px-3 py-2 text-sm text-[#2b6986]"
+              role="note"
+            >
+              Review the figures below, then use <strong>Submit to HMRC</strong> to file this return
+              online via Making Tax Digital. Filing locks the period's records.
+            </div>
+            <!-- NOT connected, not yet filed: point to Integrations or manual mark-as-filed. -->
             <div
               v-else
               class="mb-4 rounded border border-[#f3dca8] bg-[#fef8ec] px-3 py-2 text-sm text-[#8a6d3b]"
               role="note"
             >
-              Online filing to HMRC (Making Tax Digital) is coming soon — for now, review the return
-              and use “Mark as filed” once you've submitted it. Filing locks the period's records.
+              To file online,
+              <RouterLink to="/settings/integrations" class="font-semibold text-fa-blue hover:underline"
+                >connect this organisation to HMRC</RouterLink
+              >
+              (Making Tax Digital). Otherwise, review the return and use “Mark as filed” once you've
+              submitted it elsewhere. Filing locks the period's records.
             </div>
 
             <!-- The 9-box card -->
@@ -402,5 +509,59 @@ onMounted(load)
         </aside>
       </div>
     </template>
+
+    <!-- ============ HMRC LEGAL DECLARATION (confirm submit) ============ -->
+    <!-- MTD requires the taxpayer to affirm a legal declaration before final
+         submission. This modal is that step — it sends finalised=true to HMRC. -->
+    <Dialog
+      v-model:visible="showDeclaration"
+      modal
+      header="Submit VAT Return to HMRC"
+      :style="{ width: '34rem' }"
+      :closable="!submitting"
+    >
+      <div v-if="ret" class="flex flex-col gap-4 text-sm">
+        <p>
+          You are about to submit the VAT Return for period <strong>{{ ret.label }}</strong>
+          ({{ formatDate(ret.start_date) }} – {{ formatDate(ret.end_date) }}) to HMRC. This is
+          <strong>final and cannot be undone</strong>.
+        </p>
+
+        <div class="rounded border border-fa-border bg-fa-card-header px-3 py-2">
+          <div class="flex items-center justify-between">
+            <span class="text-fa-muted">Net VAT {{ ret.is_reclaim ? 'reclaimed' : 'to pay' }}</span>
+            <span class="text-base font-bold">{{ formatMoney(ret.box5_net_vat) }}</span>
+          </div>
+        </div>
+
+        <div class="rounded border border-[#f3dca8] bg-[#fef8ec] px-3 py-2 text-[#8a6d3b]">
+          <p class="mb-1 font-semibold">Legal declaration</p>
+          <p>
+            When you submit this VAT information you are making a legal declaration that the
+            information is true and complete. A false declaration can result in prosecution.
+          </p>
+        </div>
+
+        <div
+          v-if="submitError"
+          class="rounded border border-[#f6d3d0] bg-[#fdecec] px-3 py-2 text-[#c0392b]"
+          role="alert"
+        >
+          {{ submitError }}
+        </div>
+      </div>
+
+      <template #footer>
+        <button
+          type="button"
+          class="mr-3 font-semibold text-fa-green hover:underline disabled:opacity-50"
+          :disabled="submitting"
+          @click="showDeclaration = false"
+        >
+          Cancel
+        </button>
+        <Button label="Agree and submit" :loading="submitting" @click="confirmSubmit" />
+      </template>
+    </Dialog>
   </AppLayout>
 </template>

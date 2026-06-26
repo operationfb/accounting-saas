@@ -42,6 +42,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.GET("/returns/:periodKey", h.GetReturn)
 		g.POST("/returns/:periodKey/mark-filed", h.MarkFiled)
 		g.POST("/returns/:periodKey/submit", h.SubmitReturn)
+		g.GET("/hmrc/period-check", h.CheckHMRCPeriods)
+		g.POST("/hmrc/period-sync", h.SyncHMRCPeriods)
+
+		// VAT dashboard — the read layer over HMRC's MTD VAT account (any active
+		// member may read; the org + VRN come from the token + settings).
+		g.GET("/hmrc/obligations", h.GetHMRCObligations)
+		g.GET("/hmrc/returns/:periodKey", h.GetHMRCReturn)
+		g.GET("/hmrc/liabilities", h.GetHMRCLiabilities)
+		g.GET("/hmrc/payments", h.GetHMRCPayments)
+		g.GET("/hmrc/penalties", h.GetHMRCPenalties)
+		g.GET("/hmrc/financial-details/:chargeRef", h.GetHMRCFinancialDetails)
+		g.GET("/hmrc/information", h.GetHMRCInformation)
 	}
 }
 
@@ -118,4 +130,113 @@ func (h *Handler) SubmitReturn(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"submission": resp})
+}
+
+// CheckHMRCPeriods handles GET /api/v1/vat/hmrc/period-check — does the org's
+// generated VAT period schedule line up with HMRC's obligations? Drives the
+// post-connect reconciliation modal. Owner/admin only; fails open (applicable:false)
+// when there's nothing to reconcile.
+func (h *Handler) CheckHMRCPeriods(c *gin.Context) {
+	resp, err := h.svc.CheckHMRCPeriods(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"period_check": resp})
+}
+
+// SyncHMRCPeriods handles POST /api/v1/vat/hmrc/period-sync — rewrite the org's
+// VAT period settings to match HMRC's obligations (the modal's "Adjust to match
+// HMRC" action). Owner/admin only. Returns the updated settings.
+func (h *Handler) SyncHMRCPeriods(c *gin.Context) {
+	resp, err := h.svc.SyncHMRCPeriods(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"vat_settings": resp})
+}
+
+// =============================================================================
+// VAT DASHBOARD — the HMRC VAT-account read layer (see service methods in
+// account.go). Each handler reads the org + VRN from the token/settings, calls
+// HMRC live, and returns the mapped DTO. Any active member may read.
+// =============================================================================
+
+// GetHMRCObligations handles GET /api/v1/vat/hmrc/obligations — the org's VAT
+// return periods from HMRC. Optional ?from=&to= (YYYY-MM-DD, ≤366 days) and
+// ?status=O|F filters.
+func (h *Handler) GetHMRCObligations(c *gin.Context) {
+	res, err := h.svc.GetHMRCObligations(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Query("from"), c.Query("to"), c.Query("status"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"obligations": res})
+}
+
+// GetHMRCReturn handles GET /api/v1/vat/hmrc/returns/:periodKey — HMRC's view of a
+// submitted return (the 9 boxes). An unknown periodKey is 404.
+func (h *Handler) GetHMRCReturn(c *gin.Context) {
+	res, err := h.svc.GetHMRCReturn(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("periodKey"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"hmrc_return": res})
+}
+
+// GetHMRCLiabilities handles GET /api/v1/vat/hmrc/liabilities — amounts owed to
+// HMRC. Optional ?from=&to= (defaults to a trailing ~year).
+func (h *Handler) GetHMRCLiabilities(c *gin.Context) {
+	res, err := h.svc.GetHMRCLiabilities(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Query("from"), c.Query("to"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"liabilities": res})
+}
+
+// GetHMRCPayments handles GET /api/v1/vat/hmrc/payments — payments received by
+// HMRC. Optional ?from=&to= (defaults to a trailing ~year).
+func (h *Handler) GetHMRCPayments(c *gin.Context) {
+	res, err := h.svc.GetHMRCPayments(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Query("from"), c.Query("to"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"payments": res})
+}
+
+// GetHMRCPenalties handles GET /api/v1/vat/hmrc/penalties — late-submission points
+// + penalty charges.
+func (h *Handler) GetHMRCPenalties(c *gin.Context) {
+	res, err := h.svc.GetHMRCPenalties(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"penalties": res})
+}
+
+// GetHMRCFinancialDetails handles GET /api/v1/vat/hmrc/financial-details/:chargeRef
+// — the charge breakdown for one penalty (drilled into from a penalties row).
+func (h *Handler) GetHMRCFinancialDetails(c *gin.Context) {
+	res, err := h.svc.GetHMRCFinancialDetails(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("chargeRef"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"financial_details": res})
+}
+
+// GetHMRCInformation handles GET /api/v1/vat/hmrc/information — the registered VAT
+// business details.
+func (h *Handler) GetHMRCInformation(c *gin.Context) {
+	res, err := h.svc.GetHMRCInformation(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"information": res})
 }
