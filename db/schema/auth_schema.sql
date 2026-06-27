@@ -112,10 +112,6 @@ CREATE TABLE organisations (
     paye_reference              VARCHAR(20),
     accounts_office_reference   VARCHAR(20),
 
-    -- Whether this organisation is enrolled in MTD for VAT.
-    -- Drives whether we show the VAT Return submission workflow.
-    is_mtd_vat_enrolled     BOOLEAN     NOT NULL DEFAULT FALSE,
-
     -- -------------------------------------------------------------------------
     -- VAT registration settings (the "UK VAT Registration" screen, FreeAgent-style)
     -- Captured at the organisation level; the VAT-return calculation engine reads
@@ -124,8 +120,7 @@ CREATE TABLE organisations (
     -- not-yet-registered org has none of them. `vrn` (above) is the registration
     -- number for this same screen.
     -- -------------------------------------------------------------------------
-    -- "Are you VAT Registered?" — a simple yes/no. DISTINCT from is_mtd_vat_enrolled
-    -- above: that is about filing DIGITALLY via MTD; this is the registration itself.
+    -- "Are you VAT Registered?" — a simple yes/no (the VAT registration itself).
     vat_registered              BOOLEAN     NOT NULL DEFAULT FALSE,
 
     -- "Do you need to use VAT rates other than standard UK ones?" (e.g. VAT MOSS or
@@ -175,16 +170,10 @@ CREATE TABLE organisations (
     business_category       VARCHAR(100),               -- e.g. 'Marketing & Advertising' (free text for now)
     business_description    TEXT,
 
-    -- -------------------------------------------------------------------------
-    -- HMRC MTD OAuth tokens (Phase 2 — TrueLayer/MTD integration)
-    -- These are stored here so the background job that submits VAT returns
-    -- can retrieve them without the user being online.
-    -- TODO: encrypt these columns at rest before going to production.
-    --       Consider pgcrypto's pgp_sym_encrypt() or a KMS-backed solution.
-    -- -------------------------------------------------------------------------
-    mtd_access_token        TEXT,                       -- short-lived HMRC OAuth access token
-    mtd_refresh_token       TEXT,                       -- long-lived refresh token
-    mtd_token_expires_at    TIMESTAMPTZ,                -- when the access token expires
+    -- NOTE: HMRC MTD OAuth tokens are NOT stored here. They live per-(org,provider)
+    -- in organisation_integrations (provider='hmrc'), the same table FreeAgent uses.
+    -- (The old mtd_access_token / mtd_refresh_token / mtd_token_expires_at columns
+    -- here were never wired up and were dropped.)
 
     -- -------------------------------------------------------------------------
     -- Billing / plan (stub — Phase 2 Stripe integration)
@@ -247,7 +236,6 @@ COMMENT ON TABLE organisations IS 'Tenant entity. One row per registered busines
 COMMENT ON COLUMN organisations.vrn IS 'VAT Registration Number, stored as the bare 9 digits (no GB prefix) — the form input and the HMRC MTD {vrn} path segment. NULL if not VAT-registered.';
 COMMENT ON COLUMN organisations.utr IS 'HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.';
 COMMENT ON COLUMN organisations.country_code IS 'ISO 3166-1 alpha-2 country the org belongs to (e.g. GB). Selects the applicable vat_rates, which are keyed by the same country_code. NOT NULL, defaults to GB.';
-COMMENT ON COLUMN organisations.mtd_access_token IS 'HMRC MTD OAuth access token. TODO: encrypt at rest before production.';
 
 
 -- =============================================================================

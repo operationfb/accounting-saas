@@ -521,9 +521,9 @@ remains is the reconciliation/feed richness:
 
 - **Encrypt integration secrets at rest.** The GLOBAL app `client_secret`
   (`provider_credentials`) and each org's `access_token` / `refresh_token`
-  (`organisation_integrations`) are stored in plaintext (same caveat as the
-  `organisations.mtd_*` tokens). Encrypt before production — pgcrypto
-  `pgp_sym_encrypt()` or a KMS-backed approach. _Files:
+  (`organisation_integrations`) are stored in plaintext — including the HMRC MTD
+  tokens, which live here (not on `organisations`). Encrypt before production —
+  pgcrypto `pgp_sym_encrypt()` or a KMS-backed approach. _Files:
   `db/schema/integrations_schema.sql`, `integration_service.go`._
 - **Transactional outbox for `expense.approved`.** The planned publish (B1) is
   best-effort in the request path; a publish failure loses the event (recoverable
@@ -586,17 +586,9 @@ remains is the reconciliation/feed richness:
 - **Structured logging.** Handlers carry `_ = appErr.Error()` placeholders for a
   real logger (slog/zap) instead of `log`/`fmt`. _Files: `server.go`,
   `auth_handler.go`._
-- **Encrypt MTD OAuth tokens at rest.** `organisations.mtd_access_token` /
-  `mtd_refresh_token` are stored in plaintext; the schema flags encrypting them
-  before production. _File: `db/schema/auth_schema.sql`._
 
 ## HMRC Making Tax Digital
 
-- **Drop `mtd_*` orphan columns from `organisations`.** `mtd_access_token`,
-  `mtd_refresh_token`, `mtd_token_expires_at`, `is_mtd_vat_enrolled` are
-  placeholder columns never wired up — tokens now live in `organisation_integrations`
-  (provider='hmrc'). Drop them in a clean-up migration.
-  _File: `db/schema/auth_schema.sql`._
 - **HMRC fraud-prevention headers — DONE for the data APIs; Phase-2 items remain.**
   The full `WEB_APP_VIA_SERVER` header set is now assembled per request (`internal/vat/fraud.go`,
   browser signals via `web/src/lib/fraudSignals.ts`) and applied to every HMRC data call

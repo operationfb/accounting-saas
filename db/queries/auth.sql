@@ -311,10 +311,11 @@ WHERE slug = $1
 -- UpdateOrganisation
 -- Updates the company-settings fields shown on the Company Details screen:
 -- identity, the structured address, UK company/tax references, the invoice
--- contact details, the business profile, and locale. Billing columns and the
--- HMRC MTD OAuth tokens are intentionally left to their own dedicated flows and
--- not touched here. The legacy registered_address column is no longer written
--- (superseded by the structured address_line_*/town/region/postcode columns).
+-- contact details, the business profile, and locale. Billing columns are left to
+-- their own dedicated flow and not touched here. (HMRC MTD OAuth tokens are not on
+-- this table at all — they live per-(org,provider) in organisation_integrations.)
+-- The legacy registered_address column is no longer written (superseded by the
+-- structured address_line_*/town/region/postcode columns).
 -- -----------------------------------------------------------------------------
 -- name: UpdateOrganisation :one
 UPDATE organisations SET

@@ -185,7 +185,7 @@ INSERT INTO organisations (
     $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
     $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateOrganisationParams struct {
@@ -232,7 +232,6 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
-		&i.IsMtdVatEnrolled,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -248,9 +247,6 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.Website,
 		&i.BusinessCategory,
 		&i.BusinessDescription,
-		&i.MtdAccessToken,
-		&i.MtdRefreshToken,
-		&i.MtdTokenExpiresAt,
 		&i.Plan,
 		&i.TrialEndsAt,
 		&i.StripeCustomerID,
@@ -486,7 +482,7 @@ func (q *Queries) GetNextInvoiceNumber(ctx context.Context, id uuid.UUID) (int32
 }
 
 const getOrganisation = `-- name: GetOrganisation :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -516,7 +512,6 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
-		&i.IsMtdVatEnrolled,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -532,9 +527,6 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.Website,
 		&i.BusinessCategory,
 		&i.BusinessDescription,
-		&i.MtdAccessToken,
-		&i.MtdRefreshToken,
-		&i.MtdTokenExpiresAt,
 		&i.Plan,
 		&i.TrialEndsAt,
 		&i.StripeCustomerID,
@@ -552,7 +544,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 }
 
 const getOrganisationBySlug = `-- name: GetOrganisationBySlug :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE slug = $1
   AND deleted_at IS NULL
 `
@@ -583,7 +575,6 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
-		&i.IsMtdVatEnrolled,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -599,9 +590,6 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.Website,
 		&i.BusinessCategory,
 		&i.BusinessDescription,
-		&i.MtdAccessToken,
-		&i.MtdRefreshToken,
-		&i.MtdTokenExpiresAt,
 		&i.Plan,
 		&i.TrialEndsAt,
 		&i.StripeCustomerID,
@@ -865,7 +853,7 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 
 const listOrganisationsForUser = `-- name: ListOrganisationsForUser :many
 SELECT
-    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.is_mtd_vat_enrolled, o.vat_registered, o.vat_uses_non_standard_rates, o.vat_effective_date, o.vat_first_return_period_end, o.vat_return_frequency, o.vat_accounting_basis, o.vat_flat_rate_scheme, o.vat_flat_rate_bps, o.vat_pre_reg_expense_months, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.mtd_access_token, o.mtd_refresh_token, o.mtd_token_expires_at, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.next_invoice_number, o.is_active, o.created_at, o.updated_at, o.deleted_at,
+    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.vat_registered, o.vat_uses_non_standard_rates, o.vat_effective_date, o.vat_first_return_period_end, o.vat_return_frequency, o.vat_accounting_basis, o.vat_flat_rate_scheme, o.vat_flat_rate_bps, o.vat_pre_reg_expense_months, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.next_invoice_number, o.is_active, o.created_at, o.updated_at, o.deleted_at,
     m.role
 FROM organisations o
 JOIN organisation_memberships m ON m.organisation_id = o.id
@@ -893,7 +881,6 @@ type ListOrganisationsForUserRow struct {
 	Vrn                     pgtype.Text        `json:"vrn"`
 	PayeReference           pgtype.Text        `json:"paye_reference"`
 	AccountsOfficeReference pgtype.Text        `json:"accounts_office_reference"`
-	IsMtdVatEnrolled        bool               `json:"is_mtd_vat_enrolled"`
 	VatRegistered           bool               `json:"vat_registered"`
 	VatUsesNonStandardRates bool               `json:"vat_uses_non_standard_rates"`
 	VatEffectiveDate        pgtype.Date        `json:"vat_effective_date"`
@@ -909,9 +896,6 @@ type ListOrganisationsForUserRow struct {
 	Website                 pgtype.Text        `json:"website"`
 	BusinessCategory        pgtype.Text        `json:"business_category"`
 	BusinessDescription     pgtype.Text        `json:"business_description"`
-	MtdAccessToken          pgtype.Text        `json:"mtd_access_token"`
-	MtdRefreshToken         pgtype.Text        `json:"mtd_refresh_token"`
-	MtdTokenExpiresAt       pgtype.Timestamptz `json:"mtd_token_expires_at"`
 	Plan                    string             `json:"plan"`
 	TrialEndsAt             pgtype.Timestamptz `json:"trial_ends_at"`
 	StripeCustomerID        pgtype.Text        `json:"stripe_customer_id"`
@@ -960,7 +944,6 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.Vrn,
 			&i.PayeReference,
 			&i.AccountsOfficeReference,
-			&i.IsMtdVatEnrolled,
 			&i.VatRegistered,
 			&i.VatUsesNonStandardRates,
 			&i.VatEffectiveDate,
@@ -976,9 +959,6 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.Website,
 			&i.BusinessCategory,
 			&i.BusinessDescription,
-			&i.MtdAccessToken,
-			&i.MtdRefreshToken,
-			&i.MtdTokenExpiresAt,
 			&i.Plan,
 			&i.TrialEndsAt,
 			&i.StripeCustomerID,
@@ -1299,7 +1279,7 @@ UPDATE organisations SET
     updated_at                = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationParams struct {
@@ -1334,10 +1314,11 @@ type UpdateOrganisationParams struct {
 // UpdateOrganisation
 // Updates the company-settings fields shown on the Company Details screen:
 // identity, the structured address, UK company/tax references, the invoice
-// contact details, the business profile, and locale. Billing columns and the
-// HMRC MTD OAuth tokens are intentionally left to their own dedicated flows and
-// not touched here. The legacy registered_address column is no longer written
-// (superseded by the structured address_line_*/town/region/postcode columns).
+// contact details, the business profile, and locale. Billing columns are left to
+// their own dedicated flow and not touched here. (HMRC MTD OAuth tokens are not on
+// this table at all — they live per-(org,provider) in organisation_integrations.)
+// The legacy registered_address column is no longer written (superseded by the
+// structured address_line_*/town/region/postcode columns).
 // -----------------------------------------------------------------------------
 func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisationParams) (Organisation, error) {
 	row := q.db.QueryRow(ctx, updateOrganisation,
@@ -1386,7 +1367,6 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
-		&i.IsMtdVatEnrolled,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -1402,9 +1382,6 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.Website,
 		&i.BusinessCategory,
 		&i.BusinessDescription,
-		&i.MtdAccessToken,
-		&i.MtdRefreshToken,
-		&i.MtdTokenExpiresAt,
 		&i.Plan,
 		&i.TrialEndsAt,
 		&i.StripeCustomerID,
@@ -1436,7 +1413,7 @@ UPDATE organisations SET
     updated_at                   = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, is_mtd_vat_enrolled, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, mtd_access_token, mtd_refresh_token, mtd_token_expires_at, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationVatSettingsParams struct {
@@ -1496,7 +1473,6 @@ func (q *Queries) UpdateOrganisationVatSettings(ctx context.Context, arg UpdateO
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
-		&i.IsMtdVatEnrolled,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -1512,9 +1488,6 @@ func (q *Queries) UpdateOrganisationVatSettings(ctx context.Context, arg UpdateO
 		&i.Website,
 		&i.BusinessCategory,
 		&i.BusinessDescription,
-		&i.MtdAccessToken,
-		&i.MtdRefreshToken,
-		&i.MtdTokenExpiresAt,
 		&i.Plan,
 		&i.TrialEndsAt,
 		&i.StripeCustomerID,
