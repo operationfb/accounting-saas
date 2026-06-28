@@ -34,6 +34,12 @@ export const MemberDetailSchema = OrganisationMemberSchema.extend({
   national_insurance_number: z.string().nullish(),
   utr: z.string().nullish(),
   date_of_birth: z.string().nullish(), // ISO YYYY-MM-DD
+  // Personal/home address (future payroll module).
+  address_line_1: z.string().nullish(),
+  address_line_2: z.string().nullish(),
+  address_line_3: z.string().nullish(),
+  address_line_4: z.string().nullish(),
+  postcode: z.string().nullish(),
 })
 export type MemberDetail = z.infer<typeof MemberDetailSchema>
 
@@ -46,6 +52,11 @@ export interface UpdateMemberRequest {
   national_insurance_number?: string | null
   utr?: string | null
   date_of_birth?: string | null // ISO YYYY-MM-DD
+  address_line_1?: string | null
+  address_line_2?: string | null
+  address_line_3?: string | null
+  address_line_4?: string | null
+  postcode?: string | null
   role: 'owner' | 'admin' | 'member' | 'accountant' | 'read_only'
   status: 'active' | 'suspended' | 'deactivated'
 }

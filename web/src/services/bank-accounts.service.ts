@@ -4,11 +4,14 @@ import {
   GetBankAccountResponseSchema,
   BankAccountTransactionsResponseSchema,
   StatementImportResultSchema,
+  StatementImportPreviewSchema,
   type BankAccount,
   type BankTransaction,
+  type ColumnMapping,
   type CreateBankAccountRequest,
   type CreateBankTransactionRequest,
   type StatementImportResult,
+  type StatementImportPreview,
 } from '@/types/bank-account'
 
 // Statement payload shared by the read + the three transaction mutations (all return
@@ -98,12 +101,35 @@ export async function deleteBankAccount(id: string): Promise<void> {
   await apiFetch<unknown>(`/bank-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
-// POST /api/v1/bank-accounts/:id/transactions/import — upload a CSV statement (owner/admin,
-// multipart "file"). Returns the import counts + the refreshed statement. A 422 (bad CSV — the
-// backend names the offending rows) surfaces as an ApiError for the view to show.
-export async function importBankStatement(accountId: string, file: File): Promise<StatementImportResult> {
+// POST /api/v1/bank-accounts/:id/transactions/import/preview — DETECT step (owner/admin,
+// multipart "file"). Returns the proposed column mapping + a sample of interpreted rows
+// WITHOUT importing. Pass a mapping to RE-preview with the user's edits (live feedback in
+// the confirm screen); omit it for the first, auto-detected preview.
+export async function previewBankStatement(
+  accountId: string,
+  file: File,
+  mapping?: ColumnMapping,
+): Promise<StatementImportPreview> {
   const form = new FormData()
   form.append('file', file)
+  if (mapping) form.append('mapping', JSON.stringify(mapping))
+  const data = await apiUpload<unknown>(`/bank-accounts/${encodeURIComponent(accountId)}/transactions/import/preview`, form)
+  return StatementImportPreviewSchema.parse(data)
+}
+
+// POST /api/v1/bank-accounts/:id/transactions/import — COMMIT step (owner/admin, multipart
+// "file" + optional "mapping" JSON). With a mapping the backend parses exactly it; without
+// one it auto-detects (our own template still "just works"). Returns the import counts + the
+// refreshed statement. A 422 (bad file — the backend names the offending rows) surfaces as
+// an ApiError for the view to show.
+export async function importBankStatement(
+  accountId: string,
+  file: File,
+  mapping?: ColumnMapping,
+): Promise<StatementImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  if (mapping) form.append('mapping', JSON.stringify(mapping))
   const data = await apiUpload<unknown>(`/bank-accounts/${encodeURIComponent(accountId)}/transactions/import`, form)
   return StatementImportResultSchema.parse(data)
 }

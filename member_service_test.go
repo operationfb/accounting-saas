@@ -226,6 +226,9 @@ func TestHandleUpdateMember(t *testing.T) {
 			NationalInsuranceNumber: ptr("SY598539D"),
 			UTR:                     ptr("1901746095"),
 			DateOfBirth:             ptr("1982-04-21"),
+			AddressLine1:            ptr("26 Effra Road"),
+			AddressLine2:            ptr("London"),
+			Postcode:                ptr("SW2 1BZ"),
 			Role:                    "admin",
 			Status:                  "suspended",
 		})
@@ -239,18 +242,26 @@ func TestHandleUpdateMember(t *testing.T) {
 		if got.Role != "admin" || got.Status != "suspended" {
 			t.Errorf("role/status: got %q/%q, want admin/suspended", got.Role, got.Status)
 		}
+		if got.AddressLine1 == nil || *got.AddressLine1 != "26 Effra Road" ||
+			got.Postcode == nil || *got.Postcode != "SW2 1BZ" {
+			t.Errorf("address: got line1=%v postcode=%v", got.AddressLine1, got.Postcode)
+		}
 
 		// Committed to the DB (users + membership).
-		var ni, utr, dob, role, status string
+		var ni, utr, dob, addr1, postcode, role, status string
 		if err := ts.pool.QueryRow(context.Background(),
-			`SELECT u.national_insurance_number, u.utr, u.date_of_birth::text, m.role, m.status
+			`SELECT u.national_insurance_number, u.utr, u.date_of_birth::text,
+			        u.address_line_1, u.postcode, m.role, m.status
 			 FROM users u JOIN organisation_memberships m ON m.user_id = u.id
 			 WHERE u.id = $1 AND m.organisation_id = $2`, targetID, orgID).
-			Scan(&ni, &utr, &dob, &role, &status); err != nil {
+			Scan(&ni, &utr, &dob, &addr1, &postcode, &role, &status); err != nil {
 			t.Fatalf("re-read: %v", err)
 		}
 		if ni != "SY598539D" || utr != "1901746095" || dob != "1982-04-21" {
 			t.Errorf("payroll not persisted: ni=%q utr=%q dob=%q", ni, utr, dob)
+		}
+		if addr1 != "26 Effra Road" || postcode != "SW2 1BZ" {
+			t.Errorf("address not persisted: line1=%q postcode=%q", addr1, postcode)
 		}
 		if role != "admin" || status != "suspended" {
 			t.Errorf("membership not persisted: role=%q status=%q", role, status)

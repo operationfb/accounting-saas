@@ -61,6 +61,13 @@ type UpdateProfileRequest struct {
 	NationalInsuranceNumber *string `json:"national_insurance_number"`
 	UTR                     *string `json:"utr"`
 	DateOfBirth             *string `json:"date_of_birth"` // ISO YYYY-MM-DD
+	// Optional personal/home address (future payroll module). Free text — no
+	// validation, blank/omitted -> NULL via kernel.NullText.
+	AddressLine1 *string `json:"address_line_1"`
+	AddressLine2 *string `json:"address_line_2"`
+	AddressLine3 *string `json:"address_line_3"`
+	AddressLine4 *string `json:"address_line_4"`
+	Postcode     *string `json:"postcode"`
 }
 
 // Service holds only the auth query set: reading and updating the user are
@@ -162,6 +169,12 @@ func (s *Service) UpdateProfile(
 		NationalInsuranceNumber: nino,
 		Utr:                     utr,
 		DateOfBirth:             dob,
+		// Personal/home address (free text; blank -> NULL).
+		AddressLine1: kernel.NullText(req.AddressLine1),
+		AddressLine2: kernel.NullText(req.AddressLine2),
+		AddressLine3: kernel.NullText(req.AddressLine3),
+		AddressLine4: kernel.NullText(req.AddressLine4),
+		Postcode:     kernel.NullText(req.Postcode),
 	})
 	if err != nil {
 		// The row was live a moment ago; ErrNoRows means it was soft-deleted in between.

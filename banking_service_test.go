@@ -490,15 +490,17 @@ func TestBankAccountService(t *testing.T) {
 		}
 	})
 
+	// importCSV uploads with NO mapping (the service auto-detects the format) — covers our
+	// own template + the no-mapping endpoint contract. The mapped path has its own helper below.
 	importCSV := func(t *testing.T, userID, orgID, accID, csv string) (*banking.StatementImportResponse, error) {
 		t.Helper()
-		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(csv))
+		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(csv), nil)
 	}
 	// importOFX is the same entry point — ImportStatement auto-detects CSV vs OFX from
 	// the bytes — but named for intent in the OFX subtests below.
 	importOFX := func(t *testing.T, userID, orgID, accID, ofx string) (*banking.StatementImportResponse, error) {
 		t.Helper()
-		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(ofx))
+		return svc.ImportStatement(ctx, mustUUID(t, userID), mustUUID(t, orgID), accID, strings.NewReader(ofx), nil)
 	}
 
 	t.Run("statement import: valid CSV creates statement lines + is idempotent", func(t *testing.T) {
@@ -581,8 +583,8 @@ func TestBankAccountService(t *testing.T) {
 			"date,description\n11/06/2026,NoAmountCol\n",          // missing amount column
 			"date,description,amount\n11/06/2026,Empty,\n",        // empty amount cell
 			"date,description,amount\n11/06/2026,Bad,abc\n",       // non-numeric amount
-			"date,description,amount\n11/06/2026,Zero,0\n",        // zero amount
-			"date,description,amount\n2026-06-11,BadDate,10.00\n", // wrong date format
+			"date,description,amount\n11/06/2026,Zero,0\n",      // zero amount
+			"date,description,amount\nnot-a-date,Bad,10.00\n",   // unparseable date (no layout matches → default DD/MM rejects it)
 		} {
 			if _, err := importCSV(t, user, org, acc.ID, bad); err == nil {
 				t.Errorf("expected 422 for invalid CSV: %q", bad)
@@ -614,6 +616,159 @@ func TestBankAccountService(t *testing.T) {
 		otherOrg, otherUser := newOrgWithOwner(t, ts)
 		if _, err := importCSV(t, otherUser, otherOrg, acc.ID, csv); err == nil {
 			t.Error("importing into another org's account should be 404")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeNotFound)
+		}
+	})
+
+	// --- CSV format auto-detection: preview → confirm mapping → commit ---------
+
+	t.Run("statement preview: Monzo-style signed amount + ISO date is auto-detected", func(t *testing.T) {
+		t.Parallel()
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("PreviewMonzo", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		// Columns that DON'T match our template: 'Name' (not description), a single signed
+		// 'Amount', ISO dates.
+		csv := "Date,Name,Amount\n" +
+			"2026-06-22,Tesco,-12.50\n" +
+			"2026-06-23,Acme Ltd,2500.00\n"
+		resp, err := svc.PreviewStatement(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, strings.NewReader(csv), nil)
+		if err != nil {
+			t.Fatalf("preview: %v", err)
+		}
+		if resp.Format != "csv" || resp.Mapping == nil {
+			t.Fatalf("preview: format=%q mapping=%v, want csv + a mapping", resp.Format, resp.Mapping)
+		}
+		m := resp.Mapping
+		if m.AmountFormat != "signed" || m.AmountColumn == nil || *m.AmountColumn != 2 {
+			t.Errorf("amount: format=%q col=%v, want signed/2", m.AmountFormat, m.AmountColumn)
+		}
+		if m.DateColumn == nil || *m.DateColumn != 0 || m.DescriptionColumn == nil || *m.DescriptionColumn != 1 {
+			t.Errorf("date/desc cols: %v/%v, want 0/1", m.DateColumn, m.DescriptionColumn)
+		}
+		if m.DateFormat != "2006-01-02" {
+			t.Errorf("date format: got %q, want ISO 2006-01-02", m.DateFormat)
+		}
+		// The preview interprets the first row as money OUT (negative signed amount).
+		if len(resp.PreviewRows) != 2 || resp.PreviewRows[0].MoneyOut == nil || *resp.PreviewRows[0].MoneyOut != "12.50" {
+			t.Errorf("preview row 0: %+v, want money_out 12.50", resp.PreviewRows)
+		}
+		// Preview must NOT import anything.
+		if st, _ := svc.ListTransactions(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID); len(st.Transactions) != 0 {
+			t.Errorf("preview must not import: got %d transactions", len(st.Transactions))
+		}
+	})
+
+	t.Run("statement preview: Barclays-style Debit/Credit split + Balance is auto-detected", func(t *testing.T) {
+		t.Parallel()
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("PreviewBarclays", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		csv := "Date,Description,Debit,Credit,Balance\n" +
+			"22/06/2026,Tesco,12.50,,987.50\n" +
+			"23/06/2026,Acme,,2500.00,3487.50\n"
+		resp, err := svc.PreviewStatement(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, strings.NewReader(csv), nil)
+		if err != nil {
+			t.Fatalf("preview: %v", err)
+		}
+		m := resp.Mapping
+		if m == nil || m.AmountFormat != "split" {
+			t.Fatalf("amount format: %v, want split", m)
+		}
+		// Debit is money OUT (col 2), Credit is money IN (col 3).
+		if m.MoneyOutColumn == nil || *m.MoneyOutColumn != 2 || m.MoneyInColumn == nil || *m.MoneyInColumn != 3 {
+			t.Errorf("split cols: out=%v in=%v, want out=2 (Debit) in=3 (Credit)", m.MoneyOutColumn, m.MoneyInColumn)
+		}
+		if m.BalanceColumn == nil || *m.BalanceColumn != 4 {
+			t.Errorf("balance col: %v, want 4", m.BalanceColumn)
+		}
+		if m.DateFormat != "02/01/2006" {
+			t.Errorf("date format: got %q, want DD/MM 02/01/2006", m.DateFormat)
+		}
+	})
+
+	t.Run("statement import: a confirmed split mapping signs amount_minor + fills balance", func(t *testing.T) {
+		t.Parallel()
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org),
+			bankReq("MappedImport", func(r *banking.CreateBankAccountRequest) { r.OpeningBalance = "1000.00" }))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+
+		// A bank export with cryptic headers the detector wouldn't fully know — so the user
+		// confirms the mapping explicitly: split out/in columns, ISO dates, a balance column.
+		csv := "When,Memo,Out,In,Bal\n" +
+			"2026-06-22,Tesco Stores,12.50,,987.50\n" +
+			"2026-06-23,Client Acme,,2500.00,3487.50\n"
+		dateCol, descCol, outCol, inCol, balCol := 0, 1, 2, 3, 4
+		m := banking.ColumnMapping{
+			DateColumn:        &dateCol,
+			DescriptionColumn: &descCol,
+			AmountFormat:      "split",
+			MoneyInColumn:     &inCol,
+			MoneyOutColumn:    &outCol,
+			BalanceColumn:     &balCol,
+			DateFormat:        "2006-01-02",
+		}
+		res, err := svc.ImportStatement(ctx, mustUUID(t, user), mustUUID(t, org), acc.ID, strings.NewReader(csv), &m)
+		if err != nil {
+			t.Fatalf("mapped import: %v", err)
+		}
+		if res.Imported != 2 {
+			t.Fatalf("imported: got %d, want 2", res.Imported)
+		}
+		tesco, acme := res.Transactions[0], res.Transactions[1] // chronological
+		if tesco.MoneyOut == nil || *tesco.MoneyOut != "12.50" || tesco.MoneyIn != nil {
+			t.Errorf("debit row: out=%v in=%v, want out 12.50", tesco.MoneyOut, tesco.MoneyIn)
+		}
+		if acme.MoneyIn == nil || *acme.MoneyIn != "2500.00" || acme.MoneyOut != nil {
+			t.Errorf("credit row: in=%v out=%v, want in 2500.00", acme.MoneyIn, acme.MoneyOut)
+		}
+		if res.Account.CurrentBalance != "3487.50" { // 1000 - 12.50 + 2500
+			t.Errorf("current balance: got %q, want 3487.50", res.Account.CurrentBalance)
+		}
+		// The mapped Balance column landed on balance_minor (not surfaced by the API, so check the row).
+		var balMinor *int64
+		if err := ts.pool.QueryRow(ctx,
+			`SELECT balance_minor FROM bank_transactions WHERE bank_account_id=$1 AND description=$2 AND deleted_at IS NULL`,
+			mustUUID(t, acc.ID), "Tesco Stores").Scan(&balMinor); err != nil {
+			t.Fatalf("balance query: %v", err)
+		}
+		if balMinor == nil || *balMinor != 98750 {
+			t.Errorf("balance_minor: got %v, want 98750", balMinor)
+		}
+	})
+
+	t.Run("statement preview authz: non-admin 403, other org 404", func(t *testing.T) {
+		t.Parallel()
+		org, user := newOrgWithOwner(t, ts)
+		acc, err := svc.CreateBankAccount(ctx, mustUUID(t, user), mustUUID(t, org), bankReq("PreviewAuthz", nil))
+		if err != nil {
+			t.Fatalf("create account: %v", err)
+		}
+		cleanupBankAccount(t, ts, acc.ID)
+		csv := "date,description,amount\n11/06/2026,X,1.00\n"
+
+		member := addMember(t, ts, org, "member")
+		if _, err := svc.PreviewStatement(ctx, mustUUID(t, member), mustUUID(t, org), acc.ID, strings.NewReader(csv), nil); err == nil {
+			t.Error("a non-admin preview should be 403")
+		} else {
+			assertAppCode(t, err, kernel.ErrCodeForbidden)
+		}
+		otherOrg, otherUser := newOrgWithOwner(t, ts)
+		if _, err := svc.PreviewStatement(ctx, mustUUID(t, otherUser), mustUUID(t, otherOrg), acc.ID, strings.NewReader(csv), nil); err == nil {
+			t.Error("previewing another org's account should be 404")
 		} else {
 			assertAppCode(t, err, kernel.ErrCodeNotFound)
 		}

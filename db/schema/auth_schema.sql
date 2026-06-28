@@ -298,6 +298,19 @@ CREATE TABLE users (
     date_of_birth             DATE,
 
     -- -------------------------------------------------------------------------
+    -- Personal / home address
+    -- The user's own address (distinct from the organisation's), captured on the
+    -- User Details screen for the future payroll module. All nullable + free text;
+    -- four flat lines + postcode (mirrors the FreeAgent User Details form rather
+    -- than the org's town/region split).
+    -- -------------------------------------------------------------------------
+    address_line_1            VARCHAR(255),
+    address_line_2            VARCHAR(255),
+    address_line_3            VARCHAR(255),
+    address_line_4            VARCHAR(255),
+    postcode                  VARCHAR(20),
+
+    -- -------------------------------------------------------------------------
     -- Email verification
     -- A user must verify their email before they can use the platform.
     -- The verification token is a cryptographically random string emailed to
@@ -354,6 +367,8 @@ COMMENT ON COLUMN users.last_login_ip IS 'Uses PostgreSQL native INET type — s
 COMMENT ON COLUMN users.national_insurance_number IS 'UK NINO (payroll). Nullable; format validated in the service layer, not by a CHECK.';
 COMMENT ON COLUMN users.utr IS 'User''s PERSONAL 10-digit HMRC Unique Tax Reference (payroll/Self Assessment). Distinct from organisations.utr (the company UTR).';
 COMMENT ON COLUMN users.date_of_birth IS 'Date of birth (payroll: NI category by age, pension auto-enrolment). DATE — no time component.';
+COMMENT ON COLUMN users.address_line_1 IS 'Personal/home address (payroll). Free text, nullable. Distinct from the organisation address.';
+COMMENT ON COLUMN users.postcode IS 'Personal/home postcode (payroll). Free text, nullable.';
 
 
 -- =============================================================================

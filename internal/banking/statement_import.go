@@ -8,14 +8,12 @@ package banking
 // see the OFX section at the bottom of this file). Both parse into the same
 // []parsedLine and flow through the one insert path in ImportStatement.
 //
-// The CSV is a FIXED TEMPLATE (no per-bank column mapping, no dependency — stdlib
-// encoding/csv + crypto/sha256). Columns are matched by HEADER NAME (order-free):
-//   date         required, DD/MM/YYYY
-//   description  required
-//   amount       required, SIGNED decimal pounds — positive = money in, negative
-//                (leading '-', e.g. -54.20) = money out. Stored straight into
-//                amount_minor. Must not be empty or zero.
-//   bank_memo    optional raw bank narrative
+// The CSV is parsed through a ColumnMapping (statement_detect.go): which column is the
+// date / description / amount, the amount SHAPE (one signed column vs a money-in/out
+// pair), and the date layout. ImportStatement either takes a mapping the user CONFIRMED
+// (the detect→confirm→commit flow) or, when none is passed, AUTO-DETECTS one (detectFormat)
+// — so our own template (date, description, amount; signed; DD/MM/YYYY) still "just works"
+// with no mapping. No new dependency (stdlib encoding/csv + crypto/sha256).
 //
 // Imported rows are source='statement', status='unexplained', transaction_type
 // defaulted by sign, created_by = the uploader. DEDUPE: each line gets a stable
@@ -68,14 +66,15 @@ type parsedLine struct {
 	AmountMinor     int64 // signed: + money in, - money out
 	Description     string
 	BankMemo        *string
-	ExternalID      string // stable dedupe key
-	TransactionType string // CREDIT | DEBIT
+	Balance         pgtype.Int8 // optional running balance from the statement (NULL when absent)
+	ExternalID      string      // stable dedupe key
+	TransactionType string      // CREDIT | DEBIT
 }
 
 // ImportStatement parses an uploaded CSV, dedupes against the account's existing
 // imported lines, and inserts the new ones (owner/admin). Returns the counts plus
 // the refreshed statement. Atomic: a single bad row fails the whole import.
-func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uuid.UUID, accountID string, content io.Reader) (*StatementImportResponse, error) {
+func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uuid.UUID, accountID string, content io.Reader, mapping *ColumnMapping) (*StatementImportResponse, error) {
 	accountUUID, err := uuid.Parse(accountID)
 	if err != nil {
 		return nil, kernel.ErrValidation("id is not a valid UUID", err)
@@ -98,9 +97,18 @@ func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uui
 		return nil, kernel.ErrValidation("could not read the uploaded file", err)
 	}
 	var lines []parsedLine
-	if looksLikeOFX(raw) {
+	switch {
+	case looksLikeOFX(raw):
+		// OFX is self-describing — a confirmed CSV mapping doesn't apply, so ignore it.
 		lines, err = parseStatementOFX(raw)
-	} else {
+	case mapping != nil:
+		// The user confirmed a mapping in the detect→confirm step — parse with exactly it.
+		var records [][]string
+		if records, err = readCSVRecords(bytes.NewReader(raw)); err == nil {
+			lines, err = parseWithMapping(records, *mapping)
+		}
+	default:
+		// No mapping: auto-detect (our own template + any unambiguous bank export).
 		lines, err = parseStatementCSV(bytes.NewReader(raw))
 	}
 	if err != nil {
@@ -135,6 +143,7 @@ func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uui
 				AmountMinor:     ln.AmountMinor,
 				Description:     pgtype.Text{String: ln.Description, Valid: true},
 				BankMemo:        kernel.NullText(ln.BankMemo),
+				BalanceMinor:    ln.Balance,
 				Status:          "unexplained",
 				Source:          "statement",
 				ExternalID:      pgtype.Text{String: ln.ExternalID, Valid: true},
@@ -164,11 +173,12 @@ func (s *Service) ImportStatement(ctx context.Context, authUserID, authOrgID uui
 	}, nil
 }
 
-// parseStatementCSV reads + validates the whole file. On any invalid row it returns
-// a single 422 naming the first offending rows (and inserts nothing).
-func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
+// readCSVRecords reads the whole CSV into memory (statements are small + body-capped at
+// 5 MiB) tolerating ragged rows, since we index by column POSITION. Strips a UTF-8 BOM
+// from the first header cell so column 0 matches its synonyms (and shows cleanly in the UI).
+func readCSVRecords(r io.Reader) ([][]string, error) {
 	cr := csv.NewReader(r)
-	cr.FieldsPerRecord = -1 // tolerate ragged rows; we index by header name
+	cr.FieldsPerRecord = -1 // tolerate ragged rows; we index by column position
 	cr.TrimLeadingSpace = true
 	records, err := cr.ReadAll()
 	if err != nil {
@@ -177,94 +187,58 @@ func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
 	if len(records) == 0 {
 		return nil, kernel.ErrValidation("the CSV file is empty", nil)
 	}
+	if len(records[0]) > 0 {
+		records[0][0] = strings.TrimPrefix(records[0][0], bomPrefix)
+	}
+	return records, nil
+}
 
-	// Header → column index (BOM-stripped, lower-cased, trimmed).
-	bom := string(rune(0xFEFF)) // some exporters prepend a UTF-8 byte-order mark
-	col := map[string]int{}
-	for i, h := range records[0] {
-		key := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(h, bom)))
-		col[key] = i
+// parseStatementCSV is the NO-MAPPING path: read the file, AUTO-DETECT the column mapping,
+// and parse. Our own template still "just works" (detectFormat maps date/description/amount),
+// and an undetectable file fails with the same 422 the old hard-coded parser gave — the
+// missing-column check now lives in validateMapping (called by parseWithMapping).
+func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
+	records, err := readCSVRecords(r)
+	if err != nil {
+		return nil, err
 	}
-	for _, required := range []string{"date", "description", "amount"} {
-		if _, ok := col[required]; !ok {
-			return nil, kernel.ErrValidation(fmt.Sprintf(
-				"CSV is missing the required column %q (expected: date, description, amount, and optionally bank_memo)",
-				required), nil)
-		}
-	}
-	field := func(rec []string, name string) string {
-		idx, ok := col[name]
-		if !ok || idx >= len(rec) {
-			return ""
-		}
-		return strings.TrimSpace(rec[idx])
-	}
+	mapping, _ := detectFormat(records)
+	return parseWithMapping(records, mapping)
+}
 
+// parseWithMapping applies an explicit ColumnMapping to the records (row 0 = header),
+// ALL-OR-NOTHING like the original parser: any bad row fails the whole import with a 422
+// naming the first offenders (nothing inserted). parseMappedRow does the per-row work.
+func parseWithMapping(records [][]string, m ColumnMapping) ([]parsedLine, error) {
+	if len(records) == 0 {
+		return nil, kernel.ErrValidation("the CSV file is empty", nil)
+	}
+	if err := validateMapping(m, len(records[0])); err != nil {
+		return nil, err
+	}
 	out := make([]parsedLine, 0, len(records)-1)
 	var rowErrs []string
-	occ := map[string]int{} // occurrence counter per (date|amount|description)
-
+	occ := map[string]int{} // occurrence counter per (date|amount|description), for dedupe ids
 	for i, rec := range records[1:] {
-		rowNum := i + 2 // 1-based incl. the header row
+		rowNum := i + 2 // 1-based, including the header row
 		if isBlankRecord(rec) {
 			continue
 		}
-
-		dateStr := field(rec, "date")
-		desc := field(rec, "description")
-		memo := field(rec, "bank_memo")
-
-		t, derr := time.Parse("02/01/2006", dateStr)
-		switch {
-		case dateStr == "":
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: missing date", rowNum))
+		row, err := parseMappedRow(rec, m)
+		if err != nil {
+			rowErrs = append(rowErrs, fmt.Sprintf("row %d: %s", rowNum, err.Error()))
 			continue
-		case derr != nil:
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: date %q must be DD/MM/YYYY", rowNum, dateStr))
-			continue
-		}
-		if desc == "" {
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: missing description", rowNum))
-			continue
-		}
-
-		// One SIGNED amount column: + money in, - money out. Empty/zero is rejected;
-		// the sign goes straight into amount_minor.
-		amountStr := field(rec, "amount")
-		if amountStr == "" {
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: missing amount", rowNum))
-			continue
-		}
-		amountMinor, aerr := parseSignedAmount(amountStr)
-		if aerr != nil {
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: amount %q must be a number; use a leading - for money out (e.g. -54.20)", rowNum, amountStr))
-			continue
-		}
-		if amountMinor == 0 {
-			rowErrs = append(rowErrs, fmt.Sprintf("row %d: amount must not be zero", rowNum))
-			continue
-		}
-
-		// Stable dedupe id; occurrence counter distinguishes identical lines in one file.
-		base := fmt.Sprintf("%s\x1f%d\x1f%s", t.Format("2006-01-02"), amountMinor, desc)
-		k := occ[base]
-		occ[base] = k + 1
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x1f%d", base, k)))
-
-		var memoPtr *string
-		if memo != "" {
-			memoPtr = &memo
 		}
 		out = append(out, parsedLine{
-			DatedOn:         pgtype.Date{Time: t, Valid: true},
-			AmountMinor:     amountMinor,
-			Description:     desc,
-			BankMemo:        memoPtr,
-			ExternalID:      "csv:" + hex.EncodeToString(sum[:]),
-			TransactionType: transactionTypeForSign(amountMinor),
+			DatedOn:         pgtype.Date{Time: row.Date, Valid: true},
+			AmountMinor:     row.AmountMinor,
+			Description:     row.Description,
+			BankMemo:        row.BankMemo,
+			Balance:         row.Balance,
+			ExternalID:      syntheticExternalID("csv:", row.Date, row.AmountMinor, row.Description, occ),
+			TransactionType: transactionTypeForSign(row.AmountMinor),
 		})
 	}
-
 	if len(rowErrs) > 0 {
 		msg := "the CSV has invalid rows: " + strings.Join(firstN(rowErrs, 5), "; ")
 		if len(rowErrs) > 5 {
@@ -275,15 +249,124 @@ func parseStatementCSV(r io.Reader) ([]parsedLine, error) {
 	return out, nil
 }
 
-// parseSignedAmount parses the SIGNED amount column → minor units (pence). Tolerates
-// £, commas and spaces, but KEEPS a leading '-' (negative = money out). Empty → 0 with
-// no error; the caller treats an empty cell as a "missing amount" row error.
+// mappedRow is one CSV row interpreted through a ColumnMapping, before its dedupe id is
+// assigned (that needs the occurrence counter the all-or-nothing caller owns).
+type mappedRow struct {
+	Date        time.Time
+	AmountMinor int64 // signed
+	Description string
+	BankMemo    *string
+	Balance     pgtype.Int8 // optional running balance (NULL when the column is absent/blank)
+}
+
+// parseMappedRow interprets one data row through the mapping. Returns a row-level error
+// (for the all-or-nothing 422 list OR the preview's per-row note) without aborting the batch.
+func parseMappedRow(rec []string, m ColumnMapping) (mappedRow, error) {
+	cell := func(p *int) string {
+		if p == nil || *p < 0 || *p >= len(rec) {
+			return ""
+		}
+		return strings.TrimSpace(rec[*p])
+	}
+
+	dateStr := cell(m.DateColumn)
+	if dateStr == "" {
+		return mappedRow{}, errors.New("missing date")
+	}
+	t, err := time.Parse(m.DateFormat, dateStr)
+	if err != nil {
+		return mappedRow{}, fmt.Errorf("date %q doesn't match the selected format", dateStr)
+	}
+
+	desc := cell(m.DescriptionColumn)
+	if desc == "" {
+		return mappedRow{}, errors.New("missing description")
+	}
+
+	var amountMinor int64
+	switch m.AmountFormat {
+	case amountFormatSigned:
+		amtStr := cell(m.AmountColumn)
+		if amtStr == "" {
+			return mappedRow{}, errors.New("missing amount")
+		}
+		if amountMinor, err = parseSignedAmount(amtStr); err != nil {
+			return mappedRow{}, fmt.Errorf("amount %q isn't a number", amtStr)
+		}
+	case amountFormatSplit:
+		inMinor, ierr := parsePositiveAmount(cell(m.MoneyInColumn))
+		outMinor, oerr := parsePositiveAmount(cell(m.MoneyOutColumn))
+		if ierr != nil || oerr != nil {
+			return mappedRow{}, errors.New("money in / money out must be a positive number")
+		}
+		hasIn, hasOut := inMinor > 0, outMinor > 0
+		if hasIn == hasOut { // both populated, or neither
+			return mappedRow{}, errors.New("provide exactly one of money in or money out")
+		}
+		amountMinor = inMinor
+		if hasOut {
+			amountMinor = -outMinor
+		}
+	default:
+		return mappedRow{}, errors.New("invalid amount format")
+	}
+	if amountMinor == 0 {
+		return mappedRow{}, errors.New("amount must not be zero")
+	}
+
+	var memoPtr *string
+	if memo := cell(m.MemoColumn); memo != "" {
+		memoPtr = &memo
+	}
+	// Balance is an OPTIONAL convenience column — a missing/blank/garbled cell is non-fatal
+	// (we just leave balance_minor NULL), so a bad balance never blocks the whole import.
+	var balance pgtype.Int8
+	if balStr := cell(m.BalanceColumn); balStr != "" {
+		if bal, berr := parseSignedAmount(balStr); berr == nil {
+			balance = pgtype.Int8{Int64: bal, Valid: true}
+		}
+	}
+	return mappedRow{Date: t, AmountMinor: amountMinor, Description: desc, BankMemo: memoPtr, Balance: balance}, nil
+}
+
+// parseSignedAmount parses a SIGNED amount column → minor units (pence). Tolerates £,
+// commas and spaces, but KEEPS a leading '-' (negative = money out). Empty → 0 with no
+// error; callers treat an empty cell as a "missing amount" row error.
 func parseSignedAmount(s string) (int64, error) {
 	s = strings.NewReplacer("£", "", ",", "", " ", "").Replace(strings.TrimSpace(s))
 	if s == "" {
 		return 0, nil
 	}
 	return money.PoundsToMinor(s) // handles negatives: "-54.20" → -5420
+}
+
+// parsePositiveAmount parses one side of a money-in/out pair → minor units. Empty → 0 (the
+// row's other side carries the value). Tolerates £, commas and spaces; rejects a negative
+// (the sign is implied by WHICH column the value sits in, not by a leading '-').
+func parsePositiveAmount(s string) (int64, error) {
+	s = strings.NewReplacer("£", "", ",", "", " ", "").Replace(strings.TrimSpace(s))
+	if s == "" {
+		return 0, nil
+	}
+	minor, err := money.PoundsToMinor(s)
+	if err != nil {
+		return 0, err
+	}
+	if minor < 0 {
+		return 0, errors.New("negative amount")
+	}
+	return minor, nil
+}
+
+// syntheticExternalID builds the stable dedupe key for a line the bank gives no id to
+// (every CSV row; an OFX row missing its FITID). The occurrence counter keeps byte-identical
+// lines within one file distinct. prefix namespaces the source ("csv:" / "ofx:").
+func syntheticExternalID(prefix string, t time.Time, amountMinor int64, desc string, occ map[string]int) string {
+	base := fmt.Sprintf("%s\x1f%d\x1f%s", t.Format("2006-01-02"), amountMinor, desc)
+	k := occ[base]
+	occ[base] = k + 1
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x1f%d", base, k)))
+	return prefix + hex.EncodeToString(sum[:])
 }
 
 func isBlankRecord(rec []string) bool {
@@ -418,11 +501,7 @@ func parseStatementOFX(raw []byte) ([]parsedLine, error) {
 		if fitid := ofxField(block, "FITID"); fitid != "" {
 			externalID = "ofx:" + fitid
 		} else {
-			base := fmt.Sprintf("%s\x1f%d\x1f%s", t.Format("2006-01-02"), amountMinor, desc)
-			k := occ[base]
-			occ[base] = k + 1
-			sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x1f%d", base, k)))
-			externalID = "ofx:" + hex.EncodeToString(sum[:])
+			externalID = syntheticExternalID("ofx:", t, amountMinor, desc, occ)
 		}
 
 		// TRNTYPE is the bank's real type code; keep it, but normalise anything outside

@@ -61,6 +61,12 @@ const form = reactive({
   nino: '',
   utr: '',
   dob: '',
+  // Personal/home address (free text, all optional).
+  addr1: '',
+  addr2: '',
+  addr3: '',
+  addr4: '',
+  postcode: '',
   role: 'member',
   status: 'active',
 })
@@ -83,6 +89,11 @@ function hydrate(u: {
   national_insurance_number?: string | null
   utr?: string | null
   date_of_birth?: string | null
+  address_line_1?: string | null
+  address_line_2?: string | null
+  address_line_3?: string | null
+  address_line_4?: string | null
+  postcode?: string | null
   role?: string
   status?: string
 }) {
@@ -91,6 +102,11 @@ function hydrate(u: {
   form.nino = u.national_insurance_number ?? ''
   form.utr = u.utr ?? ''
   form.dob = u.date_of_birth ?? ''
+  form.addr1 = u.address_line_1 ?? ''
+  form.addr2 = u.address_line_2 ?? ''
+  form.addr3 = u.address_line_3 ?? ''
+  form.addr4 = u.address_line_4 ?? ''
+  form.postcode = u.postcode ?? ''
   form.role = u.role ?? auth.organisation?.role ?? 'member'
   form.status = u.status ?? 'active'
   email.value = u.email
@@ -191,6 +207,11 @@ async function submit() {
         national_insurance_number: orNull(form.nino),
         utr: orNull(form.utr),
         date_of_birth: orNull(form.dob),
+        address_line_1: orNull(form.addr1),
+        address_line_2: orNull(form.addr2),
+        address_line_3: orNull(form.addr3),
+        address_line_4: orNull(form.addr4),
+        postcode: orNull(form.postcode),
         role: form.role as 'owner' | 'admin' | 'member' | 'accountant' | 'read_only',
         status: form.status as 'active' | 'suspended' | 'deactivated',
       })
@@ -202,6 +223,11 @@ async function submit() {
         national_insurance_number: orNull(form.nino),
         utr: orNull(form.utr),
         date_of_birth: orNull(form.dob),
+        address_line_1: orNull(form.addr1),
+        address_line_2: orNull(form.addr2),
+        address_line_3: orNull(form.addr3),
+        address_line_4: orNull(form.addr4),
+        postcode: orNull(form.postcode),
       })
       hydrate(updated)
       // Keep the top-bar dropdown name in sync after a self rename.
@@ -274,8 +300,18 @@ const pageTitle = computed(() =>
         {{ successMessage }}
       </div>
 
-      <!-- 1. User details -->
+      <!-- 1. User details — two columns on wide screens (xl): the profile/payroll
+           fields on the left, the personal address filling the former right-side
+           whitespace. Below xl the grid collapses to one column (address stacks). -->
       <FaCard title="User details" note="Required fields *">
+        <!-- Uneven split (not 50/50): the left fields nearly fill their half while
+             the right address labels are right-aligned and sit well clear of the
+             boundary, so an equal split leaves the divider hugging the left fields.
+             A wider left column nudges the divider right to centre the whitespace
+             between the two field groups. -->
+        <div class="grid gap-x-10 xl:grid-cols-[1.1fr_0.9fr]">
+          <!-- Left column: identity + payroll fields -->
+          <div>
         <!-- Role: editable select in admin mode; read-only (the caller's own role)
              in self mode. -->
         <FormRow label="Role" label-for="role">
@@ -349,6 +385,34 @@ const pageTitle = computed(() =>
             class="w-72"
           />
         </FormRow>
+          </div>
+
+          <!-- Right column: personal/home address (payroll). All optional. On xl a
+               left divider separates it from the identity fields. The address rows
+               use their OWN narrower, LEFT-aligned label (not the shared FormRow's
+               190px right-aligned one) so the fields sit close to the divider rather
+               than floating off to the right. -->
+          <div class="mt-2 xl:mt-0 xl:border-l xl:border-fa-border xl:pl-5">
+            <div
+              v-for="row in [
+                { id: 'addr1', label: 'Address line 1', model: 'addr1' },
+                { id: 'addr2', label: 'Address line 2', model: 'addr2' },
+                { id: 'addr3', label: 'Address line 3', model: 'addr3' },
+                { id: 'addr4', label: 'Address line 4', model: 'addr4' },
+                { id: 'postcode', label: 'Postcode', model: 'postcode' },
+              ]"
+              :key="row.id"
+              class="grid grid-cols-1 gap-1.5 py-2 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center sm:gap-4"
+            >
+              <label :for="row.id" class="text-sm text-fa-text">{{ row.label }}</label>
+              <InputText
+                :id="row.id"
+                v-model="form[row.model as 'addr1' | 'addr2' | 'addr3' | 'addr4' | 'postcode']"
+                :class="row.id === 'postcode' ? 'w-40' : 'w-full max-w-sm'"
+              />
+            </div>
+          </div>
+        </div>
       </FaCard>
 
       <!-- 2. Email receipts (both modes, when the inbox channel is enabled) -->

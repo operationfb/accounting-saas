@@ -42,7 +42,12 @@ type MemberDetailResponse struct {
 	NationalInsuranceNumber *string `json:"national_insurance_number,omitempty"`
 	UTR                     *string `json:"utr,omitempty"`
 	DateOfBirth             *string `json:"date_of_birth,omitempty"` // ISO YYYY-MM-DD
-	MemberSince             string  `json:"member_since"`            // RFC3339 (membership created_at)
+	AddressLine1            *string `json:"address_line_1,omitempty"`
+	AddressLine2            *string `json:"address_line_2,omitempty"`
+	AddressLine3            *string `json:"address_line_3,omitempty"`
+	AddressLine4            *string `json:"address_line_4,omitempty"`
+	Postcode                *string `json:"postcode,omitempty"`
+	MemberSince             string  `json:"member_since"` // RFC3339 (membership created_at)
 	LastLoginAt             *string `json:"last_login_at,omitempty"`
 }
 
@@ -59,6 +64,12 @@ type UpdateMemberRequest struct {
 	NationalInsuranceNumber *string `json:"national_insurance_number"`
 	UTR                     *string `json:"utr"`
 	DateOfBirth             *string `json:"date_of_birth"` // ISO YYYY-MM-DD
-	Role                    string  `json:"role" binding:"required,oneof=owner admin member accountant read_only"`
-	Status                  string  `json:"status" binding:"required,oneof=active suspended deactivated"`
+	// Optional personal/home address — free text, blank/omitted -> NULL.
+	AddressLine1 *string `json:"address_line_1"`
+	AddressLine2 *string `json:"address_line_2"`
+	AddressLine3 *string `json:"address_line_3"`
+	AddressLine4 *string `json:"address_line_4"`
+	Postcode     *string `json:"postcode"`
+	Role         string  `json:"role" binding:"required,oneof=owner admin member accountant read_only"`
+	Status       string  `json:"status" binding:"required,oneof=active suspended deactivated"`
 }

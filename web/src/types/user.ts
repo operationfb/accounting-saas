@@ -24,6 +24,11 @@ export interface UpdateProfileRequest {
   national_insurance_number?: string | null
   utr?: string | null
   date_of_birth?: string | null // ISO YYYY-MM-DD
+  address_line_1?: string | null
+  address_line_2?: string | null
+  address_line_3?: string | null
+  address_line_4?: string | null
+  postcode?: string | null
 }
 
 // GET /api/v1/inbox-address — the caller's Mailgun receipt-forwarding address.

@@ -366,6 +366,27 @@ remains is the reconciliation/feed richness:
   the file's `BANKACCTFROM` (sort code / account number) to the target account; and
   **multi-statement / multi-account** OFX files (v1 imports every `STMTTRN` into the
   account in the URL). _File: `internal/banking/statement_import.go`._
+- **CSV import — format auto-detection + confirm-mapping LANDED; refinements remain.**
+  The CSV path is no longer a fixed template: an upload is auto-detected (header synonyms →
+  date/description/amount(s); signed vs money-in/out split; date-format sniff with a
+  UK-first DD/MM-vs-MM/DD disambiguation) into a proposed `ColumnMapping`, surfaced via
+  `POST …/import/preview` (writes nothing) and confirmed by the user in
+  `BankStatementImportView` (per-field column dropdowns + date-format + a live preview)
+  before commit; the optional running `Balance` column now fills `balance_minor`. _Files:
+  `internal/banking/statement_detect.go`, `statement_preview.go`, `statement_import.go`,
+  `handler.go`._ Deferred niceties:
+  - **Multi-row preamble / footer stripping** — detection assumes the first non-blank row is
+    the header (true for ~all UK exports); some banks prepend account-info lines or append a
+    balance-summary footer. _File: `internal/banking/statement_detect.go`._
+  - **Non-comma delimiters** (`;` / tab) — the parser is comma-only (stdlib `encoding/csv`
+    default); sniff the delimiter from the header row. _File: `statement_import.go`._
+  - **Parenthetical negatives** `(54.20)` in a signed amount column (some exports use them
+    instead of a leading `-`). _File: `statement_import.go` (`parseSignedAmount`)._
+  - **Remembered per-account mapping** — persist the confirmed mapping on the bank account
+    so repeat uploads from the same bank can skip the confirm step. _File:
+    `db/schema/banking_schema.sql`._
+  - **Confident-detection one-shot** — when the detected mapping is unambiguous, offer to
+    skip the confirm screen and import directly. _File: `BankStatementImportView.vue`._
 - **Transaction reconciliation / "explain" — DATA LAYER + service + UI landed; refinements remain.**
   Built: the CoA (`categories`), the 18 `transaction_types`, the
   `transaction_type_categories` mapping + recompute trigger (data layer); the explain

@@ -119,7 +119,13 @@ type UserResponse struct {
 	NationalInsuranceNumber *string `json:"national_insurance_number,omitempty"`
 	UTR                     *string `json:"utr,omitempty"`
 	DateOfBirth             *string `json:"date_of_birth,omitempty"` // ISO YYYY-MM-DD
-	EmailVerified           bool    `json:"email_verified"`
+	// Personal/home address (future payroll module). All optional/nullable.
+	AddressLine1  *string `json:"address_line_1,omitempty"`
+	AddressLine2  *string `json:"address_line_2,omitempty"`
+	AddressLine3  *string `json:"address_line_3,omitempty"`
+	AddressLine4  *string `json:"address_line_4,omitempty"`
+	Postcode      *string `json:"postcode,omitempty"`
+	EmailVerified bool    `json:"email_verified"`
 }
 
 // OrganisationResponse is the safe public view of the organisation the session
@@ -162,6 +168,11 @@ func NewUserResponse(u auth.User) UserResponse {
 		NationalInsuranceNumber: kernel.NullTextToPtr(u.NationalInsuranceNumber),
 		UTR:                     kernel.NullTextToPtr(u.Utr),
 		DateOfBirth:             kernel.DateToStringPtr(u.DateOfBirth),
+		AddressLine1:            kernel.NullTextToPtr(u.AddressLine1),
+		AddressLine2:            kernel.NullTextToPtr(u.AddressLine2),
+		AddressLine3:            kernel.NullTextToPtr(u.AddressLine3),
+		AddressLine4:            kernel.NullTextToPtr(u.AddressLine4),
+		Postcode:                kernel.NullTextToPtr(u.Postcode),
 		EmailVerified:           u.EmailVerifiedAt.Valid, // verified iff the timestamp is set
 	}
 }

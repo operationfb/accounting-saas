@@ -114,6 +114,11 @@ UPDATE users SET
     national_insurance_number = $6,
     utr                       = $7,
     date_of_birth             = $8,
+    address_line_1            = $9,
+    address_line_2            = $10,
+    address_line_3            = $11,
+    address_line_4            = $12,
+    postcode                  = $13,
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL

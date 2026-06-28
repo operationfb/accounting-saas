@@ -141,7 +141,14 @@ type User struct {
 	// User's PERSONAL 10-digit HMRC Unique Tax Reference (payroll/Self Assessment). Distinct from organisations.utr (the company UTR).
 	Utr pgtype.Text `json:"utr"`
 	// Date of birth (payroll: NI category by age, pension auto-enrolment). DATE — no time component.
-	DateOfBirth             pgtype.Date        `json:"date_of_birth"`
+	DateOfBirth pgtype.Date `json:"date_of_birth"`
+	// Personal/home address (payroll). Free text, nullable. Distinct from the organisation address.
+	AddressLine1 pgtype.Text `json:"address_line_1"`
+	AddressLine2 pgtype.Text `json:"address_line_2"`
+	AddressLine3 pgtype.Text `json:"address_line_3"`
+	AddressLine4 pgtype.Text `json:"address_line_4"`
+	// Personal/home postcode (payroll). Free text, nullable.
+	Postcode                pgtype.Text        `json:"postcode"`
 	EmailVerifiedAt         pgtype.Timestamptz `json:"email_verified_at"`
 	EmailVerificationToken  pgtype.Text        `json:"email_verification_token"`
 	EmailVerificationSentAt pgtype.Timestamptz `json:"email_verification_sent_at"`

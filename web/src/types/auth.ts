@@ -14,6 +14,12 @@ export const UserSchema = z.object({
   national_insurance_number: z.string().nullish(),
   utr: z.string().nullish(),
   date_of_birth: z.string().nullish(), // ISO YYYY-MM-DD
+  // Personal/home address (future payroll module). Optional/nullable.
+  address_line_1: z.string().nullish(),
+  address_line_2: z.string().nullish(),
+  address_line_3: z.string().nullish(),
+  address_line_4: z.string().nullish(),
+  postcode: z.string().nullish(),
   email_verified: z.boolean(),
 })
 export type User = z.infer<typeof UserSchema>

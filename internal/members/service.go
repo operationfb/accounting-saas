@@ -257,6 +257,11 @@ func (s *Service) UpdateMember(
 			NationalInsuranceNumber: nino,
 			Utr:                     utr,
 			DateOfBirth:             dob,
+			AddressLine1:            kernel.NullText(req.AddressLine1),
+			AddressLine2:            kernel.NullText(req.AddressLine2),
+			AddressLine3:            kernel.NullText(req.AddressLine3),
+			AddressLine4:            kernel.NullText(req.AddressLine4),
+			Postcode:                kernel.NullText(req.Postcode),
 		}); err != nil {
 			return kernel.ErrInternal(err)
 		}
@@ -335,6 +340,11 @@ func memberDetailToResponse(m auth.OrganisationMembership, u auth.User) *MemberD
 		NationalInsuranceNumber: kernel.NullTextToPtr(u.NationalInsuranceNumber),
 		UTR:                     kernel.NullTextToPtr(u.Utr),
 		DateOfBirth:             kernel.DateToStringPtr(u.DateOfBirth),
+		AddressLine1:            kernel.NullTextToPtr(u.AddressLine1),
+		AddressLine2:            kernel.NullTextToPtr(u.AddressLine2),
+		AddressLine3:            kernel.NullTextToPtr(u.AddressLine3),
+		AddressLine4:            kernel.NullTextToPtr(u.AddressLine4),
+		Postcode:                kernel.NullTextToPtr(u.Postcode),
 		MemberSince:             m.CreatedAt.Time.Format(time.RFC3339),
 		LastLoginAt:             kernel.TimestampToStringPtr(u.LastLoginAt),
 	}

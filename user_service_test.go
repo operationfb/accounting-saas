@@ -356,4 +356,59 @@ func TestProfilePayrollFields(t *testing.T) {
 			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
+
+	// Personal/home address: free text, all optional. Round-trips + persists, and a
+	// blank clears the column to NULL (no validation cases — it's free text).
+	t.Run("address round-trips, persists, clears", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		authHeader := bearer(t, ts, ownerB, orgB)
+
+		rec := putProfile(t, ts, authHeader, userauth.UpdateProfileRequest{
+			FirstName:    "Aydin",
+			LastName:     "Gunal",
+			AddressLine1: ptr("26 Effra Road"),
+			AddressLine2: ptr("London"),
+			Postcode:     ptr("SW2 1BZ"),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeProfile(t, rec.Body.Bytes())
+		if got.AddressLine1 == nil || *got.AddressLine1 != "26 Effra Road" {
+			t.Errorf("address_line_1: got %v, want 26 Effra Road", got.AddressLine1)
+		}
+		if got.AddressLine2 == nil || *got.AddressLine2 != "London" {
+			t.Errorf("address_line_2: got %v, want London", got.AddressLine2)
+		}
+		if got.Postcode == nil || *got.Postcode != "SW2 1BZ" {
+			t.Errorf("postcode: got %v, want SW2 1BZ", got.Postcode)
+		}
+		// Lines 3/4 were not sent → NULL.
+		if got.AddressLine3 != nil || got.AddressLine4 != nil {
+			t.Errorf("unset lines should be nil, got l3=%v l4=%v", got.AddressLine3, got.AddressLine4)
+		}
+
+		// Persisted to the DB.
+		var l1, pc string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT address_line_1, postcode FROM users WHERE id = $1`, ownerB).Scan(&l1, &pc); err != nil {
+			t.Fatalf("re-read: %v", err)
+		}
+		if l1 != "26 Effra Road" || pc != "SW2 1BZ" {
+			t.Errorf("DB mismatch: l1=%q pc=%q", l1, pc)
+		}
+
+		// Omitting a field (nil) clears it to NULL — this is how the SPA clears a
+		// field (its orNull helper sends null for a blank input). A full-form PUT
+		// that doesn't carry address_line_1 NULLs the column.
+		rec = putProfile(t, ts, authHeader, userauth.UpdateProfileRequest{
+			FirstName: "Aydin", LastName: "Gunal", // address fields omitted → nil → NULL
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("clear: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		if got = decodeProfile(t, rec.Body.Bytes()); got.AddressLine1 != nil {
+			t.Errorf("address_line_1 should be cleared, got %v", *got.AddressLine1)
+		}
+	})
 }

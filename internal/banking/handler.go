@@ -15,7 +15,10 @@ package banking
 // =============================================================================
 
 import (
+	"encoding/json"
+	"mime/multipart"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -44,6 +47,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.GET("/:id", h.Get)
 		g.GET("/:id/transactions", h.ListTransactions)
 		g.POST("/:id/transactions", h.CreateTransaction)
+		g.POST("/:id/transactions/import/preview", h.ImportPreview)
 		g.POST("/:id/transactions/import", h.ImportTransactions)
 		g.PUT("/:id/transactions/:txnId", h.UpdateTransaction)
 		g.DELETE("/:id/transactions/:txnId", h.DeleteTransaction)
@@ -116,28 +120,84 @@ func (h *Handler) CreateTransaction(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
-// ImportTransactions handles POST /api/v1/bank-accounts/:id/transactions/import — a
-// multipart CSV statement upload (field "file"). Mirrors the attachment upload: cap
-// the body before parsing, then stream the file to the import service.
-func (h *Handler) ImportTransactions(c *gin.Context) {
+// ImportPreview handles POST /api/v1/bank-accounts/:id/transactions/import/preview — the
+// DETECT step: upload a CSV/OFX (field "file") and get back the proposed column mapping +
+// a sample of how rows would be read, WITHOUT importing anything. An optional "mapping"
+// field (JSON) re-previews with the user's edits for live feedback in the confirm screen.
+func (h *Handler) ImportPreview(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxStatementUploadBytes)
-	fileHeader, err := c.FormFile("file")
+	mapping, err := statementMappingFromForm(c)
 	if err != nil {
-		kernel.RespondError(c, kernel.ErrValidation("a multipart 'file' field is required (or the upload was too large)", err))
+		kernel.RespondError(c, err)
 		return
 	}
-	f, err := fileHeader.Open()
+	f, err := openUploadedStatement(c)
 	if err != nil {
-		kernel.RespondError(c, kernel.ErrValidation("could not read the uploaded file", err))
+		kernel.RespondError(c, err)
 		return
 	}
 	defer f.Close()
-	resp, err := h.svc.ImportStatement(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), f)
+	resp, err := h.svc.PreviewStatement(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), f, mapping)
 	if err != nil {
 		kernel.RespondError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// ImportTransactions handles POST /api/v1/bank-accounts/:id/transactions/import — the
+// COMMIT step: a multipart CSV/OFX upload (field "file") plus an optional "mapping" field
+// (JSON, the mapping the user confirmed in the detect step). With no mapping the service
+// auto-detects, so our own template and the legacy endpoint contract keep working. Mirrors
+// the attachment upload: cap the body before parsing, then stream the file to the service.
+func (h *Handler) ImportTransactions(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxStatementUploadBytes)
+	mapping, err := statementMappingFromForm(c)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	f, err := openUploadedStatement(c)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	defer f.Close()
+	resp, err := h.svc.ImportStatement(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"), f, mapping)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// openUploadedStatement opens the multipart "file" part (shared by preview + commit). The
+// caller must Close the returned file. A missing part (or an over-cap upload that tripped
+// MaxBytesReader) becomes a 422.
+func openUploadedStatement(c *gin.Context) (multipart.File, error) {
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		return nil, kernel.ErrValidation("a multipart 'file' field is required (or the upload was too large)", err)
+	}
+	f, err := fileHeader.Open()
+	if err != nil {
+		return nil, kernel.ErrValidation("could not read the uploaded file", err)
+	}
+	return f, nil
+}
+
+// statementMappingFromForm reads the optional "mapping" form field (JSON) into a
+// ColumnMapping. Absent/blank → nil (the service auto-detects). Malformed JSON → 422.
+func statementMappingFromForm(c *gin.Context) (*ColumnMapping, error) {
+	raw := strings.TrimSpace(c.PostForm("mapping"))
+	if raw == "" {
+		return nil, nil
+	}
+	var m ColumnMapping
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, kernel.ErrValidation("the 'mapping' field is not valid JSON", err)
+	}
+	return &m, nil
 }
 
 // UpdateTransaction handles PUT /api/v1/bank-accounts/:id/transactions/:txnId — edit a manual line.

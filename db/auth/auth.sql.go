@@ -280,7 +280,7 @@ INSERT INTO users (
     $4,   -- last_name      VARCHAR
     $5    -- phone          VARCHAR  (nullable)
 )
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateUserParams struct {
@@ -347,6 +347,11 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -610,7 +615,7 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -633,6 +638,11 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -651,7 +661,7 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
 WHERE email = $1
   AND deleted_at IS NULL
 `
@@ -677,6 +687,11 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -695,7 +710,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByPasswordResetToken = `-- name: GetUserByPasswordResetToken :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
 WHERE password_reset_token = $1
   AND deleted_at IS NULL
 `
@@ -720,6 +735,11 @@ func (q *Queries) GetUserByPasswordResetToken(ctx context.Context, passwordReset
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -738,7 +758,7 @@ func (q *Queries) GetUserByPasswordResetToken(ctx context.Context, passwordReset
 }
 
 const getUserByVerificationToken = `-- name: GetUserByVerificationToken :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
 WHERE email_verification_token = $1
   AND deleted_at IS NULL
 `
@@ -761,6 +781,11 @@ func (q *Queries) GetUserByVerificationToken(ctx context.Context, emailVerificat
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -1137,7 +1162,7 @@ UPDATE users SET
     updated_at             = now()
 WHERE email = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
 `
 
 type SetPasswordResetTokenParams struct {
@@ -1166,6 +1191,11 @@ func (q *Queries) SetPasswordResetToken(ctx context.Context, arg SetPasswordRese
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -1531,10 +1561,15 @@ UPDATE users SET
     national_insurance_number = $6,
     utr                       = $7,
     date_of_birth             = $8,
+    address_line_1            = $9,
+    address_line_2            = $10,
+    address_line_3            = $11,
+    address_line_4            = $12,
+    postcode                  = $13,
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateUserParams struct {
@@ -1546,6 +1581,11 @@ type UpdateUserParams struct {
 	NationalInsuranceNumber pgtype.Text `json:"national_insurance_number"`
 	Utr                     pgtype.Text `json:"utr"`
 	DateOfBirth             pgtype.Date `json:"date_of_birth"`
+	AddressLine1            pgtype.Text `json:"address_line_1"`
+	AddressLine2            pgtype.Text `json:"address_line_2"`
+	AddressLine3            pgtype.Text `json:"address_line_3"`
+	AddressLine4            pgtype.Text `json:"address_line_4"`
+	Postcode                pgtype.Text `json:"postcode"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1567,6 +1607,11 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		arg.NationalInsuranceNumber,
 		arg.Utr,
 		arg.DateOfBirth,
+		arg.AddressLine1,
+		arg.AddressLine2,
+		arg.AddressLine3,
+		arg.AddressLine4,
+		arg.Postcode,
 	)
 	var i User
 	err := row.Scan(
@@ -1580,6 +1625,11 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,
@@ -1629,7 +1679,7 @@ UPDATE users SET
     updated_at               = now()
 WHERE email_verification_token = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
 `
 
 // -----------------------------------------------------------------------------
@@ -1652,6 +1702,11 @@ func (q *Queries) VerifyUserEmail(ctx context.Context, emailVerificationToken pg
 		&i.NationalInsuranceNumber,
 		&i.Utr,
 		&i.DateOfBirth,
+		&i.AddressLine1,
+		&i.AddressLine2,
+		&i.AddressLine3,
+		&i.AddressLine4,
+		&i.Postcode,
 		&i.EmailVerifiedAt,
 		&i.EmailVerificationToken,
 		&i.EmailVerificationSentAt,

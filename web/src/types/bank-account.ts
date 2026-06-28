@@ -122,3 +122,70 @@ export const StatementImportResultSchema = z.object({
 })
 export type StatementImportResult = z.infer<typeof StatementImportResultSchema>
 
+// --- CSV import: detect → confirm → commit ---------------------------------
+// Mirrors the backend's ColumnMapping (internal/banking/statement_detect.go). Column
+// references are 0-based indices into the uploaded file (null = unassigned); the confirm
+// screen's dropdowns bind directly to these. amount_format picks which amount columns apply:
+// 'signed' = one column whose sign is the direction; 'split' = a money-in + money-out pair.
+export interface ColumnMapping {
+  date_column: number | null
+  description_column: number | null
+  amount_format: 'signed' | 'split' | ''
+  amount_column?: number | null
+  money_in_column?: number | null
+  money_out_column?: number | null
+  balance_column?: number | null
+  memo_column?: number | null
+  date_format: string // a Go layout (e.g. "02/01/2006"); one of the preview's date_format_options
+}
+
+// One detected column of the uploaded CSV: position, raw header (the dropdown label), and
+// a few sample values (so the user can tell similar columns apart).
+export const DetectedColumnSchema = z.object({
+  index: z.number(),
+  header: z.string(),
+  samples: z.array(z.string()).nullish(),
+})
+export type DetectedColumn = z.infer<typeof DetectedColumnSchema>
+
+// One sample row as the current mapping would interpret it (money split by sign), or an
+// error string when the row wouldn't import as currently mapped.
+export const PreviewRowSchema = z.object({
+  dated_on: z.string().nullish(),
+  description: z.string().nullish(),
+  money_in: z.string().nullish(),
+  money_out: z.string().nullish(),
+  balance: z.string().nullish(),
+  error: z.string().nullish(),
+})
+export type PreviewRow = z.infer<typeof PreviewRowSchema>
+
+// A date-format choice for the dropdown: a human label + the Go layout submitted back.
+export const DateFormatOptionSchema = z.object({ label: z.string(), layout: z.string() })
+export type DateFormatOption = z.infer<typeof DateFormatOptionSchema>
+
+const ColumnMappingSchema = z.object({
+  date_column: z.number().nullish(),
+  description_column: z.number().nullish(),
+  amount_format: z.string(),
+  amount_column: z.number().nullish(),
+  money_in_column: z.number().nullish(),
+  money_out_column: z.number().nullish(),
+  balance_column: z.number().nullish(),
+  memo_column: z.number().nullish(),
+  date_format: z.string(),
+})
+
+// POST /api/v1/bank-accounts/:id/transactions/import/preview → the detect-step payload.
+// For a CSV every field is populated; for OFX only format + preview_rows + total_rows are.
+export const StatementImportPreviewSchema = z.object({
+  format: z.string(), // 'csv' | 'ofx'
+  columns: z.array(DetectedColumnSchema).nullish(),
+  mapping: ColumnMappingSchema.nullish(),
+  date_format_options: z.array(DateFormatOptionSchema).nullish(),
+  preview_rows: z.array(PreviewRowSchema).nullish(),
+  total_rows: z.number(),
+  warnings: z.array(z.string()).nullish(),
+})
+export type StatementImportPreview = z.infer<typeof StatementImportPreviewSchema>
+
