@@ -9,6 +9,11 @@ export const UserSchema = z.object({
   last_name: z.string(),
   phone: z.string().nullish(),
   avatar_url: z.string().nullish(),
+  // Payroll-identity fields (future payroll module). Optional/nullable; the login
+  // response carries them, so auth.user has them for the self User Details form.
+  national_insurance_number: z.string().nullish(),
+  utr: z.string().nullish(),
+  date_of_birth: z.string().nullish(), // ISO YYYY-MM-DD
   email_verified: z.boolean(),
 })
 export type User = z.infer<typeof UserSchema>

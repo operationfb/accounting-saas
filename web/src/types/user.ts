@@ -14,12 +14,16 @@ export const GetProfileResponseSchema = z.object({
   user: UserSchema,
 })
 
-// PUT body. Mirrors the backend's UpdateProfileRequest (server.go). Only the name
-// is editable here — the login email is read-only, and phone/avatar_url are
-// preserved server-side (not sent by this form). Both names are required.
+// PUT body. Mirrors the backend's UpdateProfileRequest (internal/userauth). The
+// login email is read-only and phone/avatar_url are preserved server-side (not
+// sent by this form). Both names are required; the payroll fields are optional
+// (null clears the column) and validated server-side (NINO/UTR shape, DOB range).
 export interface UpdateProfileRequest {
   first_name: string
   last_name: string
+  national_insurance_number?: string | null
+  utr?: string | null
+  date_of_birth?: string | null // ISO YYYY-MM-DD
 }
 
 // GET /api/v1/inbox-address — the caller's Mailgun receipt-forwarding address.

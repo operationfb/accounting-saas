@@ -131,11 +131,17 @@ type User struct {
 	// Login identifier. Stored lowercase. Globally unique across all tenants.
 	Email string `json:"email"`
 	// bcrypt hash at cost 12. NULL for OAuth-only accounts. Never store plaintext.
-	PasswordHash            pgtype.Text        `json:"password_hash"`
-	FirstName               string             `json:"first_name"`
-	LastName                string             `json:"last_name"`
-	Phone                   pgtype.Text        `json:"phone"`
-	AvatarUrl               pgtype.Text        `json:"avatar_url"`
+	PasswordHash pgtype.Text `json:"password_hash"`
+	FirstName    string      `json:"first_name"`
+	LastName     string      `json:"last_name"`
+	Phone        pgtype.Text `json:"phone"`
+	AvatarUrl    pgtype.Text `json:"avatar_url"`
+	// UK NINO (payroll). Nullable; format validated in the service layer, not by a CHECK.
+	NationalInsuranceNumber pgtype.Text `json:"national_insurance_number"`
+	// User's PERSONAL 10-digit HMRC Unique Tax Reference (payroll/Self Assessment). Distinct from organisations.utr (the company UTR).
+	Utr pgtype.Text `json:"utr"`
+	// Date of birth (payroll: NI category by age, pension auto-enrolment). DATE — no time component.
+	DateOfBirth             pgtype.Date        `json:"date_of_birth"`
 	EmailVerifiedAt         pgtype.Timestamptz `json:"email_verified_at"`
 	EmailVerificationToken  pgtype.Text        `json:"email_verification_token"`
 	EmailVerificationSentAt pgtype.Timestamptz `json:"email_verification_sent_at"`

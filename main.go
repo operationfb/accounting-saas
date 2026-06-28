@@ -38,6 +38,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
+	dboverview "github.com/operationfb/accounting-saas/db/overview"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	dbvat "github.com/operationfb/accounting-saas/db/vat"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
@@ -57,6 +58,7 @@ import (
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
+	overview "github.com/operationfb/accounting-saas/internal/overview"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
@@ -161,10 +163,11 @@ func main() {
 	// same org. Self-registers /api/v1/invoices after NewServer.
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries, vatQueries)
 
-	// Members: a thin, read-only internal/members service over the auth queries for
-	// listing an organisation's members (owner/admin only). Reuses the shared
-	// authQueries; its Handler self-registers /api/v1/members after NewServer.
-	memberSvc := members.NewService(authQueries)
+	// Members: the internal/members service over the auth queries for listing an
+	// organisation's members and the admin User Details edit (owner/admin only).
+	// Reuses the shared authQueries; the pool backs UpdateMember's transaction. Its
+	// Handler self-registers /api/v1/members* after NewServer.
+	memberSvc := members.NewService(pool, authQueries)
 
 	// Organisation: read/update the caller's own company details (the Company
 	// Details settings screen). Read by any active member; edit by owner/admin.
@@ -455,6 +458,12 @@ func main() {
 	// explanation: validate the target invoice + keep its paid_value_minor in sync.
 	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries))
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
+
+	// Overview: the read-only dashboard (FreeAgent-style landing page). A
+	// cross-domain summary like the VAT module — its service takes the shared
+	// authQueries (authorisation) + its own db/overview read queries. First card is
+	// Cashflow (from bank_transactions); more cards add sibling GET routes.
+	overview.NewHandler(overview.NewService(authQueries, dboverview.New(pool))).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its
 	// per-type category picker), a thin read-only service over the categories queries.

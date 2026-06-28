@@ -52,6 +52,34 @@ _Last updated: 2026-06-24_
   (`email_content.go`); add an HTML/multipart version for nicer rendering in mail
   clients. _Files: `email_content.go`, `email_smtp.go`._
 
+### Users / members management (the admin "Users" screen)
+
+The owner/admin Users list (`/users`) + the unified User Details edit
+(`GET`/`PUT /api/v1/members/:id`, `internal/members`) shipped, but deliberately
+scoped. Deferred:
+
+- **New User (invite flow).** The screenshot's "New User" button is omitted. Build
+  inviting a user: a create/invite endpoint that sends an email and creates a
+  `pending` membership. The plumbing exists — `CreateInvitedMembership` +
+  `AcceptInvite` (`db/queries/auth.sql`) and the `EmailSender` seam — but there is
+  no sign-up/accept endpoint yet (overlaps with the email-verification item above).
+  _Files: `internal/members`, `internal/userauth`, `db/auth`._
+
+- **Payroll "position" vs access role.** The FreeAgent screenshot's Role dropdown
+  is a payroll position (Director/Employee), distinct from our access-control role
+  (owner/admin/member/…). The Users screen currently edits the access role; if the
+  payroll module needs an explicit employment position, add it as a separate field
+  (likely a new column) rather than overloading the membership role.
+
+- **2FA.** The Users list's "2FA authenticator app" column is a static "Disabled"
+  placeholder — there is no 2FA feature. Implement TOTP enrolment/verification and
+  surface real status. _Files: `internal/userauth`, `db/auth` (new columns)._
+
+- **NI/UTR/DOB are validated, not DB-constrained.** Format is enforced in
+  `internal/kernel/payroll.go` (NINO shape, 10-digit UTR, DOB range); the columns
+  are plain nullable `VARCHAR`/`DATE`. If stricter guarantees are wanted later,
+  add DB `CHECK`s — but keep imports/partial entry in mind.
+
 - **List filtering & pagination for `GET /api/v1/expenses`.** Today the endpoint returns the full set the caller may see (owner/admin: whole org; others: own) with no filters or paging. Add query-param filtering (date range, status, project) and pagination (limit/offset or cursor), preserving the existing owner/admin-vs-own scoping in `ListExpenses`. Reuse the existing org-scoped sqlc queries `ListExpensesByDateRange` / `ListExpensesByStatus` / `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered variants would need new queries. _Files: `expense_service.go`, `server.go`, `db/queries/query.sql`._
 
 
@@ -548,6 +576,57 @@ remains is the reconciliation/feed richness:
   Cloud Workflow + Eventarc, manual re-push, user-ref cache, manual user-mapping
   UI, push-status read, reverse sync) — see the approved plan at
   `~/.claude/plans/i-d-like-to-push-peppy-papert.md`. Add/remove as each lands.
+
+## Overview dashboard (cards)
+
+The "Overview" page (`/overview`) is a tabbed container — a new financial Overview
+dashboard + the existing VAT dashboard as a 2nd tab. The **tabbed shell** shipped
+(`web/src/views/OverviewDashboardView.vue` + `OverviewPanel.vue` placeholder +
+`VatDashboardPanel.vue`). The **read-only `internal/overview` domain** (mirrors the
+cross-domain read pattern of `internal/vat`) + the **Cashflow**, **Invoice
+Timeline** and **Banking** cards have SHIPPED: `db/queries/overview.sql` + sqlc
+block → `db/overview`, `internal/overview` (dto/service/handler) wired in `main.go`,
+`chart.js` via PrimeVue's `Chart` on the frontend, with PER-CARD endpoints
+(`GET /api/v1/overview/{cashflow,invoice-timeline,banking}`). Remaining card(s) each
+add a sibling query + GET route + an `OverviewPanel.vue` card:
+
+- **Cashflow** — ✅ SHIPPED (`GET /api/v1/overview/cashflow`, the `CashflowByMonth`
+  `generate_series` query, the OverviewPanel bar chart + Incoming/Outgoing/Balance
+  totals; tested in `overview_service_test.go`). Deferred refinements: a period
+  selector (the "Last 12 months" label is static); netting out inter-account
+  `TRANSFER` explanations + excluding `is_personal` accounts (v1 counts raw amounts
+  across all accounts, so a big internal transfer can spike a month); and folding
+  the per-card endpoints into one composite `GET /api/v1/overview` if round-trips
+  matter.
+- **Banking** — ✅ SHIPPED (`GET /api/v1/overview/banking`, the `BankBalanceByMonth`
+  cumulative query + `BankBalanceSummary`, the OverviewPanel line/area chart + the
+  "All accounts" balance + Add account / View all bank accounts footer; tested in
+  `overview_service_test.go`). Balance is derived (Σ `opening_balance_minor` + Σ
+  `amount_minor`), matching the Bank Accounts page. Deferred refinements: the mock's
+  per-account "All accounts" selector (v1 aggregates all live accounts); an account-
+  scoped "Upload statement" action (replaced here with Add account); and a period
+  selector / daily granularity (v1 = month-end points, last 12 months).
+- **Invoice Timeline** — ✅ SHIPPED (`GET /api/v1/overview/invoice-timeline`, the
+  `InvoiceTimelineByMonth` + `OutstandingInvoiceTotal` queries, the OverviewPanel
+  stacked bar chart + Outstanding total + New invoice / View all footer; tested in
+  `overview_service_test.go`). SENT invoices' whole total is bucketed by month into
+  Overdue / Due / Paid matching `deriveDisplayStatus` (so Overdue needs a set,
+  past `due_on`; a no-due-date invoice is "Due"). Deferred refinements: month
+  paging (`‹ ›`); SCHEDULED invoices + the mock's Estimates/Timeslips sub-tabs;
+  and an amount-split view (a part-paid overdue invoice currently books its FULL
+  total to Overdue).
+- **Expenses & Bills** — recent expenses list (`ListRecentExpenses`,
+  `db/queries/query.sql`, joined to category name) + "Balance Owed"; Bills
+  sub-tab via `bills.due_value_minor`.
+- **Profit & Loss** — DEFERRED beyond the others: needs a Dividends data source
+  and an org-level Corp Tax rate (neither exists yet). Income (SENT invoices) +
+  Expenses (approved expenses + bills) + Operating profit are computable now.
+- Card-level sub-tabs shown in the FreeAgent mock that have no feature behind
+  them yet (Estimates, Timeslips) are out of scope.
+
+Optional polish once cards exist: deep-link the active tab via a `?tab=` query
+param (the shell currently uses a local `ref`), and a top-right "Add new"
+quick-action menu.
 
 ## Cleanups (also flagged as background tasks)
 

@@ -53,6 +53,14 @@ import (
 type UpdateProfileRequest struct {
 	FirstName string `json:"first_name" binding:"required,max=100"`
 	LastName  string `json:"last_name" binding:"required,max=100"`
+	// Optional payroll-identity fields (future payroll module). Pointers so the
+	// form can distinguish "not sent" from "cleared"; both end up NULL here, which
+	// is fine — this is a full-form save, not a partial PATCH. Format is validated
+	// in the service via the shared kernel.Parse* helpers (the same ones the admin
+	// path uses), so the rules can't drift between the two screens.
+	NationalInsuranceNumber *string `json:"national_insurance_number"`
+	UTR                     *string `json:"utr"`
+	DateOfBirth             *string `json:"date_of_birth"` // ISO YYYY-MM-DD
 }
 
 // Service holds only the auth query set: reading and updating the user are
@@ -117,6 +125,22 @@ func (s *Service) UpdateProfile(
 		return nil, kernel.ErrValidation("last_name is required", nil)
 	}
 
+	// Parse + validate the optional payroll fields (422 on a bad value). The same
+	// kernel helpers back the admin path, so the rules stay in one place. A
+	// nil/blank value normalises to a NULL column.
+	nino, err := kernel.ParseNINO(req.NationalInsuranceNumber)
+	if err != nil {
+		return nil, err
+	}
+	utr, err := kernel.ParseUTR(req.UTR)
+	if err != nil {
+		return nil, err
+	}
+	dob, err := kernel.ParseDateOfBirth(req.DateOfBirth)
+	if err != nil {
+		return nil, err
+	}
+
 	// Read first so we can preserve the columns this form does not edit (phone,
 	// avatar_url), and to 404 if the account was soft-deleted.
 	existing, err := s.authQueries.GetUser(ctx, authUserID)
@@ -134,6 +158,10 @@ func (s *Service) UpdateProfile(
 		// Preserved — not on the My Details form.
 		Phone:     existing.Phone,
 		AvatarUrl: existing.AvatarUrl,
+		// Payroll identity (edited on the User Details screen).
+		NationalInsuranceNumber: nino,
+		Utr:                     utr,
+		DateOfBirth:             dob,
 	})
 	if err != nil {
 		// The row was live a moment ago; ErrNoRows means it was soft-deleted in between.

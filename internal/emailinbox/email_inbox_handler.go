@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
 	"github.com/operationfb/accounting-saas/token"
@@ -57,6 +58,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 	authed := r.Group("/api/v1")
 	authed.Use(kernel.AuthMiddleware(tokenMaker))
 	authed.GET("/inbox-address", h.handleGetInboxAddress)
+	// Owner/admin: a TARGET member's inbox address, for the admin User Details
+	// screen. Same :id wildcard as internal/members' /members/:id — Gin merges them.
+	authed.GET("/members/:id/inbox-address", h.handleGetMemberInboxAddress)
 
 	if h.svc != nil && h.signingKey != "" {
 		r.POST("/api/v1/webhooks/mailgun/inbound", h.handleMailgunInbound)
@@ -299,6 +303,30 @@ func (h *Handler) handleGetInboxAddress(c *gin.Context) {
 	userID := kernel.GetAuthUserID(c)
 	orgID := kernel.GetAuthOrgID(c)
 	address, err := h.svc.GetOrCreateInboxAddress(c.Request.Context(), userID, orgID)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enabled": address != "", "address": address})
+}
+
+// handleGetMemberInboxAddress handles GET /api/v1/members/:id/inbox-address — a
+// target member's receipt-inbox address, for an owner/admin viewing another user.
+// Mirrors handleGetInboxAddress (enabled:false when the channel is off) but the
+// service applies the owner/admin gate and resolves the :id target rather than the
+// caller.
+func (h *Handler) handleGetMemberInboxAddress(c *gin.Context) {
+	if h.svc == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false, "address": ""})
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		kernel.RespondError(c, kernel.ErrBadRequest("invalid user id", err))
+		return
+	}
+	address, err := h.svc.GetMemberInboxAddress(
+		c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), targetID)
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

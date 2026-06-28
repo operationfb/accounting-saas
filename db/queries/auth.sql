@@ -98,16 +98,22 @@ WHERE password_reset_token = $1
 
 -- -----------------------------------------------------------------------------
 -- UpdateUser
--- Updates editable profile fields only. Credentials, verification state and
--- security counters have their own dedicated queries below. Returns the updated
--- row so an API handler can echo it straight back.
+-- Updates editable profile fields only (name, phone, avatar, and the payroll
+-- identity fields edited on the User Details screen). Credentials, verification
+-- state and security counters have their own dedicated queries below. Returns the
+-- updated row so an API handler can echo it straight back. Callers that don't own
+-- a column (e.g. the My Details form doesn't edit phone/avatar) read-modify-write,
+-- passing the existing value through.
 -- -----------------------------------------------------------------------------
 -- name: UpdateUser :one
 UPDATE users SET
-    first_name = $2,
-    last_name  = $3,
-    phone      = $4,
-    avatar_url = $5,
+    first_name                = $2,
+    last_name                 = $3,
+    phone                     = $4,
+    avatar_url                = $5,
+    national_insurance_number = $6,
+    utr                       = $7,
+    date_of_birth             = $8,
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL

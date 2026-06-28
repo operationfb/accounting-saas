@@ -24,24 +24,26 @@ import CompanyDetailsView from '@/views/CompanyDetailsView.vue'
 import VatSettingsView from '@/views/VatSettingsView.vue'
 import VatReturnListView from '@/views/VatReturnListView.vue'
 import VatReturnDetailView from '@/views/VatReturnDetailView.vue'
-import VatDashboardView from '@/views/VatDashboardView.vue'
+import OverviewDashboardView from '@/views/OverviewDashboardView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
+import UsersListView from '@/views/UsersListView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: '/', redirect: '/expenses' },
+    { path: '/', redirect: '/overview' },
     { path: '/login', name: 'login', component: LoginView },
     { path: '/forgot', name: 'forgot', component: ForgotPasswordView },
     // Reached from the reset email link, which carries the one-time token as a
     // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
-    // The "Overview" landing — the VAT dashboard (the read layer over HMRC's MTD
-    // VAT account). First item in the top nav.
-    { path: '/overview', name: 'overview', component: VatDashboardView, meta: { requiresAuth: true, title: 'Overview' } },
+    // The "Overview" landing — a tabbed dashboard: the new financial Overview
+    // (placeholder for now) + the existing HMRC MTD VAT dashboard as a 2nd tab.
+    // First item in the top nav.
+    { path: '/overview', name: 'overview', component: OverviewDashboardView, meta: { requiresAuth: true, title: 'Overview' } },
     { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
@@ -81,9 +83,14 @@ const router = createRouter({
     // The organisation's VAT registration settings — likewise a singleton (the org
     // comes from the token). Read by any active member; edited by owner/admin.
     { path: '/vat-registration', name: 'vat-registration', component: VatSettingsView, meta: { requiresAuth: true, title: 'Settings' } },
-    // The signed-in user's own "My Details" — likewise a singleton (the user
-    // comes from the token). Every user may edit their own profile.
+    // The signed-in user's own "My Details" — the unified User Details view in
+    // SELF mode (the user comes from the token). Every user may edit their own profile.
     { path: '/my-details', name: 'my-details', component: MyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },
+    // Users management. The list is owner/admin-only (the view + the API both gate
+    // it; a non-admin is redirected to their own details). /users/:id is the SAME
+    // unified User Details view in ADMIN mode (or self mode if :id is the caller).
+    { path: '/users', name: 'users', component: UsersListView, meta: { requiresAuth: true, title: 'Users' } },
+    { path: '/users/:id', name: 'user-detail', component: MyDetailsView, meta: { requiresAuth: true, title: 'Users' } },
     // Integration settings (FreeAgent OAuth + status). The path is fixed: the
     // backend OAuth callback redirects the browser to /settings/integrations with
     // ?freeagent=connected | ?freeagent=error&reason=… (integration_service.go).
@@ -106,7 +113,7 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
-    return { name: 'expenses' }
+    return { name: 'overview' }
   }
   return true
 })

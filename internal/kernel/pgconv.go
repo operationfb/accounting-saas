@@ -49,6 +49,17 @@ func TimestampToStringPtr(t pgtype.Timestamptz) *string {
 	return &s
 }
 
+// DateToStringPtr renders a nullable DATE column as an ISO "2006-01-02" *string;
+// nil when NULL. The counterpart to TimestampToStringPtr for date-only columns
+// (e.g. users.date_of_birth) where there is no time/zone component to show.
+func DateToStringPtr(d pgtype.Date) *string {
+	if !d.Valid {
+		return nil
+	}
+	s := d.Time.Format("2006-01-02")
+	return &s
+}
+
 // NullInt32 wraps an int32 in pgtype.Int4, mapping 0 -> NULL.
 // Used for nullable integer columns where 0 is not a meaningful value
 // (e.g. vat_rate_bps when there is no VAT). Do NOT use where 0 is meaningful —

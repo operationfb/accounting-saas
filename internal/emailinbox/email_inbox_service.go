@@ -478,6 +478,25 @@ func (s *Service) GetOrCreateInboxAddress(ctx context.Context, userID, orgID uui
 	return localPart + "@" + s.inboxDomain, nil
 }
 
+// GetMemberInboxAddress returns ANOTHER member's inbox address, for an owner/admin
+// viewing that user on the admin User Details screen. It differs from
+// GetOrCreateInboxAddress only in the authorisation: the CALLER must be an
+// owner/admin of the org (the self endpoint needs no role check because it always
+// targets the caller). The target must itself be a member of the org, which the
+// reused GetOrCreateInboxAddress enforces (its GetMembership on the target 403s a
+// non-member, so a cross-tenant id can't leak an address). Returns "" when the
+// channel is disabled.
+func (s *Service) GetMemberInboxAddress(ctx context.Context, callerID, orgID, targetID uuid.UUID) (string, error) {
+	role, err := kernel.AuthorizeMember(ctx, s.authQueries, callerID, orgID)
+	if err != nil {
+		return "", err
+	}
+	if !kernel.IsOrgAdmin(role) {
+		return "", kernel.ErrForbidden("only owners and admins can view another user's inbox address")
+	}
+	return s.GetOrCreateInboxAddress(ctx, targetID, orgID)
+}
+
 // baseLocalPart builds the human-readable base "{name}.{org}" for an address,
 // e.g. "aydin.gunal.acme-ltd". Falls back gracefully when names/slug are empty.
 func (s *Service) baseLocalPart(ctx context.Context, userID, orgID uuid.UUID) (string, error) {

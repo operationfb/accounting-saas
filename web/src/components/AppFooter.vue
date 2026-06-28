@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Pale-blue footer, mirroring FA's. Static placeholder links.
 // Same imported asset as the login page (Vite fingerprints it for cache-busting).
-import kontalaLogo from '@/assets/kontala-logo-green.png'
+import kontalaLogo from '@/assets/kontala-logo.svg'
 
 const links = ['Support', 'Knowledge Base', 'Privacy', 'Cookie Notice']
 </script>

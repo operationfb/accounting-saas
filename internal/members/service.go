@@ -30,25 +30,32 @@ package members
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	"github.com/operationfb/accounting-saas/internal/kernel"
 )
 
-// Service holds only the auth query set: listing members is a single
-// read-only query, so there is no pool/transaction to keep (unlike the services
-// that write across tables).
+// Service holds the auth query set plus the pool. Listing/reading a member is a
+// single read-only query (uses authQueries directly), but editing a member writes
+// the users row AND the membership row, so UpdateMember runs them in one
+// transaction via the pool (kernel.WithTx + auth.New(tx)).
 type Service struct {
+	pool        *pgxpool.Pool
 	authQueries auth.Querier
 }
 
 // NewService is the constructor, called once in main.go. authQueries is the
-// same auth.Querier already shared with the other services.
-func NewService(authQueries auth.Querier) *Service {
-	return &Service{authQueries: authQueries}
+// same auth.Querier already shared with the other services; pool is the shared
+// pgx pool used by UpdateMember's transaction.
+func NewService(pool *pgxpool.Pool, authQueries auth.Querier) *Service {
+	return &Service{pool: pool, authQueries: authQueries}
 }
 
 // =============================================================================
@@ -123,5 +130,212 @@ func memberToResponse(r auth.ListMembersByOrganisationRow) *MemberResponse {
 		AvatarURL:    kernel.NullTextToPtr(r.AvatarUrl),
 		MemberSince:  r.MemberSince.Time.Format(time.RFC3339),
 		LastLoginAt:  kernel.TimestampToStringPtr(r.LastLoginAt),
+	}
+}
+
+// =============================================================================
+// GET ONE (admin)
+// =============================================================================
+
+// GetMember returns one member's full detail (profile + payroll + role/status)
+// for the admin User Details screen. Owner/admin only. The org is the caller's
+// (from the token); the target is composed from its membership row (role/status,
+// member_since) joined in Go with its users row (names, email, payroll fields,
+// last_login). A target that is not a member of the caller's org — including any
+// cross-tenant user — has no membership row, so it 404s (multi-tenant isolation).
+func (s *Service) GetMember(
+	ctx context.Context,
+	authUserID, authOrgID, targetUserID uuid.UUID,
+) (*MemberDetailResponse, error) {
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !kernel.IsOrgAdmin(role) {
+		return nil, kernel.ErrForbidden("only owners and admins can view user details")
+	}
+
+	membership, user, err := s.loadMember(ctx, authOrgID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	return memberDetailToResponse(membership, user), nil
+}
+
+// =============================================================================
+// UPDATE (admin)
+// =============================================================================
+
+// UpdateMember edits another user's profile + payroll fields and their membership
+// role/status. Owner/admin only; the target must be a member of the caller's org
+// (else 404). Two safety guards beyond the role gate:
+//
+//   - Self lock-out: the caller may not change THEIR OWN role or status here (they
+//     could otherwise demote/deactivate themselves). Editing your own name/payroll
+//     is fine; the dedicated path is /api/v1/profile anyway.
+//   - Owner protection: only an owner may assign the owner role or modify an
+//     existing owner. An admin can manage everyone below them, not their owner.
+//
+// The users update and the two membership updates run in ONE transaction so a
+// partial save can't leave role/status and the profile out of sync.
+func (s *Service) UpdateMember(
+	ctx context.Context,
+	authUserID, authOrgID, targetUserID uuid.UUID,
+	req UpdateMemberRequest,
+) (*MemberDetailResponse, error) {
+	callerRole, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !kernel.IsOrgAdmin(callerRole) {
+		return nil, kernel.ErrForbidden("only owners and admins can edit users")
+	}
+
+	// Names: binding catches missing; re-check after trim to reject whitespace-only.
+	firstName := strings.TrimSpace(req.FirstName)
+	lastName := strings.TrimSpace(req.LastName)
+	if firstName == "" {
+		return nil, kernel.ErrValidation("first_name is required", nil)
+	}
+	if lastName == "" {
+		return nil, kernel.ErrValidation("last_name is required", nil)
+	}
+	newRole := auth.OrganisationRole(req.Role)
+
+	// Payroll fields — same shared validators as the self path.
+	nino, err := kernel.ParseNINO(req.NationalInsuranceNumber)
+	if err != nil {
+		return nil, err
+	}
+	utr, err := kernel.ParseUTR(req.UTR)
+	if err != nil {
+		return nil, err
+	}
+	dob, err := kernel.ParseDateOfBirth(req.DateOfBirth)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load the target (404 if not a member of this org / soft-deleted).
+	membership, _, err := s.loadMember(ctx, authOrgID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Guard: self role/status change.
+	if targetUserID == authUserID &&
+		(newRole != membership.Role || req.Status != membership.Status) {
+		return nil, kernel.ErrForbidden("you cannot change your own role or status")
+	}
+
+	// Guard: only an owner may touch the owner role (assign it, or edit an owner).
+	if (membership.Role == auth.OrganisationRoleOwner || newRole == auth.OrganisationRoleOwner) &&
+		callerRole != auth.OrganisationRoleOwner {
+		return nil, kernel.ErrForbidden("only an owner can assign or modify the owner role")
+	}
+
+	// One transaction: profile/payroll on users, then role + status on the
+	// membership. Read-modify-write preserves the user columns this form doesn't
+	// own (phone, avatar_url).
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := auth.New(tx)
+
+		existing, err := qtx.GetUser(ctx, targetUserID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return kernel.ErrNotFound("user", targetUserID.String())
+			}
+			return kernel.ErrInternal(err)
+		}
+
+		if _, err := qtx.UpdateUser(ctx, auth.UpdateUserParams{
+			ID:                      targetUserID,
+			FirstName:               firstName,
+			LastName:                lastName,
+			Phone:                   existing.Phone,     // preserved
+			AvatarUrl:               existing.AvatarUrl, // preserved
+			NationalInsuranceNumber: nino,
+			Utr:                     utr,
+			DateOfBirth:             dob,
+		}); err != nil {
+			return kernel.ErrInternal(err)
+		}
+
+		if err := qtx.UpdateMembershipRole(ctx, auth.UpdateMembershipRoleParams{
+			OrganisationID: authOrgID,
+			UserID:         targetUserID,
+			Role:           newRole,
+		}); err != nil {
+			return kernel.ErrInternal(err)
+		}
+
+		if err := qtx.UpdateMembershipStatus(ctx, auth.UpdateMembershipStatusParams{
+			OrganisationID: authOrgID,
+			UserID:         targetUserID,
+			Status:         req.Status,
+		}); err != nil {
+			return kernel.ErrInternal(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-read so the response reflects the committed state (including member_since
+	// and avatar we didn't touch).
+	membership, user, err := s.loadMember(ctx, authOrgID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	return memberDetailToResponse(membership, user), nil
+}
+
+// loadMember fetches the (membership, user) pair for a target in the caller's org,
+// mapping a missing membership OR a soft-deleted user to a 404. Shared by GetMember
+// and UpdateMember so the isolation rule lives in one place.
+func (s *Service) loadMember(
+	ctx context.Context,
+	orgID, targetUserID uuid.UUID,
+) (auth.OrganisationMembership, auth.User, error) {
+	membership, err := s.authQueries.GetMembership(ctx, auth.GetMembershipParams{
+		OrganisationID: orgID,
+		UserID:         targetUserID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not a member of this org (or no such user) — don't leak existence.
+			return auth.OrganisationMembership{}, auth.User{}, kernel.ErrNotFound("member", targetUserID.String())
+		}
+		return auth.OrganisationMembership{}, auth.User{}, kernel.ErrInternal(err)
+	}
+	user, err := s.authQueries.GetUser(ctx, targetUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return auth.OrganisationMembership{}, auth.User{}, kernel.ErrNotFound("user", targetUserID.String())
+		}
+		return auth.OrganisationMembership{}, auth.User{}, kernel.ErrInternal(err)
+	}
+	return membership, user, nil
+}
+
+// memberDetailToResponse composes a membership row + its user row into the detail
+// response. role/status/member_since come from the membership; the profile and
+// payroll fields from the user.
+func memberDetailToResponse(m auth.OrganisationMembership, u auth.User) *MemberDetailResponse {
+	return &MemberDetailResponse{
+		MembershipID:            m.ID.String(),
+		UserID:                  u.ID.String(),
+		Email:                   u.Email,
+		FirstName:               u.FirstName,
+		LastName:                u.LastName,
+		Role:                    string(m.Role),
+		Status:                  m.Status,
+		AvatarURL:               kernel.NullTextToPtr(u.AvatarUrl),
+		NationalInsuranceNumber: kernel.NullTextToPtr(u.NationalInsuranceNumber),
+		UTR:                     kernel.NullTextToPtr(u.Utr),
+		DateOfBirth:             kernel.DateToStringPtr(u.DateOfBirth),
+		MemberSince:             m.CreatedAt.Time.Format(time.RFC3339),
+		LastLoginAt:             kernel.TimestampToStringPtr(u.LastLoginAt),
 	}
 }

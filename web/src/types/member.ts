@@ -26,3 +26,26 @@ export type OrganisationMember = z.infer<typeof OrganisationMemberSchema>
 export const ListMembersResponseSchema = z.object({
   members: z.array(OrganisationMemberSchema).nullish(),
 })
+
+// Mirrors the backend MemberDetailResponse (internal/members) for the admin User
+// Details screen (GET /api/v1/members/:id): the list shape plus the payroll
+// fields the detail form edits. Owner/admin only.
+export const MemberDetailSchema = OrganisationMemberSchema.extend({
+  national_insurance_number: z.string().nullish(),
+  utr: z.string().nullish(),
+  date_of_birth: z.string().nullish(), // ISO YYYY-MM-DD
+})
+export type MemberDetail = z.infer<typeof MemberDetailSchema>
+
+// PUT /api/v1/members/:id body. Mirrors the backend UpdateMemberRequest: names
+// required, payroll fields optional (null clears), role + status from the fixed
+// enums. The service adds the self lock-out and owner-only-owner guards.
+export interface UpdateMemberRequest {
+  first_name: string
+  last_name: string
+  national_insurance_number?: string | null
+  utr?: string | null
+  date_of_birth?: string | null // ISO YYYY-MM-DD
+  role: 'owner' | 'admin' | 'member' | 'accountant' | 'read_only'
+  status: 'active' | 'suspended' | 'deactivated'
+}

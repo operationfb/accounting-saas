@@ -108,13 +108,18 @@ type LoginUserRequest struct {
 // password hash, verification/reset tokens, security counters, the last-login
 // IP, and the created_at/updated_at/deleted_at timestamps.
 type UserResponse struct {
-	ID            string  `json:"id"`
-	Email         string  `json:"email"`
-	FirstName     string  `json:"first_name"`
-	LastName      string  `json:"last_name"`
-	Phone         *string `json:"phone,omitempty"`
-	AvatarURL     *string `json:"avatar_url,omitempty"`
-	EmailVerified bool    `json:"email_verified"`
+	ID        string  `json:"id"`
+	Email     string  `json:"email"`
+	FirstName string  `json:"first_name"`
+	LastName  string  `json:"last_name"`
+	Phone     *string `json:"phone,omitempty"`
+	AvatarURL *string `json:"avatar_url,omitempty"`
+	// Payroll-identity fields (future payroll module). All optional/nullable; the
+	// login response carries them too, so the SPA's stored user gains them for free.
+	NationalInsuranceNumber *string `json:"national_insurance_number,omitempty"`
+	UTR                     *string `json:"utr,omitempty"`
+	DateOfBirth             *string `json:"date_of_birth,omitempty"` // ISO YYYY-MM-DD
+	EmailVerified           bool    `json:"email_verified"`
 }
 
 // OrganisationResponse is the safe public view of the organisation the session
@@ -148,13 +153,16 @@ type LoginUserResponse struct {
 // NewUserResponse projects a generated auth.User onto the safe UserResponse.
 func NewUserResponse(u auth.User) UserResponse {
 	return UserResponse{
-		ID:            u.ID.String(),
-		Email:         u.Email,
-		FirstName:     u.FirstName,
-		LastName:      u.LastName,
-		Phone:         kernel.NullTextToPtr(u.Phone),
-		AvatarURL:     kernel.NullTextToPtr(u.AvatarUrl),
-		EmailVerified: u.EmailVerifiedAt.Valid, // verified iff the timestamp is set
+		ID:                      u.ID.String(),
+		Email:                   u.Email,
+		FirstName:               u.FirstName,
+		LastName:                u.LastName,
+		Phone:                   kernel.NullTextToPtr(u.Phone),
+		AvatarURL:               kernel.NullTextToPtr(u.AvatarUrl),
+		NationalInsuranceNumber: kernel.NullTextToPtr(u.NationalInsuranceNumber),
+		UTR:                     kernel.NullTextToPtr(u.Utr),
+		DateOfBirth:             kernel.DateToStringPtr(u.DateOfBirth),
+		EmailVerified:           u.EmailVerifiedAt.Valid, // verified iff the timestamp is set
 	}
 }
 

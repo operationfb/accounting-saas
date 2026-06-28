@@ -259,9 +259,12 @@ type Querier interface {
 	UpdateOrganisationVatSettings(ctx context.Context, arg UpdateOrganisationVatSettingsParams) (Organisation, error)
 	// -----------------------------------------------------------------------------
 	// UpdateUser
-	// Updates editable profile fields only. Credentials, verification state and
-	// security counters have their own dedicated queries below. Returns the updated
-	// row so an API handler can echo it straight back.
+	// Updates editable profile fields only (name, phone, avatar, and the payroll
+	// identity fields edited on the User Details screen). Credentials, verification
+	// state and security counters have their own dedicated queries below. Returns the
+	// updated row so an API handler can echo it straight back. Callers that don't own
+	// a column (e.g. the My Details form doesn't edit phone/avatar) read-modify-write,
+	// passing the existing value through.
 	// -----------------------------------------------------------------------------
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 	// -----------------------------------------------------------------------------

@@ -1,5 +1,10 @@
 <script setup lang="ts">
-// VAT dashboard (the "Overview" page) — the read layer over HMRC's MTD VAT account.
+// VAT dashboard — the VAT tab of the Overview page
+// (web/src/views/OverviewDashboardView.vue). The read layer over HMRC's MTD VAT
+// account. Extracted verbatim from the old VatDashboardView so its look & feel is
+// unchanged; the only difference is it no longer wraps AppLayout (the Overview
+// container provides the single page layout) — it renders inside the tab.
+//
 // Mirrors the approved mockup: a compliance hero (current return + deadline + box
 // figures), the return periods (HMRC obligations), what you owe (liabilities),
 // payments to HMRC, penalties & points, and the registered business details.
@@ -12,7 +17,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
-import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
 import { formatMoney, formatDate } from '@/lib/format'
 import { prewarmFraudSignals } from '@/lib/fraudSignals'
@@ -202,7 +206,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <AppLayout>
+  <div>
     <!-- Header -->
     <div class="mb-[18px] flex flex-wrap items-start justify-between gap-3">
       <div>
@@ -485,5 +489,5 @@ onMounted(() => {
         <i class="pi pi-refresh mr-1" />Synced live from HMRC.
       </p>
     </template>
-  </AppLayout>
+  </div>
 </template>

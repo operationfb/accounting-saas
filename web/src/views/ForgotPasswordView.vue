@@ -11,7 +11,7 @@ import Button from 'primevue/button'
 import { forgotPassword } from '@/services/auth.service'
 import type { ApiError } from '@/lib/api'
 // Same imported-asset approach as the other auth pages (Vite fingerprints it).
-import kontalaLogo from '@/assets/kontala-logo.png'
+import kontalaLogo from '@/assets/kontala-logo.svg'
 
 const email = ref('')
 const pending = ref(false)
@@ -42,7 +42,7 @@ async function onSubmit() {
 
 <template>
   <div class="flex min-h-screen flex-col items-center gap-[22px] bg-fa-bg px-4 pb-10 pt-14">
-    <img :src="kontalaLogo" alt="Kontala" class="h-10 w-auto select-none" />
+    <img :src="kontalaLogo" alt="Kontala" class="h-[2.625rem] w-auto select-none" />
 
     <div class="w-full max-w-[380px] rounded-md bg-white p-7 shadow-[0_1px_3px_rgba(20,40,80,0.12)]">
       <h1 class="mb-2 text-xl font-bold">Forgotten your password?</h1>

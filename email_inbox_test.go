@@ -26,6 +26,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -966,6 +967,79 @@ func TestEmailInboxAddress(t *testing.T) {
 		}
 		if !bytes.HasSuffix([]byte(resp.Address), []byte("@"+testInboxDomain)) {
 			t.Errorf("address %q should end with @%s", resp.Address, testInboxDomain)
+		}
+	})
+
+	// GET /api/v1/members/:id/inbox-address — the admin "view another user's inbox
+	// address" endpoint backing the User Details Email-receipts card.
+	getMemberInbox := func(authHeader, id string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/members/"+id+"/inbox-address", nil)
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		ts.server.router.ServeHTTP(rec, req)
+		return rec
+	}
+	decodeInbox := func(b []byte) (bool, string) {
+		var r struct {
+			Enabled bool   `json:"enabled"`
+			Address string `json:"address"`
+		}
+		_ = json.Unmarshal(b, &r)
+		return r.Enabled, r.Address
+	}
+
+	t.Run("admin gets a target member's address, distinct from their own", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		target := newMemberUser(t, ts, orgID)
+
+		rec := getMemberInbox(bearer(t, ts, ownerID, orgID), target)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status: got %d, want 200 — body: %s", rec.Code, rec.Body.String())
+		}
+		enabled, addr := decodeInbox(rec.Body.Bytes())
+		if !enabled || addr == "" {
+			t.Fatalf("expected an enabled address, got enabled=%v addr=%q", enabled, addr)
+		}
+		if !strings.HasSuffix(addr, "@"+testInboxDomain) {
+			t.Errorf("address %q should end with @%s", addr, testInboxDomain)
+		}
+		// It must be the TARGET's address, not the caller's own.
+		ownRec := getMemberInbox(bearer(t, ts, ownerID, orgID), ownerID)
+		_, ownAddr := decodeInbox(ownRec.Body.Bytes())
+		if addr == ownAddr {
+			t.Errorf("target address %q equals the caller's own — not target-scoped", addr)
+		}
+	})
+
+	t.Run("plain member caller → 403", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		caller := newMemberUser(t, ts, orgID)
+		target := newMemberUser(t, ts, orgID)
+
+		rec := getMemberInbox(bearer(t, ts, caller, orgID), target)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status: got %d, want 403 — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("cross-tenant target → 403", func(t *testing.T) {
+		orgA, ownerA := newOrgWithOwner(t, ts)
+		orgB, _ := newOrgWithOwner(t, ts)
+		strangerInB := newMemberUser(t, ts, orgB)
+
+		rec := getMemberInbox(bearer(t, ts, ownerA, orgA), strangerInB)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status: got %d, want 403 — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed id → 400", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		rec := getMemberInbox(bearer(t, ts, ownerID, orgID), "not-a-uuid")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status: got %d, want 400 — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }

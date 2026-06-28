@@ -16,6 +16,7 @@ package main
 // =============================================================================
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -92,9 +93,256 @@ func newAdminUser(t *testing.T, ts *testServer, orgID string) string {
 	return id
 }
 
+// getMemberReq sends GET /api/v1/members/:id.
+func getMemberReq(t *testing.T, ts *testServer, authHeader, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/members/"+id, nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// putMemberReq sends PUT /api/v1/members/:id with a JSON body.
+func putMemberReq(t *testing.T, ts *testServer, authHeader, id string, body members.UpdateMemberRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/members/"+id, bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// decodeMemberDetail decodes the bare MemberDetailResponse the handler returns.
+func decodeMemberDetail(t *testing.T, body []byte) members.MemberDetailResponse {
+	t.Helper()
+	var resp members.MemberDetailResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decodeMemberDetail: %v — body: %s", err, string(body))
+	}
+	return resp
+}
+
 // =============================================================================
 // TESTS
 // =============================================================================
+
+// TestHandleGetMember covers GET /api/v1/members/:id (the admin User Details read).
+func TestHandleGetMember(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("admin reads another member's detail incl payroll fields", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+		// Seed payroll fields on the target so we can prove GET returns them.
+		if _, err := ts.pool.Exec(context.Background(),
+			`UPDATE users SET national_insurance_number = 'SY598539D', utr = '1901746095', date_of_birth = '1982-04-21' WHERE id = $1`,
+			targetID); err != nil {
+			t.Fatalf("seed payroll: %v", err)
+		}
+
+		rec := getMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeMemberDetail(t, rec.Body.Bytes())
+		if got.UserID != targetID {
+			t.Errorf("user_id: got %q, want %q", got.UserID, targetID)
+		}
+		if got.Role != "member" || got.Status != "active" {
+			t.Errorf("role/status: got %q/%q, want member/active", got.Role, got.Status)
+		}
+		if got.NationalInsuranceNumber == nil || *got.NationalInsuranceNumber != "SY598539D" {
+			t.Errorf("nino: got %v, want SY598539D", got.NationalInsuranceNumber)
+		}
+		if got.UTR == nil || *got.UTR != "1901746095" {
+			t.Errorf("utr: got %v, want 1901746095", got.UTR)
+		}
+		if got.DateOfBirth == nil || *got.DateOfBirth != "1982-04-21" {
+			t.Errorf("date_of_birth: got %v, want 1982-04-21", got.DateOfBirth)
+		}
+	})
+
+	t.Run("plain member is forbidden", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		caller := newMemberUser(t, ts, orgID)
+		target := newMemberUser(t, ts, orgID)
+
+		rec := getMemberReq(t, ts, bearer(t, ts, caller, orgID), target)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("cross-tenant target → 404", func(t *testing.T) {
+		orgA, ownerA := newOrgWithOwner(t, ts)
+		orgB, _ := newOrgWithOwner(t, ts)
+		// A user that belongs to orgB only.
+		strangerInB := newMemberUser(t, ts, orgB)
+
+		rec := getMemberReq(t, ts, bearer(t, ts, ownerA, orgA), strangerInB)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed id → 400", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		rec := getMemberReq(t, ts, bearer(t, ts, ownerID, orgID), "not-a-uuid")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated → 401", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		_ = orgID
+		rec := getMemberReq(t, ts, "", uuid.NewString())
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestHandleUpdateMember covers PUT /api/v1/members/:id (the admin User Details edit).
+func TestHandleUpdateMember(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("admin updates details + payroll + role + status → persists", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName:               "Aydin",
+			LastName:                "Gunal",
+			NationalInsuranceNumber: ptr("SY598539D"),
+			UTR:                     ptr("1901746095"),
+			DateOfBirth:             ptr("1982-04-21"),
+			Role:                    "admin",
+			Status:                  "suspended",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeMemberDetail(t, rec.Body.Bytes())
+		if got.FirstName != "Aydin" || got.LastName != "Gunal" {
+			t.Errorf("name: got %q %q", got.FirstName, got.LastName)
+		}
+		if got.Role != "admin" || got.Status != "suspended" {
+			t.Errorf("role/status: got %q/%q, want admin/suspended", got.Role, got.Status)
+		}
+
+		// Committed to the DB (users + membership).
+		var ni, utr, dob, role, status string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT u.national_insurance_number, u.utr, u.date_of_birth::text, m.role, m.status
+			 FROM users u JOIN organisation_memberships m ON m.user_id = u.id
+			 WHERE u.id = $1 AND m.organisation_id = $2`, targetID, orgID).
+			Scan(&ni, &utr, &dob, &role, &status); err != nil {
+			t.Fatalf("re-read: %v", err)
+		}
+		if ni != "SY598539D" || utr != "1901746095" || dob != "1982-04-21" {
+			t.Errorf("payroll not persisted: ni=%q utr=%q dob=%q", ni, utr, dob)
+		}
+		if role != "admin" || status != "suspended" {
+			t.Errorf("membership not persisted: role=%q status=%q", role, status)
+		}
+	})
+
+	t.Run("invalid NI number → 422", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName:               "X",
+			LastName:                "Y",
+			NationalInsuranceNumber: ptr("NOPE"),
+			Role:                    "member",
+			Status:                  "active",
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid role value → 400 binding", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName: "X", LastName: "Y", Role: "superuser", Status: "active",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("plain member caller → 403", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		caller := newMemberUser(t, ts, orgID)
+		target := newMemberUser(t, ts, orgID)
+		rec := putMemberReq(t, ts, bearer(t, ts, caller, orgID), target, members.UpdateMemberRequest{
+			FirstName: "X", LastName: "Y", Role: "member", Status: "active",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("self role/status change is forbidden", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		// Owner edits THEMSELVES, trying to change status → blocked.
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), ownerID, members.UpdateMemberRequest{
+			FirstName: "Self", LastName: "Edit", Role: "owner", Status: "suspended",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("only an owner may assign the owner role", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		admin := newAdminUser(t, ts, orgID)
+		target := newMemberUser(t, ts, orgID)
+		// An admin promoting a member to owner → blocked.
+		rec := putMemberReq(t, ts, bearer(t, ts, admin, orgID), target, members.UpdateMemberRequest{
+			FirstName: "X", LastName: "Y", Role: "owner", Status: "active",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("admin may not modify an existing owner", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		admin := newAdminUser(t, ts, orgID)
+		// An admin editing the org owner → blocked (target's current role is owner).
+		rec := putMemberReq(t, ts, bearer(t, ts, admin, orgID), ownerID, members.UpdateMemberRequest{
+			FirstName: "Owner", LastName: "Renamed", Role: "owner", Status: "active",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("cross-tenant target → 404", func(t *testing.T) {
+		orgA, ownerA := newOrgWithOwner(t, ts)
+		orgB, _ := newOrgWithOwner(t, ts)
+		strangerInB := newMemberUser(t, ts, orgB)
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerA, orgA), strangerInB, members.UpdateMemberRequest{
+			FirstName: "X", LastName: "Y", Role: "member", Status: "active",
+		})
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
 
 // TestHandleListMembers covers GET /api/v1/members end-to-end through the router.
 func TestHandleListMembers(t *testing.T) {

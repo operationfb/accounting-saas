@@ -58,6 +58,7 @@ var rootAllowlist = map[string]bool{
 	"member_service_test.go":       true,
 	"ocr_service_test.go":          true,
 	"organisation_service_test.go": true,
+	"overview_service_test.go":     true,
 	"reconcile_test.go":            true,
 	"server.go":                    true,
 	"server_test.go":               true,

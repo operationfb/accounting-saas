@@ -281,6 +281,23 @@ CREATE TABLE users (
     avatar_url      TEXT,
 
     -- -------------------------------------------------------------------------
+    -- Payroll identity
+    -- Captured on the User Details screen; consumed by the future payroll module.
+    -- All nullable: existing accounts have none, and a user is usable without them.
+    -- Format is validated in the service layer (see internal/kernel), not the DB,
+    -- so an import or a partially-filled form is never rejected at the column.
+    -- -------------------------------------------------------------------------
+    -- UK National Insurance number: 2 letters, 6 digits, 1 suffix letter (e.g.
+    -- SY598539D) = 9 chars; VARCHAR(13) leaves room for the spaced presentation.
+    national_insurance_number VARCHAR(13),
+    -- The user's PERSONAL 10-digit HMRC Unique Tax Reference (Self Assessment /
+    -- MTD for Income Tax). DISTINCT from organisations.utr (the company's UTR).
+    utr                       VARCHAR(10),
+    -- Date of birth — needed for payroll (age-based NI categories, pension
+    -- auto-enrolment thresholds). DATE, not TIMESTAMPTZ: no time/zone component.
+    date_of_birth             DATE,
+
+    -- -------------------------------------------------------------------------
     -- Email verification
     -- A user must verify their email before they can use the platform.
     -- The verification token is a cryptographically random string emailed to
@@ -334,6 +351,9 @@ COMMENT ON TABLE users IS 'Platform-level identity. One row per person. A user b
 COMMENT ON COLUMN users.email IS 'Login identifier. Stored lowercase. Globally unique across all tenants.';
 COMMENT ON COLUMN users.password_hash IS 'bcrypt hash at cost 12. NULL for OAuth-only accounts. Never store plaintext.';
 COMMENT ON COLUMN users.last_login_ip IS 'Uses PostgreSQL native INET type — stores IPv4 and IPv6 without needing a string.';
+COMMENT ON COLUMN users.national_insurance_number IS 'UK NINO (payroll). Nullable; format validated in the service layer, not by a CHECK.';
+COMMENT ON COLUMN users.utr IS 'User''s PERSONAL 10-digit HMRC Unique Tax Reference (payroll/Self Assessment). Distinct from organisations.utr (the company UTR).';
+COMMENT ON COLUMN users.date_of_birth IS 'Date of birth (payroll: NI category by age, pension auto-enrolment). DATE — no time component.';
 
 
 -- =============================================================================

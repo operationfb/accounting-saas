@@ -255,3 +255,105 @@ func TestHandleUpdateProfile(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// PAYROLL FIELDS (NI / UTR / DOB)
+// =============================================================================
+
+// TestProfilePayrollFields covers the optional payroll-identity fields on the
+// self profile: a happy round-trip + DB persistence, normalisation (NINO upper
+// + space-strip), clearing a field to NULL, and the validation 422s.
+func TestProfilePayrollFields(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("set + normalise → round-trips, persists", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		authHeader := bearer(t, ts, ownerB, orgB)
+
+		rec := putProfile(t, ts, authHeader, userauth.UpdateProfileRequest{
+			FirstName:               "Aydin",
+			LastName:                "Gunal",
+			NationalInsuranceNumber: ptr("sy 59 85 39 d"), // lower + spaced
+			UTR:                     ptr("1901746095"),
+			DateOfBirth:             ptr("1982-04-21"),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeProfile(t, rec.Body.Bytes())
+		// NINO is normalised to upper-case, no spaces.
+		if got.NationalInsuranceNumber == nil || *got.NationalInsuranceNumber != "SY598539D" {
+			t.Errorf("nino: got %v, want SY598539D", got.NationalInsuranceNumber)
+		}
+		if got.UTR == nil || *got.UTR != "1901746095" {
+			t.Errorf("utr: got %v, want 1901746095", got.UTR)
+		}
+		if got.DateOfBirth == nil || *got.DateOfBirth != "1982-04-21" {
+			t.Errorf("dob: got %v, want 1982-04-21", got.DateOfBirth)
+		}
+
+		// Persisted to the DB.
+		var ni, utr, dob string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT national_insurance_number, utr, date_of_birth::text FROM users WHERE id = $1`, ownerB).
+			Scan(&ni, &utr, &dob); err != nil {
+			t.Fatalf("re-read: %v", err)
+		}
+		if ni != "SY598539D" || utr != "1901746095" || dob != "1982-04-21" {
+			t.Errorf("DB mismatch: ni=%q utr=%q dob=%q", ni, utr, dob)
+		}
+	})
+
+	t.Run("blank clears the column to NULL", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		authHeader := bearer(t, ts, ownerB, orgB)
+		// Seed something first.
+		if _, err := ts.pool.Exec(context.Background(),
+			`UPDATE users SET national_insurance_number = 'SY598539D' WHERE id = $1`, ownerB); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		rec := putProfile(t, ts, authHeader, userauth.UpdateProfileRequest{
+			FirstName:               "A",
+			LastName:                "B",
+			NationalInsuranceNumber: ptr("  "),
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeProfile(t, rec.Body.Bytes())
+		if got.NationalInsuranceNumber != nil {
+			t.Errorf("nino should be cleared, got %v", *got.NationalInsuranceNumber)
+		}
+	})
+
+	t.Run("invalid NINO → 422", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
+			FirstName: "A", LastName: "B", NationalInsuranceNumber: ptr("12AB"),
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid UTR → 422", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
+			FirstName: "A", LastName: "B", UTR: ptr("123"),
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("future date of birth → 422", func(t *testing.T) {
+		orgB, ownerB := newOrgWithOwner(t, ts)
+		rec := putProfile(t, ts, bearer(t, ts, ownerB, orgB), userauth.UpdateProfileRequest{
+			FirstName: "A", LastName: "B", DateOfBirth: ptr("2999-01-01"),
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}

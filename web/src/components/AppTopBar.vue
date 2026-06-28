@@ -69,17 +69,23 @@ const accountMenu = ref()
 const accountItems = computed<MenuItem[]>(() => [
   { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
   { label: 'VAT Registration', icon: 'pi pi-percentage', command: () => router.push('/vat-registration') },
-  { label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') },
-  // Managing integrations (FreeAgent, …) is owner/admin only — hidden otherwise.
+  // Owner/admin manage everyone via Users (and reach their own record by clicking
+  // themselves in that list), so they get Users + Integrations and NOT My Details.
+  // A non-admin can only edit themselves, so they get My Details and not Users.
   ...(auth.isOrgAdmin
     ? [
+        {
+          label: 'Users',
+          icon: 'pi pi-users',
+          command: () => router.push('/users'),
+        },
         {
           label: 'Integrations',
           icon: 'pi pi-link',
           command: () => router.push('/settings/integrations'),
         },
       ]
-    : []),
+    : [{ label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') }]),
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
   // Set the destructive sign-out apart from the navigation items with a divider.
   { separator: true },

@@ -205,7 +205,7 @@ func newTestServer(t *testing.T) *testServer {
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries)
-	memberSvc := members.NewService(authQueries)
+	memberSvc := members.NewService(pool, authQueries)
 	organisationSvc := organisation.NewService(authQueries)
 	vatSvc := vat.NewService(authQueries, vatQueries, nil /* HMRC not wired in tests */)
 	userSvc := userauth.NewService(authQueries)

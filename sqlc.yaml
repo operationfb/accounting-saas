@@ -628,3 +628,55 @@ sql:
               type: "RawMessage"
           - db_type: "pg_catalog.numeric"
             go_type: "string"
+
+  # ===========================================================================
+  # OVERVIEW MODULE (dashboard read aggregations)
+  # Cross-domain READ-ONLY queries that back the "Overview" dashboard, generated
+  # into package `overview` at db/overview (imported as `overviewdb` in
+  # internal/overview, `dboverview` in main). Like the VAT block, the Overview is
+  # inherently cross-domain; it loads every schema its queries touch. The first
+  # card (Cashflow) reads bank_transactions, so the SAME schema list as the
+  # banking block is used — its FK deps pull in the rest, and the invoices / bills
+  # / expenses tables are already here for the later cards. omit_unused_structs
+  # keeps the other domains' models out of db/overview — only the CashflowByMonth
+  # row struct is emitted. Nothing here writes.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/contacts_schema.sql"
+      - "db/schema/categories_schema.sql"
+      - "db/schema/invoices_schema.sql"
+      - "db/schema/projects_schema.sql"
+      - "db/schema/bills_schema.sql"
+      - "db/schema/banking_schema.sql"
+
+    queries: "db/queries/overview.sql"
+
+    gen:
+      go:
+        package: "overview"
+        out: "db/overview"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+
+        # Keep the other domains' structs (loaded only to satisfy FK deps) out of
+        # db/overview — emit only what overview.sql references.
+        omit_unused_structs: true
+
+        # Same type overrides as the other blocks.
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
