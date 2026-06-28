@@ -30,6 +30,46 @@ export const ListMembersResponseSchema = z.object({
 // Mirrors the backend MemberDetailResponse (internal/members) for the admin User
 // Details screen (GET /api/v1/members/:id): the list shape plus the payroll
 // fields the detail form edits. Owner/admin only.
+// Payroll employee-information (admin-only). Money fields are decimal POUND strings
+// ("700.00"); enums/booleans are raw; optional text/date fields are nullable. Mirrors
+// the backend PayrollDTO. The conditional detail behind Statutory Pay = Yes and Pension
+// = "making contributions" is deferred (the UI disables those options).
+export const PayrollSchema = z.object({
+  // Employment details
+  is_existing_employee: z.boolean(),
+  start_date: z.string().nullish(), // ISO YYYY-MM-DD
+  starting_declaration: z.string().nullish(), // A | B | C
+  nic_calculation: z.string(), // director | director_alternative | employee
+  normal_working_hours: z.string().nullish(),
+  paid_hourly: z.boolean(),
+  paid_irregularly: z.boolean(),
+  payroll_id: z.string().nullish(),
+  // Tax and National Insurance
+  tax_code: z.string().nullish(),
+  week1_month1_basis: z.boolean(),
+  ni_category_letter: z.string(),
+  student_loan_undergraduate: z.boolean(),
+  student_loan_postgraduate: z.boolean(),
+  // Monthly Pay (pound strings)
+  basic_pay: z.string(),
+  allowance: z.string(),
+  other_payments: z.string(),
+  pay_not_subject_to_tax_ni: z.string(),
+  // Statutory Pay
+  receiving_statutory_pay: z.boolean(),
+  // Monthly Deductions (pound strings)
+  payroll_giving: z.string(),
+  other_deductions_net_pay: z.string(),
+  items_class1_nic_not_paye: z.string(),
+  salary_sacrifice_deductions: z.string(),
+  // Pension
+  pension_status: z.string(),
+  // Leaving details
+  leaving_next_pay_run: z.boolean(),
+  leaving_date: z.string().nullish(),
+})
+export type Payroll = z.infer<typeof PayrollSchema>
+
 export const MemberDetailSchema = OrganisationMemberSchema.extend({
   national_insurance_number: z.string().nullish(),
   utr: z.string().nullish(),
@@ -40,6 +80,8 @@ export const MemberDetailSchema = OrganisationMemberSchema.extend({
   address_line_3: z.string().nullish(),
   address_line_4: z.string().nullish(),
   postcode: z.string().nullish(),
+  // Payroll block — owner/admin only; always present on GET (defaults if no row).
+  payroll: PayrollSchema.nullish(),
 })
 export type MemberDetail = z.infer<typeof MemberDetailSchema>
 
@@ -59,4 +101,6 @@ export interface UpdateMemberRequest {
   postcode?: string | null
   role: 'owner' | 'admin' | 'member' | 'accountant' | 'read_only'
   status: 'active' | 'suspended' | 'deactivated'
+  // Optional payroll block (admin-only). When present it's upserted server-side.
+  payroll?: Payroll
 }

@@ -94,3 +94,23 @@ func ParseDateOfBirth(raw *string) (pgtype.Date, error) {
 	}
 	return pgtype.Date{Time: t, Valid: true}, nil
 }
+
+// ParseDate parses an optional ISO date string ("2006-01-02") with no semantic
+// bounds — unlike ParseDateOfBirth it allows FUTURE dates, because payroll dates
+// such as an employment start date or a leaving date legitimately fall ahead of
+// today. nil/blank -> NULL; a malformed value is a 422. `field` names the field in
+// the error message (e.g. "start date"). Date-only (no time/zone).
+func ParseDate(raw *string, field string) (pgtype.Date, error) {
+	if raw == nil {
+		return pgtype.Date{Valid: false}, nil
+	}
+	s := strings.TrimSpace(*raw)
+	if s == "" {
+		return pgtype.Date{Valid: false}, nil
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return pgtype.Date{}, ErrValidation(field+" must be a valid date in YYYY-MM-DD format", err)
+	}
+	return pgtype.Date{Time: t, Valid: true}, nil
+}

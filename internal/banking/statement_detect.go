@@ -200,6 +200,15 @@ func detectFormat(records [][]string) (ColumnMapping, []string) {
 		warnings = append(warnings, "couldn't find an amount column — pick the column that holds the transaction amount")
 	}
 
+	// Fallback: if nothing matched the description role but there IS a memo/notes column, use
+	// it as the description (which is required) — a statement whose only free-text column is
+	// "Memo" should still import. The column then feeds the description, not bank_memo (using
+	// it for both would just duplicate the text onto every row).
+	if m.DescriptionColumn == nil && m.MemoColumn != nil {
+		m.DescriptionColumn = m.MemoColumn
+		m.MemoColumn = nil
+	}
+
 	if m.DateColumn == nil {
 		warnings = append(warnings, "couldn't find a date column — pick the column that holds the transaction date")
 	}

@@ -369,6 +369,66 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	return i, err
 }
 
+const getEmployeePayroll = `-- name: GetEmployeePayroll :one
+
+SELECT organisation_id, user_id, is_existing_employee, start_date, starting_declaration, nic_calculation, normal_working_hours, paid_hourly, paid_irregularly, payroll_id, tax_code, week1_month1_basis, ni_category_letter, student_loan_undergraduate, student_loan_postgraduate, basic_pay_minor, allowance_minor, other_payments_minor, pay_not_subject_to_tax_ni_minor, receiving_statutory_pay, payroll_giving_minor, other_deductions_net_pay_minor, items_class1_nic_not_paye_minor, salary_sacrifice_deductions_minor, pension_status, leaving_next_pay_run, leaving_date, created_at, updated_at FROM employee_payroll
+WHERE organisation_id = $1
+  AND user_id         = $2
+`
+
+type GetEmployeePayrollParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	UserID         uuid.UUID `json:"user_id"`
+}
+
+// =============================================================================
+// EMPLOYEE PAYROLL
+// Per-(organisation,user) payroll employee information. Owner/admin only (the
+// members service enforces the role gate). Read returns at most one row; absent =
+// the API serves defaults. The write is an UPSERT so the first save creates the
+// row and later saves update it, all inside the members UpdateMember transaction.
+// =============================================================================
+// -----------------------------------------------------------------------------
+// GetEmployeePayroll
+// The payroll record for one membership, or no rows if none has been saved yet.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetEmployeePayroll(ctx context.Context, arg GetEmployeePayrollParams) (EmployeePayroll, error) {
+	row := q.db.QueryRow(ctx, getEmployeePayroll, arg.OrganisationID, arg.UserID)
+	var i EmployeePayroll
+	err := row.Scan(
+		&i.OrganisationID,
+		&i.UserID,
+		&i.IsExistingEmployee,
+		&i.StartDate,
+		&i.StartingDeclaration,
+		&i.NicCalculation,
+		&i.NormalWorkingHours,
+		&i.PaidHourly,
+		&i.PaidIrregularly,
+		&i.PayrollID,
+		&i.TaxCode,
+		&i.Week1Month1Basis,
+		&i.NiCategoryLetter,
+		&i.StudentLoanUndergraduate,
+		&i.StudentLoanPostgraduate,
+		&i.BasicPayMinor,
+		&i.AllowanceMinor,
+		&i.OtherPaymentsMinor,
+		&i.PayNotSubjectToTaxNiMinor,
+		&i.ReceivingStatutoryPay,
+		&i.PayrollGivingMinor,
+		&i.OtherDeductionsNetPayMinor,
+		&i.ItemsClass1NicNotPayeMinor,
+		&i.SalarySacrificeDeductionsMinor,
+		&i.PensionStatus,
+		&i.LeavingNextPayRun,
+		&i.LeavingDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getMembership = `-- name: GetMembership :one
 SELECT id, organisation_id, user_id, role, status, invite_token, invite_sent_at, invite_accepted_at, invited_by_user_id, inbox_local_part, inbox_local_part_generated_at, created_at, updated_at FROM organisation_memberships
 WHERE organisation_id = $1
@@ -1670,6 +1730,170 @@ type UpdateUserPasswordParams struct {
 func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
 	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
 	return err
+}
+
+const upsertEmployeePayroll = `-- name: UpsertEmployeePayroll :one
+INSERT INTO employee_payroll (
+    organisation_id,                    -- $1
+    user_id,                            -- $2
+    is_existing_employee,               -- $3
+    start_date,                         -- $4
+    starting_declaration,               -- $5
+    nic_calculation,                    -- $6
+    normal_working_hours,               -- $7
+    paid_hourly,                        -- $8
+    paid_irregularly,                   -- $9
+    payroll_id,                         -- $10
+    tax_code,                           -- $11
+    week1_month1_basis,                 -- $12
+    ni_category_letter,                 -- $13
+    student_loan_undergraduate,         -- $14
+    student_loan_postgraduate,          -- $15
+    basic_pay_minor,                    -- $16
+    allowance_minor,                    -- $17
+    other_payments_minor,               -- $18
+    pay_not_subject_to_tax_ni_minor,    -- $19
+    receiving_statutory_pay,            -- $20
+    payroll_giving_minor,               -- $21
+    other_deductions_net_pay_minor,     -- $22
+    items_class1_nic_not_paye_minor,    -- $23
+    salary_sacrifice_deductions_minor,  -- $24
+    pension_status,                     -- $25
+    leaving_next_pay_run,               -- $26
+    leaving_date                        -- $27
+) VALUES (
+    $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10,
+    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+    $21, $22, $23, $24, $25, $26, $27
+)
+ON CONFLICT (organisation_id, user_id) DO UPDATE SET
+    is_existing_employee              = EXCLUDED.is_existing_employee,
+    start_date                        = EXCLUDED.start_date,
+    starting_declaration              = EXCLUDED.starting_declaration,
+    nic_calculation                   = EXCLUDED.nic_calculation,
+    normal_working_hours              = EXCLUDED.normal_working_hours,
+    paid_hourly                       = EXCLUDED.paid_hourly,
+    paid_irregularly                  = EXCLUDED.paid_irregularly,
+    payroll_id                        = EXCLUDED.payroll_id,
+    tax_code                          = EXCLUDED.tax_code,
+    week1_month1_basis                = EXCLUDED.week1_month1_basis,
+    ni_category_letter                = EXCLUDED.ni_category_letter,
+    student_loan_undergraduate        = EXCLUDED.student_loan_undergraduate,
+    student_loan_postgraduate         = EXCLUDED.student_loan_postgraduate,
+    basic_pay_minor                   = EXCLUDED.basic_pay_minor,
+    allowance_minor                   = EXCLUDED.allowance_minor,
+    other_payments_minor              = EXCLUDED.other_payments_minor,
+    pay_not_subject_to_tax_ni_minor   = EXCLUDED.pay_not_subject_to_tax_ni_minor,
+    receiving_statutory_pay           = EXCLUDED.receiving_statutory_pay,
+    payroll_giving_minor              = EXCLUDED.payroll_giving_minor,
+    other_deductions_net_pay_minor    = EXCLUDED.other_deductions_net_pay_minor,
+    items_class1_nic_not_paye_minor   = EXCLUDED.items_class1_nic_not_paye_minor,
+    salary_sacrifice_deductions_minor = EXCLUDED.salary_sacrifice_deductions_minor,
+    pension_status                    = EXCLUDED.pension_status,
+    leaving_next_pay_run              = EXCLUDED.leaving_next_pay_run,
+    leaving_date                      = EXCLUDED.leaving_date
+RETURNING organisation_id, user_id, is_existing_employee, start_date, starting_declaration, nic_calculation, normal_working_hours, paid_hourly, paid_irregularly, payroll_id, tax_code, week1_month1_basis, ni_category_letter, student_loan_undergraduate, student_loan_postgraduate, basic_pay_minor, allowance_minor, other_payments_minor, pay_not_subject_to_tax_ni_minor, receiving_statutory_pay, payroll_giving_minor, other_deductions_net_pay_minor, items_class1_nic_not_paye_minor, salary_sacrifice_deductions_minor, pension_status, leaving_next_pay_run, leaving_date, created_at, updated_at
+`
+
+type UpsertEmployeePayrollParams struct {
+	OrganisationID                 uuid.UUID   `json:"organisation_id"`
+	UserID                         uuid.UUID   `json:"user_id"`
+	IsExistingEmployee             bool        `json:"is_existing_employee"`
+	StartDate                      pgtype.Date `json:"start_date"`
+	StartingDeclaration            pgtype.Text `json:"starting_declaration"`
+	NicCalculation                 string      `json:"nic_calculation"`
+	NormalWorkingHours             pgtype.Text `json:"normal_working_hours"`
+	PaidHourly                     bool        `json:"paid_hourly"`
+	PaidIrregularly                bool        `json:"paid_irregularly"`
+	PayrollID                      pgtype.Text `json:"payroll_id"`
+	TaxCode                        pgtype.Text `json:"tax_code"`
+	Week1Month1Basis               bool        `json:"week1_month1_basis"`
+	NiCategoryLetter               string      `json:"ni_category_letter"`
+	StudentLoanUndergraduate       bool        `json:"student_loan_undergraduate"`
+	StudentLoanPostgraduate        bool        `json:"student_loan_postgraduate"`
+	BasicPayMinor                  int64       `json:"basic_pay_minor"`
+	AllowanceMinor                 int64       `json:"allowance_minor"`
+	OtherPaymentsMinor             int64       `json:"other_payments_minor"`
+	PayNotSubjectToTaxNiMinor      int64       `json:"pay_not_subject_to_tax_ni_minor"`
+	ReceivingStatutoryPay          bool        `json:"receiving_statutory_pay"`
+	PayrollGivingMinor             int64       `json:"payroll_giving_minor"`
+	OtherDeductionsNetPayMinor     int64       `json:"other_deductions_net_pay_minor"`
+	ItemsClass1NicNotPayeMinor     int64       `json:"items_class1_nic_not_paye_minor"`
+	SalarySacrificeDeductionsMinor int64       `json:"salary_sacrifice_deductions_minor"`
+	PensionStatus                  string      `json:"pension_status"`
+	LeavingNextPayRun              bool        `json:"leaving_next_pay_run"`
+	LeavingDate                    pgtype.Date `json:"leaving_date"`
+}
+
+// -----------------------------------------------------------------------------
+// UpsertEmployeePayroll
+// Creates the payroll row on first save, updates it thereafter. Keyed on the
+// (organisation_id, user_id) primary key. updated_at is refreshed by the trigger
+// on UPDATE and defaulted on INSERT.
+// -----------------------------------------------------------------------------
+func (q *Queries) UpsertEmployeePayroll(ctx context.Context, arg UpsertEmployeePayrollParams) (EmployeePayroll, error) {
+	row := q.db.QueryRow(ctx, upsertEmployeePayroll,
+		arg.OrganisationID,
+		arg.UserID,
+		arg.IsExistingEmployee,
+		arg.StartDate,
+		arg.StartingDeclaration,
+		arg.NicCalculation,
+		arg.NormalWorkingHours,
+		arg.PaidHourly,
+		arg.PaidIrregularly,
+		arg.PayrollID,
+		arg.TaxCode,
+		arg.Week1Month1Basis,
+		arg.NiCategoryLetter,
+		arg.StudentLoanUndergraduate,
+		arg.StudentLoanPostgraduate,
+		arg.BasicPayMinor,
+		arg.AllowanceMinor,
+		arg.OtherPaymentsMinor,
+		arg.PayNotSubjectToTaxNiMinor,
+		arg.ReceivingStatutoryPay,
+		arg.PayrollGivingMinor,
+		arg.OtherDeductionsNetPayMinor,
+		arg.ItemsClass1NicNotPayeMinor,
+		arg.SalarySacrificeDeductionsMinor,
+		arg.PensionStatus,
+		arg.LeavingNextPayRun,
+		arg.LeavingDate,
+	)
+	var i EmployeePayroll
+	err := row.Scan(
+		&i.OrganisationID,
+		&i.UserID,
+		&i.IsExistingEmployee,
+		&i.StartDate,
+		&i.StartingDeclaration,
+		&i.NicCalculation,
+		&i.NormalWorkingHours,
+		&i.PaidHourly,
+		&i.PaidIrregularly,
+		&i.PayrollID,
+		&i.TaxCode,
+		&i.Week1Month1Basis,
+		&i.NiCategoryLetter,
+		&i.StudentLoanUndergraduate,
+		&i.StudentLoanPostgraduate,
+		&i.BasicPayMinor,
+		&i.AllowanceMinor,
+		&i.OtherPaymentsMinor,
+		&i.PayNotSubjectToTaxNiMinor,
+		&i.ReceivingStatutoryPay,
+		&i.PayrollGivingMinor,
+		&i.OtherDeductionsNetPayMinor,
+		&i.ItemsClass1NicNotPayeMinor,
+		&i.SalarySacrificeDeductionsMinor,
+		&i.PensionStatus,
+		&i.LeavingNextPayRun,
+		&i.LeavingDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const verifyUserEmail = `-- name: VerifyUserEmail :one

@@ -463,3 +463,113 @@ func TestHandleListMembers(t *testing.T) {
 		}
 	})
 }
+
+// TestMemberPayroll covers the admin-only nested payroll block on /members/:id:
+// a round-trip with money→pence + DB persistence, the defaults served when no row
+// exists yet, and the money/enum validation 422s. The owner/admin gate itself is
+// already covered by TestHandleGetMember / TestHandleUpdateMember (payroll rides the
+// same methods).
+func TestMemberPayroll(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("admin sets payroll → round-trips, persists as pence", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName: "Test", LastName: "Member", Role: "member", Status: "active",
+			Payroll: &members.PayrollDTO{
+				StartDate:                ptr("2026-05-04"),
+				StartingDeclaration:      ptr("C"),
+				NicCalculation:           "employee",
+				PaidIrregularly:          true,
+				PayrollID:                ptr("EMP01"),
+				TaxCode:                  ptr("2207L"),
+				NiCategoryLetter:         "A",
+				StudentLoanUndergraduate: true,
+				BasicPay:                 "700.00",
+				OtherDeductionsNetPay:    "12.50",
+				PensionStatus:            "opted_out_or_ineligible",
+				LeavingNextPayRun:        true,
+				LeavingDate:              ptr("2026-07-31"),
+			},
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeMemberDetail(t, rec.Body.Bytes())
+		if got.Payroll == nil {
+			t.Fatalf("response has no payroll block")
+		}
+		if got.Payroll.BasicPay != "700.00" {
+			t.Errorf("basic_pay: got %q, want 700.00", got.Payroll.BasicPay)
+		}
+		if got.Payroll.OtherDeductionsNetPay != "12.50" {
+			t.Errorf("other_deductions_net_pay: got %q, want 12.50", got.Payroll.OtherDeductionsNetPay)
+		}
+		if got.Payroll.TaxCode == nil || *got.Payroll.TaxCode != "2207L" {
+			t.Errorf("tax_code: got %v, want 2207L", got.Payroll.TaxCode)
+		}
+		if !got.Payroll.PaidIrregularly || !got.Payroll.StudentLoanUndergraduate {
+			t.Errorf("booleans not round-tripped: %+v", got.Payroll)
+		}
+		if got.Payroll.LeavingDate == nil || *got.Payroll.LeavingDate != "2026-07-31" {
+			t.Errorf("leaving_date: got %v, want 2026-07-31", got.Payroll.LeavingDate)
+		}
+
+		// Persisted as pence in the DB.
+		var basic, deductions int64
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT basic_pay_minor, other_deductions_net_pay_minor FROM employee_payroll
+			 WHERE organisation_id = $1 AND user_id = $2`, orgID, targetID).
+			Scan(&basic, &deductions); err != nil {
+			t.Fatalf("re-read: %v", err)
+		}
+		if basic != 70000 || deductions != 1250 {
+			t.Errorf("pence mismatch: basic=%d (want 70000), deductions=%d (want 1250)", basic, deductions)
+		}
+	})
+
+	t.Run("GET with no payroll row → defaults", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+
+		rec := getMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeMemberDetail(t, rec.Body.Bytes())
+		if got.Payroll == nil {
+			t.Fatalf("payroll should be present with defaults, got nil")
+		}
+		if got.Payroll.BasicPay != "0.00" || got.Payroll.NicCalculation != "employee" ||
+			got.Payroll.NiCategoryLetter != "A" || got.Payroll.PensionStatus != "opted_out_or_ineligible" {
+			t.Errorf("unexpected defaults: %+v", got.Payroll)
+		}
+	})
+
+	t.Run("invalid money amount → 422", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName: "T", LastName: "M", Role: "member", Status: "active",
+			Payroll: &members.PayrollDTO{BasicPay: "notmoney"},
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid enum value → 422", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		targetID := newMemberUser(t, ts, orgID)
+		rec := putMemberReq(t, ts, bearer(t, ts, ownerID, orgID), targetID, members.UpdateMemberRequest{
+			FirstName: "T", LastName: "M", Role: "member", Status: "active",
+			Payroll: &members.PayrollDTO{NicCalculation: "bogus"},
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}

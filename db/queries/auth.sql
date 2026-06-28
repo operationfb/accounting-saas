@@ -598,3 +598,89 @@ WHERE organisation_id = $1
   AND user_id         = $2
   AND inbox_local_part IS NULL
 RETURNING inbox_local_part;
+
+
+-- =============================================================================
+-- EMPLOYEE PAYROLL
+-- Per-(organisation,user) payroll employee information. Owner/admin only (the
+-- members service enforces the role gate). Read returns at most one row; absent =
+-- the API serves defaults. The write is an UPSERT so the first save creates the
+-- row and later saves update it, all inside the members UpdateMember transaction.
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- GetEmployeePayroll
+-- The payroll record for one membership, or no rows if none has been saved yet.
+-- -----------------------------------------------------------------------------
+-- name: GetEmployeePayroll :one
+SELECT * FROM employee_payroll
+WHERE organisation_id = $1
+  AND user_id         = $2;
+
+-- -----------------------------------------------------------------------------
+-- UpsertEmployeePayroll
+-- Creates the payroll row on first save, updates it thereafter. Keyed on the
+-- (organisation_id, user_id) primary key. updated_at is refreshed by the trigger
+-- on UPDATE and defaulted on INSERT.
+-- -----------------------------------------------------------------------------
+-- name: UpsertEmployeePayroll :one
+INSERT INTO employee_payroll (
+    organisation_id,                    -- $1
+    user_id,                            -- $2
+    is_existing_employee,               -- $3
+    start_date,                         -- $4
+    starting_declaration,               -- $5
+    nic_calculation,                    -- $6
+    normal_working_hours,               -- $7
+    paid_hourly,                        -- $8
+    paid_irregularly,                   -- $9
+    payroll_id,                         -- $10
+    tax_code,                           -- $11
+    week1_month1_basis,                 -- $12
+    ni_category_letter,                 -- $13
+    student_loan_undergraduate,         -- $14
+    student_loan_postgraduate,          -- $15
+    basic_pay_minor,                    -- $16
+    allowance_minor,                    -- $17
+    other_payments_minor,               -- $18
+    pay_not_subject_to_tax_ni_minor,    -- $19
+    receiving_statutory_pay,            -- $20
+    payroll_giving_minor,               -- $21
+    other_deductions_net_pay_minor,     -- $22
+    items_class1_nic_not_paye_minor,    -- $23
+    salary_sacrifice_deductions_minor,  -- $24
+    pension_status,                     -- $25
+    leaving_next_pay_run,               -- $26
+    leaving_date                        -- $27
+) VALUES (
+    $1,  $2,  $3,  $4,  $5,  $6,  $7,  $8,  $9,  $10,
+    $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+    $21, $22, $23, $24, $25, $26, $27
+)
+ON CONFLICT (organisation_id, user_id) DO UPDATE SET
+    is_existing_employee              = EXCLUDED.is_existing_employee,
+    start_date                        = EXCLUDED.start_date,
+    starting_declaration              = EXCLUDED.starting_declaration,
+    nic_calculation                   = EXCLUDED.nic_calculation,
+    normal_working_hours              = EXCLUDED.normal_working_hours,
+    paid_hourly                       = EXCLUDED.paid_hourly,
+    paid_irregularly                  = EXCLUDED.paid_irregularly,
+    payroll_id                        = EXCLUDED.payroll_id,
+    tax_code                          = EXCLUDED.tax_code,
+    week1_month1_basis                = EXCLUDED.week1_month1_basis,
+    ni_category_letter                = EXCLUDED.ni_category_letter,
+    student_loan_undergraduate        = EXCLUDED.student_loan_undergraduate,
+    student_loan_postgraduate         = EXCLUDED.student_loan_postgraduate,
+    basic_pay_minor                   = EXCLUDED.basic_pay_minor,
+    allowance_minor                   = EXCLUDED.allowance_minor,
+    other_payments_minor              = EXCLUDED.other_payments_minor,
+    pay_not_subject_to_tax_ni_minor   = EXCLUDED.pay_not_subject_to_tax_ni_minor,
+    receiving_statutory_pay           = EXCLUDED.receiving_statutory_pay,
+    payroll_giving_minor              = EXCLUDED.payroll_giving_minor,
+    other_deductions_net_pay_minor    = EXCLUDED.other_deductions_net_pay_minor,
+    items_class1_nic_not_paye_minor   = EXCLUDED.items_class1_nic_not_paye_minor,
+    salary_sacrifice_deductions_minor = EXCLUDED.salary_sacrifice_deductions_minor,
+    pension_status                    = EXCLUDED.pension_status,
+    leaving_next_pay_run              = EXCLUDED.leaving_next_pay_run,
+    leaving_date                      = EXCLUDED.leaving_date
+RETURNING *;

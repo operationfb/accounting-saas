@@ -17,6 +17,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
 import FaCard from '@/components/FaCard.vue'
@@ -24,6 +25,7 @@ import FormRow from '@/components/FormRow.vue'
 import { useAuthStore } from '@/stores/auth'
 import { getProfile, updateProfile, getInboxAddress } from '@/services/user.service'
 import { getMember, updateMember, getMemberInboxAddress } from '@/services/members.service'
+import type { Payroll } from '@/types/member'
 import type { ApiError } from '@/lib/api'
 
 const auth = useAuthStore()
@@ -31,11 +33,15 @@ const route = useRoute()
 const router = useRouter()
 
 // --- mode ---
-// The optional :id path param. Absent (/my-details) or equal to the caller →
-// self mode; a different id → admin mode (edit another user).
+// The optional :id path param. `isSelf` drives labels, the email-receipts card and
+// the top-bar name sync. `isAdminMode` drives which endpoint we use AND whether the
+// payroll sections load/render: an owner/admin on a /users/:id page uses the members
+// endpoint — INCLUDING viewing their own id — so they see payroll for everyone, while a
+// non-admin (only ever on /my-details) uses /profile and never sees payroll. Both flags
+// can be true at once (an admin viewing their own /users/:id record).
 const targetId = computed(() => (route.params.id as string | undefined) || undefined)
 const isSelf = computed(() => !targetId.value || targetId.value === auth.user?.id)
-const isAdminMode = computed(() => !isSelf.value)
+const isAdminMode = computed(() => !!targetId.value && auth.isOrgAdmin)
 
 // Role + status dropdown options (admin mode). Labels are the access-control
 // roles; the payroll "position" (Director/Employee) is a separate, deferred field.
@@ -52,6 +58,102 @@ const statusOptions = [
   { label: 'Active', value: 'active' },
   { label: 'Suspended', value: 'suspended' },
   { label: 'Deactivated', value: 'deactivated' },
+]
+
+// ---------------------------------------------------------------------------
+// Payroll (admin-only). A flat form object mirroring the API Payroll shape:
+// money fields are pound strings, optional text/date fields hold '' (sent as null).
+// ---------------------------------------------------------------------------
+function emptyPayroll() {
+  return {
+    is_existing_employee: false,
+    start_date: '',
+    starting_declaration: '',
+    nic_calculation: 'employee',
+    normal_working_hours: '',
+    paid_hourly: false,
+    paid_irregularly: false,
+    payroll_id: '',
+    tax_code: '',
+    week1_month1_basis: false,
+    ni_category_letter: 'A',
+    student_loan_undergraduate: false,
+    student_loan_postgraduate: false,
+    basic_pay: '0.00',
+    allowance: '0.00',
+    other_payments: '0.00',
+    pay_not_subject_to_tax_ni: '0.00',
+    receiving_statutory_pay: false,
+    payroll_giving: '0.00',
+    other_deductions_net_pay: '0.00',
+    items_class1_nic_not_paye: '0.00',
+    salary_sacrifice_deductions: '0.00',
+    pension_status: 'opted_out_or_ineligible',
+    leaving_next_pay_run: false,
+    leaving_date: '',
+  }
+}
+type PayrollForm = ReturnType<typeof emptyPayroll>
+const payroll = reactive<PayrollForm>(emptyPayroll())
+const payrollSnapshot = ref<PayrollForm | null>(null)
+
+// Money field keys (for the v-for money rows) and a typed accessor cast.
+type MoneyKey =
+  | 'basic_pay' | 'allowance' | 'other_payments' | 'pay_not_subject_to_tax_ni'
+  | 'payroll_giving' | 'other_deductions_net_pay' | 'items_class1_nic_not_paye'
+  | 'salary_sacrifice_deductions'
+const monthlyPayFields: { key: MoneyKey; label: string }[] = [
+  { key: 'basic_pay', label: 'Basic Pay' },
+  { key: 'allowance', label: 'Allowance' },
+  { key: 'other_payments', label: 'Other Payments' },
+  { key: 'pay_not_subject_to_tax_ni', label: 'Pay Not Subject to Tax or NI' },
+]
+const monthlyDeductionFields: { key: MoneyKey; label: string }[] = [
+  { key: 'payroll_giving', label: 'Payroll Giving' },
+  { key: 'other_deductions_net_pay', label: 'Other Deductions From Net Pay' },
+  { key: 'items_class1_nic_not_paye', label: 'Items subject to Class 1 NIC but not taxed under PAYE' },
+  { key: 'salary_sacrifice_deductions', label: 'Salary Sacrifice deductions' },
+]
+
+// Enum/boolean option lists.
+const yesNo = [
+  { label: 'Yes', value: true },
+  { label: 'No', value: false },
+]
+const onPayrollOptions = [
+  { label: 'Yes — existing employee for the business', value: true },
+  { label: 'No — new employee for this business', value: false },
+]
+const startingDeclarationOptions = [
+  { label: 'A — first job since 6 April, no other taxable income', value: 'A' },
+  { label: "B — only job now, but had another job/benefit since 6 April", value: 'B' },
+  { label: 'C — has another job or a pension', value: 'C' },
+]
+const nicCalculationOptions = [
+  { label: 'Director', value: 'director' },
+  { label: 'Director (alternative arrangements)', value: 'director_alternative' },
+  { label: 'Employee', value: 'employee' },
+]
+const workingHoursOptions = [
+  { label: 'Less than 16 hours', value: 'under_16' },
+  { label: '16 or more hours, but less than 24', value: '16_to_24' },
+  { label: '24 or more hours, but less than 30', value: '24_to_30' },
+  { label: '30 hours or more', value: '30_plus' },
+  { label: 'Other (e.g. changeable hours)', value: 'other' },
+]
+const niLetterOptions = ['A', 'B', 'C', 'F', 'H', 'I', 'J', 'L', 'M', 'N', 'S', 'V', 'X', 'Z'].map(
+  (l) => ({ label: l, value: l }),
+)
+// Statutory Pay "Yes" and Pension "making contributions" are DISABLED — their
+// amount detail is deferred (see plan). The radios stay for layout/clarity.
+const statutoryPayOptions = [
+  { label: 'Yes', value: true, disabled: true },
+  { label: 'No', value: false },
+]
+const pensionOptions = [
+  { label: 'Not yet eligible', value: 'not_yet_eligible' },
+  { label: 'No, opted out or ineligible', value: 'opted_out_or_ineligible' },
+  { label: 'Yes, making contributions', value: 'making_contributions', disabled: true },
 ]
 
 // --- form state ---
@@ -96,6 +198,7 @@ function hydrate(u: {
   postcode?: string | null
   role?: string
   status?: string
+  payroll?: Payroll | null
 }) {
   form.firstName = u.first_name
   form.lastName = u.last_name
@@ -111,6 +214,59 @@ function hydrate(u: {
   form.status = u.status ?? 'active'
   email.value = u.email
   snapshot.value = { ...form }
+  hydratePayroll(u.payroll)
+}
+
+// Copy the loaded payroll (admin GET) into the flat payroll form, mapping nullable
+// text/date fields to ''. When there's no payroll (self/profile load), reset to
+// defaults. Snapshots for Cancel.
+function hydratePayroll(p?: Payroll | null) {
+  const next = emptyPayroll()
+  if (p) {
+    Object.assign(next, {
+      is_existing_employee: p.is_existing_employee,
+      start_date: p.start_date ?? '',
+      starting_declaration: p.starting_declaration ?? '',
+      nic_calculation: p.nic_calculation,
+      normal_working_hours: p.normal_working_hours ?? '',
+      paid_hourly: p.paid_hourly,
+      paid_irregularly: p.paid_irregularly,
+      payroll_id: p.payroll_id ?? '',
+      tax_code: p.tax_code ?? '',
+      week1_month1_basis: p.week1_month1_basis,
+      ni_category_letter: p.ni_category_letter,
+      student_loan_undergraduate: p.student_loan_undergraduate,
+      student_loan_postgraduate: p.student_loan_postgraduate,
+      basic_pay: p.basic_pay,
+      allowance: p.allowance,
+      other_payments: p.other_payments,
+      pay_not_subject_to_tax_ni: p.pay_not_subject_to_tax_ni,
+      receiving_statutory_pay: p.receiving_statutory_pay,
+      payroll_giving: p.payroll_giving,
+      other_deductions_net_pay: p.other_deductions_net_pay,
+      items_class1_nic_not_paye: p.items_class1_nic_not_paye,
+      salary_sacrifice_deductions: p.salary_sacrifice_deductions,
+      pension_status: p.pension_status,
+      leaving_next_pay_run: p.leaving_next_pay_run,
+      leaving_date: p.leaving_date ?? '',
+    })
+  }
+  Object.assign(payroll, next)
+  payrollSnapshot.value = { ...payroll }
+}
+
+// Build the payroll payload for the PUT: blank optional text/date → null; the leaving
+// date is only sent when "leaving" = Yes.
+function payrollPayload(): Payroll {
+  return {
+    ...payroll,
+    start_date: orNull(payroll.start_date),
+    starting_declaration: orNull(payroll.starting_declaration),
+    normal_working_hours: orNull(payroll.normal_working_hours),
+    payroll_id: orNull(payroll.payroll_id),
+    tax_code: orNull(payroll.tax_code),
+    leaving_date: payroll.leaving_next_pay_run ? orNull(payroll.leaving_date) : null,
+  }
 }
 
 // --- email-receipts inbox (Mailgun) ---
@@ -145,8 +301,8 @@ async function copyInbox() {
 }
 
 async function load() {
-  // Guard: a non-admin can't edit someone else — bounce to their own details.
-  if (isAdminMode.value && !auth.isOrgAdmin) {
+  // Guard: a non-admin can't view/edit another user — bounce to their own details.
+  if (targetId.value && targetId.value !== auth.user?.id && !auth.isOrgAdmin) {
     router.replace('/my-details')
     return
   }
@@ -214,8 +370,13 @@ async function submit() {
         postcode: orNull(form.postcode),
         role: form.role as 'owner' | 'admin' | 'member' | 'accountant' | 'read_only',
         status: form.status as 'active' | 'suspended' | 'deactivated',
+        payroll: payrollPayload(),
       })
       hydrate(updated)
+      // If an admin edited their OWN record, keep the top-bar name in sync too.
+      if (isSelf.value) {
+        auth.patchUser({ first_name: updated.first_name, last_name: updated.last_name })
+      }
     } else {
       const updated = await updateProfile({
         first_name: form.firstName.trim(),
@@ -242,9 +403,10 @@ async function submit() {
   }
 }
 
-// Cancel discards edits by re-applying the last loaded snapshot.
+// Cancel discards edits by re-applying the last loaded snapshots (profile + payroll).
 function cancel() {
   if (snapshot.value) Object.assign(form, snapshot.value)
+  if (payrollSnapshot.value) Object.assign(payroll, payrollSnapshot.value)
   for (const k of Object.keys(errors)) delete errors[k]
   formError.value = ''
   successMessage.value = ''
@@ -411,32 +573,144 @@ const pageTitle = computed(() =>
                 :class="row.id === 'postcode' ? 'w-40' : 'w-full max-w-sm'"
               />
             </div>
+
+            <!-- Email receipts inbox — shown here, in the whitespace under the
+                 address, instead of a separate card buried below the payroll
+                 sections. Same label-left row style as the address rows. -->
+            <div
+              v-if="inboxEnabled"
+              class="mt-4 grid grid-cols-1 gap-1.5 border-t border-fa-border pt-4 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-start sm:gap-4"
+            >
+              <label for="inbox-address" class="text-sm text-fa-text sm:pt-2">Email receipts</label>
+              <div class="flex min-w-0 flex-col gap-1.5">
+                <div class="flex w-full max-w-sm items-center gap-2">
+                  <InputText id="inbox-address" :value="inboxAddress" class="min-w-0 flex-1" readonly />
+                  <Button
+                    :label="copied ? 'Copied' : 'Copy'"
+                    :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
+                    severity="secondary"
+                    outlined
+                    @click="copyInbox"
+                  />
+                </div>
+                <p class="text-xs text-fa-muted">
+                  {{
+                    isSelf
+                      ? 'Forward receipts to this address to create draft expenses automatically.'
+                      : 'Receipts forwarded to this address become draft expenses for this user.'
+                  }}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </FaCard>
 
-      <!-- 2. Email receipts (both modes, when the inbox channel is enabled) -->
-      <FaCard v-if="inboxEnabled" title="Email receipts">
-        <p class="mb-2 text-sm text-fa-muted">
-          {{
-            isSelf
-              ? "Forward receipts to this address and they'll become draft expenses automatically."
-              : "Receipts forwarded to this address become draft expenses for this user."
-          }}
-        </p>
-        <FormRow :label="isSelf ? 'Your inbox address' : 'Inbox address'" label-for="inbox-address">
-          <div class="flex w-full max-w-md items-center gap-2">
-            <InputText id="inbox-address" :value="inboxAddress" class="min-w-0 flex-1" readonly />
-            <Button
-              :label="copied ? 'Copied' : 'Copy'"
-              :icon="copied ? 'pi pi-check' : 'pi pi-copy'"
-              severity="secondary"
-              outlined
-              @click="copyInbox"
-            />
-          </div>
-        </FormRow>
-      </FaCard>
+      <!-- Payroll sections — OWNER/ADMIN ONLY (isAdminMode requires isOrgAdmin and a
+           /users/:id route). Members never reach these; the backend gates them too. -->
+      <template v-if="isAdminMode">
+        <!-- Employment details -->
+        <FaCard title="Employment details">
+          <FormRow label="Already on your payroll?" label-for="pay-existing">
+            <Select id="pay-existing" v-model="payroll.is_existing_employee" :options="onPayrollOptions"
+              option-label="label" option-value="value" class="w-full max-w-md" />
+          </FormRow>
+          <FormRow label="Employee start date" label-for="pay-start">
+            <InputText id="pay-start" v-model="payroll.start_date" type="date" class="w-48" />
+          </FormRow>
+          <FormRow label="Starting declaration" label-for="pay-decl">
+            <Select id="pay-decl" v-model="payroll.starting_declaration" :options="startingDeclarationOptions"
+              option-label="label" option-value="value" class="w-full max-w-md" placeholder="Select…" showClear />
+          </FormRow>
+          <FormRow label="NICs calculated as" label-for="pay-nic">
+            <Select id="pay-nic" v-model="payroll.nic_calculation" :options="nicCalculationOptions"
+              option-label="label" option-value="value" class="w-full max-w-md" />
+          </FormRow>
+          <FormRow label="Normal working hours" label-for="pay-hours">
+            <Select id="pay-hours" v-model="payroll.normal_working_hours" :options="workingHoursOptions"
+              option-label="label" option-value="value" class="w-full max-w-md" placeholder="Select…" showClear />
+          </FormRow>
+          <FormRow label="Employee paid hourly?" label-for="pay-hourly">
+            <Select id="pay-hourly" v-model="payroll.paid_hourly" :options="yesNo"
+              option-label="label" option-value="value" class="w-40" />
+          </FormRow>
+          <FormRow label="Employee paid irregularly?" label-for="pay-irreg">
+            <Select id="pay-irreg" v-model="payroll.paid_irregularly" :options="yesNo"
+              option-label="label" option-value="value" class="w-40" />
+          </FormRow>
+          <FormRow label="Payroll ID" label-for="pay-id">
+            <InputText id="pay-id" v-model="payroll.payroll_id" class="w-72" />
+          </FormRow>
+        </FaCard>
+
+        <!-- Tax and National Insurance -->
+        <FaCard title="Tax and National Insurance">
+          <FormRow label="Tax code" label-for="pay-taxcode">
+            <InputText id="pay-taxcode" v-model="payroll.tax_code" class="w-40" placeholder="e.g. 1257L" />
+          </FormRow>
+          <FormRow label="Week 1 / Month 1 basis?" label-for="pay-w1m1">
+            <Select id="pay-w1m1" v-model="payroll.week1_month1_basis" :options="yesNo"
+              option-label="label" option-value="value" class="w-40" />
+          </FormRow>
+          <FormRow label="NI category letter" label-for="pay-niletter">
+            <Select id="pay-niletter" v-model="payroll.ni_category_letter" :options="niLetterOptions"
+              option-label="label" option-value="value" class="w-28" />
+          </FormRow>
+          <FormRow label="Deduct student loans?">
+            <div class="flex items-center gap-2">
+              <Checkbox v-model="payroll.student_loan_undergraduate" inputId="pay-sl-ug" :binary="true" />
+              <label for="pay-sl-ug" class="text-sm">Undergraduate loan</label>
+            </div>
+            <div class="flex items-center gap-2">
+              <Checkbox v-model="payroll.student_loan_postgraduate" inputId="pay-sl-pg" :binary="true" />
+              <label for="pay-sl-pg" class="text-sm">Postgraduate loan</label>
+            </div>
+          </FormRow>
+        </FaCard>
+
+        <!-- Monthly Pay -->
+        <FaCard title="Monthly Pay">
+          <FormRow v-for="f in monthlyPayFields" :key="f.key" :label="f.label" :label-for="`pay-${f.key}`">
+            <InputText :id="`pay-${f.key}`" v-model="payroll[f.key]" class="w-40" inputmode="decimal" />
+          </FormRow>
+        </FaCard>
+
+        <!-- Statutory Pay (Yes is deactivated — amount detail deferred) -->
+        <FaCard title="Statutory Pay">
+          <FormRow label="Receiving Statutory Pay?" label-for="pay-statutory">
+            <Select id="pay-statutory" v-model="payroll.receiving_statutory_pay" :options="statutoryPayOptions"
+              option-label="label" option-value="value" option-disabled="disabled" class="w-40" />
+            <p class="text-xs text-fa-muted">Entering statutory payment amounts is coming soon.</p>
+          </FormRow>
+        </FaCard>
+
+        <!-- Monthly Deductions -->
+        <FaCard title="Monthly Deductions">
+          <FormRow v-for="f in monthlyDeductionFields" :key="f.key" :label="f.label" :label-for="`pay-${f.key}`">
+            <InputText :id="`pay-${f.key}`" v-model="payroll[f.key]" class="w-40" inputmode="decimal" />
+          </FormRow>
+        </FaCard>
+
+        <!-- Pension (making contributions is deactivated — amount detail deferred) -->
+        <FaCard title="Pension contributions">
+          <FormRow label="Making pension contributions?" label-for="pay-pension">
+            <Select id="pay-pension" v-model="payroll.pension_status" :options="pensionOptions"
+              option-label="label" option-value="value" option-disabled="disabled" class="w-full max-w-md" />
+            <p class="text-xs text-fa-muted">Entering contribution amounts is coming soon.</p>
+          </FormRow>
+        </FaCard>
+
+        <!-- Leaving details -->
+        <FaCard title="Leaving details">
+          <FormRow label="Leaving during the next pay run?" label-for="pay-leaving">
+            <Select id="pay-leaving" v-model="payroll.leaving_next_pay_run" :options="yesNo"
+              option-label="label" option-value="value" class="w-40" />
+          </FormRow>
+          <FormRow v-if="payroll.leaving_next_pay_run" label="Leave date" label-for="pay-leavedate">
+            <InputText id="pay-leavedate" v-model="payroll.leaving_date" type="date" class="w-48" />
+          </FormRow>
+        </FaCard>
+      </template>
 
       <div class="flex items-center gap-3 py-2 pb-6">
         <Button label="Save changes" :loading="submitting" @click="submit" />

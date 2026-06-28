@@ -47,6 +47,7 @@ const mapping = ref<ColumnMapping | null>(null) // editable; null for OFX
 const previewRows = ref<PreviewRow[]>([])
 const warnings = ref<string[]>([])
 const totalRows = ref(0)
+const rawSnippet = ref<string[]>([]) // first few raw lines of the file, for the "text file" preview
 const importing = ref(false)
 const formError = ref('')
 const result = ref<StatementImportResult | null>(null)
@@ -97,11 +98,26 @@ function onFilePicked(e: Event) {
   void doPreview()
 }
 
+// readFileSnippet loads the first few raw lines (header + 2 rows) straight from the file's
+// bytes for the "text file" preview card — so it shows the upload exactly as-is. Only the
+// first chunk is read (plenty for 3 lines, cheap even for a large file).
+async function readFileSnippet(f: File) {
+  try {
+    const head = await f.slice(0, 16384).text()
+    const lines = head.split(/\r\n|\r|\n/)
+    while (lines.length && lines[lines.length - 1] === '') lines.pop() // drop the trailing newline
+    rawSnippet.value = lines.slice(0, 3)
+  } catch {
+    rawSnippet.value = []
+  }
+}
+
 // doPreview is the DETECT step: upload the file, get the proposed mapping + sample rows.
 async function doPreview() {
   if (!file.value) return
   previewing.value = true
   formError.value = ''
+  await readFileSnippet(file.value)
   try {
     const resp = await previewBankStatement(accountId, file.value)
     preview.value = resp
@@ -149,6 +165,7 @@ function resetFlow() {
   previewRows.value = []
   warnings.value = []
   totalRows.value = 0
+  rawSnippet.value = []
   file.value = null
 }
 function chooseDifferentFile() {
@@ -197,8 +214,33 @@ function backToStatement() {
       </div>
     </FaCard>
 
-    <!-- Step 2: confirm the detected mapping (CSV) or just review (OFX) -->
-    <FaCard v-else-if="preview" title="Check the columns">
+    <!-- Step 2: file snippet + confirm the detected mapping (CSV) or just review (OFX) -->
+    <template v-else-if="preview">
+      <!-- A snippet of the raw uploaded file, styled like a text editor (CSV only) -->
+      <FaCard v-if="!isOFX && rawSnippet.length" title="Your file">
+        <div class="overflow-hidden rounded-[6px] border border-[#2a2a2a]">
+          <div class="flex items-center gap-2 border-b border-[#3a3a3a] bg-[#2d2d2d] px-3 py-1.5">
+            <span class="flex gap-1.5">
+              <span class="h-2.5 w-2.5 rounded-full bg-[#ff5f56]" />
+              <span class="h-2.5 w-2.5 rounded-full bg-[#ffbd2e]" />
+              <span class="h-2.5 w-2.5 rounded-full bg-[#27c93f]" />
+            </span>
+            <span class="truncate font-mono text-[12px] text-[#bbb]">{{ file?.name ?? 'statement.csv' }}</span>
+          </div>
+          <div class="overflow-x-auto bg-[#1e1e1e] py-2 font-mono text-[12.5px] leading-[1.7] text-[#e6e6e6]">
+            <div v-for="(line, i) in rawSnippet" :key="i" class="flex whitespace-pre">
+              <span
+                class="shrink-0 select-none border-r border-[#333] px-3 text-right text-[#666]"
+                style="min-width: 3rem"
+              >{{ i + 1 }}</span>
+              <span class="px-3">{{ line === '' ? ' ' : line }}</span>
+            </div>
+          </div>
+        </div>
+        <p class="mt-2 text-[12px] text-fa-muted">The first {{ rawSnippet.length }} lines of your file — header row and sample data.</p>
+      </FaCard>
+
+      <FaCard title="Check the columns">
       <p v-if="isOFX" class="mb-4 text-sm text-fa-muted">
         We detected an <strong>OFX</strong> file — it describes its own columns, so there's nothing to map.
         Check the preview below and import.
@@ -249,14 +291,13 @@ function backToStatement() {
         </label>
 
         <label class="block">
-          <span class="mb-1 block text-[13px] font-semibold">Description column</span>
+          <span class="mb-1 block text-[13px] font-semibold">Date format</span>
           <select
-            v-model="mapping.description_column"
+            v-model="mapping.date_format"
             @change="refreshPreview"
             class="w-full rounded-[5px] border border-fa-border bg-white px-3 py-2 text-sm"
           >
-            <option :value="null" disabled>Select a column…</option>
-            <option v-for="c in columns" :key="c.index" :value="c.index">{{ c.header }}</option>
+            <option v-for="o in dateFormatOptions" :key="o.layout" :value="o.layout">{{ o.label }}</option>
           </select>
         </label>
 
@@ -300,13 +341,14 @@ function backToStatement() {
         </template>
 
         <label class="block">
-          <span class="mb-1 block text-[13px] font-semibold">Date format</span>
+          <span class="mb-1 block text-[13px] font-semibold">Description column</span>
           <select
-            v-model="mapping.date_format"
+            v-model="mapping.description_column"
             @change="refreshPreview"
             class="w-full rounded-[5px] border border-fa-border bg-white px-3 py-2 text-sm"
           >
-            <option v-for="o in dateFormatOptions" :key="o.layout" :value="o.layout">{{ o.label }}</option>
+            <option :value="null" disabled>Select a column…</option>
+            <option v-for="c in columns" :key="c.index" :value="c.index">{{ c.header }}</option>
           </select>
         </label>
 
@@ -391,7 +433,8 @@ function backToStatement() {
           Cancel
         </button>
       </div>
-    </FaCard>
+      </FaCard>
+    </template>
 
     <!-- Step 1: pick a file -->
     <FaCard v-else title="Upload a statement">

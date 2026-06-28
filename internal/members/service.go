@@ -159,7 +159,12 @@ func (s *Service) GetMember(
 	if err != nil {
 		return nil, err
 	}
-	return memberDetailToResponse(membership, user), nil
+	resp := memberDetailToResponse(membership, user)
+	resp.Payroll, err = s.loadPayrollDTO(ctx, authOrgID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // =============================================================================
@@ -214,6 +219,17 @@ func (s *Service) UpdateMember(
 	dob, err := kernel.ParseDateOfBirth(req.DateOfBirth)
 	if err != nil {
 		return nil, err
+	}
+
+	// Optional payroll block — parse + validate (money→pence, enums, dates) up front
+	// so a 422 is returned before we open the transaction. nil when not editing payroll.
+	var payrollParams *auth.UpsertEmployeePayrollParams
+	if req.Payroll != nil {
+		p, perr := buildPayrollParams(authOrgID, targetUserID, req.Payroll)
+		if perr != nil {
+			return nil, perr
+		}
+		payrollParams = &p
 	}
 
 	// Load the target (404 if not a member of this org / soft-deleted).
@@ -281,6 +297,13 @@ func (s *Service) UpdateMember(
 		}); err != nil {
 			return kernel.ErrInternal(err)
 		}
+
+		// Payroll, in the same transaction (upsert: creates on first save).
+		if payrollParams != nil {
+			if _, err := qtx.UpsertEmployeePayroll(ctx, *payrollParams); err != nil {
+				return kernel.ErrInternal(err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -293,7 +316,12 @@ func (s *Service) UpdateMember(
 	if err != nil {
 		return nil, err
 	}
-	return memberDetailToResponse(membership, user), nil
+	resp := memberDetailToResponse(membership, user)
+	resp.Payroll, err = s.loadPayrollDTO(ctx, authOrgID, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // loadMember fetches the (membership, user) pair for a target in the caller's org,

@@ -80,6 +80,23 @@ scoped. Deferred:
   are plain nullable `VARCHAR`/`DATE`. If stricter guarantees are wanted later,
   add DB `CHECK`s — but keep imports/partial entry in mind.
 
+- **Payroll conditional detail (the deactivated "Yes" paths).** The admin payroll
+  sections (`employee_payroll` table; nested on `/api/v1/members/:id`) capture the
+  top-level selectors, but two affirmative options are rendered **disabled** in the
+  UI because their detail isn't built yet:
+  - **Statutory Pay = Yes** → enter statutory payment amounts (paternity/maternity/etc.).
+  - **Pension = "Yes, making contributions"** → employer/employee contribution amounts
+    + pension scheme.
+  The DB columns/enums already allow these values (forward-compatible). Re-enable the
+  options once the amount entry exists. _Files: `db/schema/auth_schema.sql`,
+  `internal/members/payroll.go`, `web/src/views/MyDetailsView.vue`._
+
+- **Payroll "existing employee" onboarding detail.** "Is this employee already on your
+  payroll? = Yes" should capture year-to-date figures / pay-in-previous-employment for a
+  mid-year start; only the flag is stored today. Also: student-loan **plan types** and the
+  NI-letter-driven calculations belong to the actual pay-run engine, not this data-capture
+  form.
+
 - **List filtering & pagination for `GET /api/v1/expenses`.** Today the endpoint returns the full set the caller may see (owner/admin: whole org; others: own) with no filters or paging. Add query-param filtering (date range, status, project) and pagination (limit/offset or cursor), preserving the existing owner/admin-vs-own scoping in `ListExpenses`. Reuse the existing org-scoped sqlc queries `ListExpensesByDateRange` / `ListExpensesByStatus` / `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered variants would need new queries. _Files: `expense_service.go`, `server.go`, `db/queries/query.sql`._
 
 

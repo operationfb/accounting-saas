@@ -484,6 +484,109 @@ CREATE INDEX idx_memberships_invite_token ON organisation_memberships (invite_to
 
 
 -- =============================================================================
+-- 4. EMPLOYEE_PAYROLL
+-- The payroll employee-information for a person AT a given organisation (the
+-- FreeAgent "Employment / Tax & NI / Monthly Pay / Deductions / Pension" form).
+--
+-- Why a separate table keyed by (organisation_id, user_id) rather than columns on
+-- users: payroll is EMPLOYMENT data, which is org-specific — the same person can be
+-- on payroll at more than one organisation with different pay, tax code and NI
+-- category. So it parallels organisation_memberships (one row per membership) and is
+-- one-to-one with it.
+--
+-- It is OPTIONAL/derived: a member with no row yet is read as defaults by the API, so
+-- the form always renders. Visible/editable to OWNER/ADMIN only (enforced in the
+-- members service) — a member cannot see even their own payroll.
+--
+-- Money is stored as BIGINT minor units (pence), like every other monetary column,
+-- and converted to/from decimal pound strings at the API boundary (money package).
+-- =============================================================================
+
+CREATE TABLE employee_payroll (
+    organisation_id UUID NOT NULL REFERENCES organisations(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+
+    -- ------------------------------------------------------------------------
+    -- Employment details
+    -- ------------------------------------------------------------------------
+    -- "Is this employee already on your payroll?" — TRUE = existing employee for the
+    -- business, FALSE = new employee (the screenshot default).
+    is_existing_employee  BOOLEAN NOT NULL DEFAULT FALSE,
+    start_date            DATE,                       -- employment start date
+    -- HMRC starter declaration A/B/C (see the Starter Checklist).
+    starting_declaration  VARCHAR(1) CHECK (starting_declaration IN ('A','B','C')),
+    -- How NICs are calculated. Directors are annual; employees monthly.
+    nic_calculation       VARCHAR(20) NOT NULL DEFAULT 'employee'
+        CHECK (nic_calculation IN ('director','director_alternative','employee')),
+    -- Banded normal working hours (drives some HMRC reporting).
+    normal_working_hours  VARCHAR(12)
+        CHECK (normal_working_hours IN ('under_16','16_to_24','24_to_30','30_plus','other')),
+    paid_hourly           BOOLEAN NOT NULL DEFAULT FALSE,   -- payslip varies by hours worked
+    paid_irregularly      BOOLEAN NOT NULL DEFAULT FALSE,   -- casual/seasonal/on leave etc.
+    payroll_id            VARCHAR(35),                       -- optional HMRC payroll ID
+
+    -- ------------------------------------------------------------------------
+    -- Tax and National Insurance
+    -- ------------------------------------------------------------------------
+    tax_code              VARCHAR(10),                       -- e.g. '1257L', '2207L'
+    -- "Make deductions on a Week 1/Month 1 basis?" (non-cumulative tax).
+    week1_month1_basis    BOOLEAN NOT NULL DEFAULT FALSE,
+    -- HMRC National Insurance category letter (NIC table letter).
+    ni_category_letter    VARCHAR(2) NOT NULL DEFAULT 'A'
+        CHECK (ni_category_letter IN ('A','B','C','F','H','I','J','L','M','N','S','V','X','Z')),
+    student_loan_undergraduate BOOLEAN NOT NULL DEFAULT FALSE,
+    student_loan_postgraduate  BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- ------------------------------------------------------------------------
+    -- Monthly Pay — BIGINT pence. Never float for money.
+    -- ------------------------------------------------------------------------
+    basic_pay_minor                  BIGINT NOT NULL DEFAULT 0,
+    allowance_minor                  BIGINT NOT NULL DEFAULT 0,
+    other_payments_minor             BIGINT NOT NULL DEFAULT 0,
+    pay_not_subject_to_tax_ni_minor  BIGINT NOT NULL DEFAULT 0,
+
+    -- ------------------------------------------------------------------------
+    -- Statutory Pay — top-level flag only; the amount detail is deferred (the UI
+    -- disables the "Yes" path for now), so this stays FALSE until that ships.
+    -- ------------------------------------------------------------------------
+    receiving_statutory_pay BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- ------------------------------------------------------------------------
+    -- Monthly Deductions — BIGINT pence.
+    -- ------------------------------------------------------------------------
+    payroll_giving_minor             BIGINT NOT NULL DEFAULT 0,
+    other_deductions_net_pay_minor   BIGINT NOT NULL DEFAULT 0,
+    items_class1_nic_not_paye_minor  BIGINT NOT NULL DEFAULT 0,   -- Class 1 NIC-able, not PAYE-taxed
+    salary_sacrifice_deductions_minor BIGINT NOT NULL DEFAULT 0,
+
+    -- ------------------------------------------------------------------------
+    -- Pension — status only for now; the contribution amounts/scheme are deferred
+    -- (the UI disables "Yes, making contributions").
+    -- ------------------------------------------------------------------------
+    pension_status        VARCHAR(24) NOT NULL DEFAULT 'opted_out_or_ineligible'
+        CHECK (pension_status IN ('not_yet_eligible','opted_out_or_ineligible','making_contributions')),
+
+    -- ------------------------------------------------------------------------
+    -- Leaving details
+    -- ------------------------------------------------------------------------
+    leaving_next_pay_run  BOOLEAN NOT NULL DEFAULT FALSE,
+    leaving_date          DATE,                        -- set when leaving = Yes
+
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- One payroll record per membership.
+    PRIMARY KEY (organisation_id, user_id)
+);
+
+COMMENT ON TABLE employee_payroll IS 'Per-(organisation,user) payroll employee information (FreeAgent-style). Owner/admin only; one row per membership; optional (absent = defaults). Money in pence.';
+COMMENT ON COLUMN employee_payroll.ni_category_letter IS 'HMRC National Insurance category letter (NIC table letter).';
+COMMENT ON COLUMN employee_payroll.basic_pay_minor IS 'Monthly basic pay in pence (minor units). Never float.';
+COMMENT ON COLUMN employee_payroll.receiving_statutory_pay IS 'Top-level flag; statutory amount detail is deferred (UI disables the Yes path).';
+COMMENT ON COLUMN employee_payroll.pension_status IS 'Auto-enrolment status; the making-contributions amount detail is deferred (UI disables that option).';
+
+
+-- =============================================================================
 -- TRIGGERS — auto-update updated_at
 -- Reuses the set_updated_at() function already defined in the expenses schema.
 -- If you run this file in isolation (e.g. in tests), you need that function
@@ -502,6 +605,10 @@ CREATE TRIGGER trg_users_updated_at
 
 CREATE TRIGGER trg_memberships_updated_at
     BEFORE UPDATE ON organisation_memberships
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_employee_payroll_updated_at
+    BEFORE UPDATE ON employee_payroll
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 

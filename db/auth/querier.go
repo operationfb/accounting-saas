@@ -80,6 +80,18 @@ type Querier interface {
 	// and enforces it as the globally-unique login identifier.
 	// -----------------------------------------------------------------------------
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// =============================================================================
+	// EMPLOYEE PAYROLL
+	// Per-(organisation,user) payroll employee information. Owner/admin only (the
+	// members service enforces the role gate). Read returns at most one row; absent =
+	// the API serves defaults. The write is an UPSERT so the first save creates the
+	// row and later saves update it, all inside the members UpdateMember transaction.
+	// =============================================================================
+	// -----------------------------------------------------------------------------
+	// GetEmployeePayroll
+	// The payroll record for one membership, or no rows if none has been saved yet.
+	// -----------------------------------------------------------------------------
+	GetEmployeePayroll(ctx context.Context, arg GetEmployeePayrollParams) (EmployeePayroll, error)
 	// -----------------------------------------------------------------------------
 	// GetMembership
 	// Fetches the membership for a specific user at a specific organisation — the
@@ -273,6 +285,13 @@ type Querier interface {
 	// "change password" (while logged in) and "reset password" (via emailed token).
 	// -----------------------------------------------------------------------------
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
+	// -----------------------------------------------------------------------------
+	// UpsertEmployeePayroll
+	// Creates the payroll row on first save, updates it thereafter. Keyed on the
+	// (organisation_id, user_id) primary key. updated_at is refreshed by the trigger
+	// on UPDATE and defaulted on INSERT.
+	// -----------------------------------------------------------------------------
+	UpsertEmployeePayroll(ctx context.Context, arg UpsertEmployeePayrollParams) (EmployeePayroll, error)
 	// -----------------------------------------------------------------------------
 	// VerifyUserEmail
 	// Marks the email confirmed and burns the token in a single round-trip, keyed

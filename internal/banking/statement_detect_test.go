@@ -87,6 +87,17 @@ func TestDetectFormat(t *testing.T) {
 			wantMemo: ptr(3), wantLayout: "02/01/2006",
 		},
 		{
+			// No description-role column, but a 'Memo' column → it's promoted to description
+			// (and left OUT of the memo mapping, so the text isn't duplicated).
+			name: "lone Memo column becomes the description when no description field exists",
+			records: [][]string{
+				{"date", "memo", "amount"},
+				{"11/06/2026", "Tesco FPS CREDIT", "100.00"},
+			},
+			wantDate: ptr(0), wantDesc: ptr(1), wantFormat: amountFormatSigned, wantAmount: ptr(2),
+			wantMemo: nil, wantLayout: "02/01/2006",
+		},
+		{
 			name: "no amount column — shape left empty for the user to fix",
 			records: [][]string{
 				{"date", "description"},

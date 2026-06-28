@@ -58,6 +58,43 @@ func (ns NullOrganisationRole) Value() (driver.Value, error) {
 	return string(ns.OrganisationRole), nil
 }
 
+// Per-(organisation,user) payroll employee information (FreeAgent-style). Owner/admin only; one row per membership; optional (absent = defaults). Money in pence.
+type EmployeePayroll struct {
+	OrganisationID      uuid.UUID   `json:"organisation_id"`
+	UserID              uuid.UUID   `json:"user_id"`
+	IsExistingEmployee  bool        `json:"is_existing_employee"`
+	StartDate           pgtype.Date `json:"start_date"`
+	StartingDeclaration pgtype.Text `json:"starting_declaration"`
+	NicCalculation      string      `json:"nic_calculation"`
+	NormalWorkingHours  pgtype.Text `json:"normal_working_hours"`
+	PaidHourly          bool        `json:"paid_hourly"`
+	PaidIrregularly     bool        `json:"paid_irregularly"`
+	PayrollID           pgtype.Text `json:"payroll_id"`
+	TaxCode             pgtype.Text `json:"tax_code"`
+	Week1Month1Basis    bool        `json:"week1_month1_basis"`
+	// HMRC National Insurance category letter (NIC table letter).
+	NiCategoryLetter         string `json:"ni_category_letter"`
+	StudentLoanUndergraduate bool   `json:"student_loan_undergraduate"`
+	StudentLoanPostgraduate  bool   `json:"student_loan_postgraduate"`
+	// Monthly basic pay in pence (minor units). Never float.
+	BasicPayMinor             int64 `json:"basic_pay_minor"`
+	AllowanceMinor            int64 `json:"allowance_minor"`
+	OtherPaymentsMinor        int64 `json:"other_payments_minor"`
+	PayNotSubjectToTaxNiMinor int64 `json:"pay_not_subject_to_tax_ni_minor"`
+	// Top-level flag; statutory amount detail is deferred (UI disables the Yes path).
+	ReceivingStatutoryPay          bool  `json:"receiving_statutory_pay"`
+	PayrollGivingMinor             int64 `json:"payroll_giving_minor"`
+	OtherDeductionsNetPayMinor     int64 `json:"other_deductions_net_pay_minor"`
+	ItemsClass1NicNotPayeMinor     int64 `json:"items_class1_nic_not_paye_minor"`
+	SalarySacrificeDeductionsMinor int64 `json:"salary_sacrifice_deductions_minor"`
+	// Auto-enrolment status; the making-contributions amount detail is deferred (UI disables that option).
+	PensionStatus     string             `json:"pension_status"`
+	LeavingNextPayRun bool               `json:"leaving_next_pay_run"`
+	LeavingDate       pgtype.Date        `json:"leaving_date"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 // Tenant entity. One row per registered business. All other tables point to this via organisation_id.
 type Organisation struct {
 	ID                   uuid.UUID   `json:"id"`
