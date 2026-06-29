@@ -95,6 +95,30 @@ type InvoiceResponse struct {
 
 	Items []InvoiceItemResponse `json:"items,omitempty"`
 
+	// FXSummary is the read-only "Currency Gains/Losses" panel — present only on the
+	// DETAIL GET, and only for a SENT, foreign-currency invoice (omitted otherwise).
+	FXSummary *InvoiceFXSummary `json:"fx_summary,omitempty"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// InvoiceFXSummary is the foreign-currency gain/loss panel shown on a SENT invoice
+// (modelled on FreeAgent's). It revalues the OUTSTANDING (due) amount at two rates —
+// the invoice's booking rate and today's rate — and reports the difference as the
+// UNREALISED gain/loss. Realised gain (the FX locked in on payment) is DEFERRED, so it
+// is reported as "0.00" for now and net == unrealized. All money/rates are decimal
+// strings (the house style); a negative value is a loss.
+type InvoiceFXSummary struct {
+	BaseCurrency string `json:"base_currency"` // home currency, e.g. GBP
+	Currency     string `json:"currency"`      // the invoice's foreign currency, e.g. EUR
+	InvoiceDate  string `json:"invoice_date"`  // YYYY-MM-DD (dated_on)
+	InvoiceRate  string `json:"invoice_rate"`  // home per 1 unit of currency (stored booking rate)
+	InvoiceValue string `json:"invoice_value"` // outstanding valued at the booking rate, pounds
+	TodayDate    string `json:"today_date"`    // YYYY-MM-DD
+	TodayRate    string `json:"today_rate"`    // home per 1 unit of currency (today's rate)
+	TodayValue   string `json:"today_value"`   // outstanding valued at today's rate, pounds
+	Unrealized   string `json:"unrealized"`    // today value − invoice value, pounds (signed)
+	Realized     string `json:"realized"`      // "0.00" for now (per-payment realised is deferred)
+	Net          string `json:"net"`           // unrealized + realized (== unrealized for now)
 }

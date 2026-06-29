@@ -285,7 +285,22 @@ func (s *Service) GetInvoice(
 		}
 		return nil, kernel.ErrInternal(err)
 	}
-	return s.buildDetail(ctx, s.queries, inv)
+	resp, err := s.buildDetail(ctx, s.queries, inv)
+	if err != nil {
+		return nil, err
+	}
+	// Attach the read-only FX gain/loss panel for a SENT, foreign-currency invoice. A
+	// native invoice stores a NULL exchange_rate, so .Valid already screens those out
+	// (no extra org lookup for the common case). Soft errors (no today rate) omit the
+	// panel rather than fail the read.
+	if inv.ExchangeRate.Valid && inv.Status == StatusSent {
+		summary, ferr := s.buildFXSummary(ctx, s.queries, inv)
+		if ferr != nil {
+			return nil, ferr
+		}
+		resp.FXSummary = summary
+	}
+	return resp, nil
 }
 
 // ListInvoices returns the org's invoices, newest first, WITHOUT line items (the
@@ -869,6 +884,70 @@ func (s *Service) buildDetail(ctx context.Context, q *invoicesdb.Queries, inv in
 	return resp, nil
 }
 
+// buildFXSummary computes the read-only "Currency Gains/Losses" panel for a foreign
+// invoice (modelled on FreeAgent's). It revalues the OUTSTANDING (due) foreign amount
+// at the invoice's booking rate vs today's stored rate; the difference is the UNREALISED
+// gain/loss. Realised gain on payment is deferred, so realized is "0.00" and net ==
+// unrealized. Returns (nil, nil) — panel omitted — when there is no usable today rate or
+// nothing to revalue (zero total), so a fresh DB without rates doesn't break the read.
+// Caller guarantees the invoice is foreign (exchange_rate set) and SENT.
+func (s *Service) buildFXSummary(ctx context.Context, q *invoicesdb.Queries, inv invoicesdb.Invoice) (*InvoiceFXSummary, error) {
+	totalMinor := inv.TotalValueMinor
+	if totalMinor == 0 {
+		return nil, nil // nothing to revalue
+	}
+
+	org, err := s.authQueries.GetOrganisation(ctx, inv.OrganisationID)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// Today's rate (home per 1 unit of the invoice currency), nearest-prior fallback. No
+	// stored rate ⇒ omit the panel (s.rates may be nil if the fxrates module is unwired).
+	if s.rates == nil {
+		return nil, nil
+	}
+	todayRate, ok, err := s.rates.RateOnOrBefore(ctx, inv.Currency, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+
+	foreignExp, err := s.currencyExp(ctx, q, inv.Currency)
+	if err != nil {
+		return nil, err
+	}
+	homeExp, err := s.currencyExp(ctx, q, org.NativeCurrency)
+	if err != nil {
+		return nil, err
+	}
+
+	// We revalue the OUTSTANDING portion only — the paid portion's FX is realised (and
+	// deferred). invoiceValue is its home value at the ORIGINAL booking rate, taken as the
+	// same proportion of the stored native total (so it matches what was posted); todayValue
+	// reconverts the same foreign amount at today's rate. The signed difference is unrealised.
+	dueMinor := dueValueMinor(inv)
+	invoiceValueMinor := money.Apportion(inv.NativeTotalValueMinor, dueMinor, totalMinor)
+	todayValueMinor := money.ConvertMinor(dueMinor, foreignExp, homeExp, todayRate)
+	unrealizedMinor := todayValueMinor - invoiceValueMinor
+
+	return &InvoiceFXSummary{
+		BaseCurrency: org.NativeCurrency,
+		Currency:     inv.Currency,
+		InvoiceDate:  inv.DatedOn.Time.Format("2006-01-02"),
+		InvoiceRate:  numericToString(inv.ExchangeRate),
+		InvoiceValue: money.MinorToPounds(invoiceValueMinor),
+		TodayDate:    time.Now().Format("2006-01-02"),
+		TodayRate:    todayRate.String(),
+		TodayValue:   money.MinorToPounds(todayValueMinor),
+		Unrealized:   money.MinorToPounds(unrealizedMinor),
+		Realized:     "0.00", // per-payment realised gain is deferred (see BACKLOG)
+		Net:          money.MinorToPounds(unrealizedMinor),
+	}, nil
+}
+
 // invoiceToResponse maps a header row to the API shape (pence→pounds strings,
 // stored status + derived display status). It does NOT include line items — callers
 // that need the detail use buildDetail.
@@ -1021,6 +1100,29 @@ func raiseInvoiceCounter(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, refere
 // ("10.0000" → "10", "2.5000" → "2.5"). Falls back to the input if it can't parse.
 func normaliseDecimalString(s string) string {
 	d, err := decimal.NewFromString(strings.TrimSpace(s))
+	if err != nil {
+		return s
+	}
+	return d.String()
+}
+
+// numericToString renders a stored pgtype.Numeric (e.g. the invoice's exchange_rate) as
+// a clean decimal string with trailing zeros trimmed ("0.867880" → "0.86788"). An invalid
+// numeric yields "" (the panel's caller only passes a .Valid rate). Goes via the driver
+// Value() (a string) then shopspring/decimal so the format matches the rest of the module.
+func numericToString(n pgtype.Numeric) string {
+	if !n.Valid {
+		return ""
+	}
+	v, err := n.Value()
+	if err != nil {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	d, err := decimal.NewFromString(s)
 	if err != nil {
 		return s
 	}

@@ -22,6 +22,25 @@ export const InvoiceItemSchema = z.object({
 })
 export type InvoiceItem = z.infer<typeof InvoiceItemSchema>
 
+// The read-only "Currency Gains/Losses" panel (Go InvoiceFXSummary). Present only on
+// the detail GET for a SENT, foreign-currency invoice — omitted otherwise (so the
+// whole object is .nullish()). All values are decimal pound/rate strings; a leading
+// "-" means a loss. realized is "0.00" for now (per-payment realised is deferred).
+export const InvoiceFXSummarySchema = z.object({
+  base_currency: z.string(),
+  currency: z.string(),
+  invoice_date: z.string(),
+  invoice_rate: z.string(),
+  invoice_value: z.string(),
+  today_date: z.string(),
+  today_rate: z.string(),
+  today_value: z.string(),
+  unrealized: z.string(),
+  realized: z.string(),
+  net: z.string(),
+})
+export type InvoiceFXSummary = z.infer<typeof InvoiceFXSummarySchema>
+
 // The invoice header. `status` is the stored lifecycle (DRAFT | SCHEDULED | SENT |
 // WRITTEN_OFF | REFUNDED); `display_status` is the derived presentation (Draft |
 // Open | Overdue | Paid | Overpaid | Zero Value | Scheduled | Written off |
@@ -48,6 +67,7 @@ export const InvoiceSchema = z.object({
   due_value: z.string(),
 
   items: z.array(InvoiceItemSchema).nullish(),
+  fx_summary: InvoiceFXSummarySchema.nullish(),
 
   created_at: z.string(),
   updated_at: z.string(),

@@ -145,6 +145,14 @@ function stepLabel(s: { key: string; label: string }): string {
   return s.label
 }
 
+// --- foreign-currency gain/loss panel (read-only) ---
+// Present only on a SENT, foreign invoice (the backend omits it otherwise). Values are
+// in the org's HOME currency (fx.base_currency). A leading "-" is a loss.
+const fx = computed(() => invoice.value?.fx_summary ?? null)
+function isLoss(v: string | undefined): boolean {
+  return (v ?? '').trim().startsWith('-')
+}
+
 // --- contact / org presentation ---
 function contactName(c: Contact | null): string {
   if (!c) return '—'
@@ -512,6 +520,62 @@ function backToList() {
           </div>
         </div>
       </div>
+    </FaCard>
+
+    <!-- Currency Gains/Losses (foreign-currency invoices only; read-only). Values are
+         in the org's home currency. Compares the outstanding amount at the invoice's
+         booking rate vs today's rate → the unrealised gain/loss. -->
+    <FaCard v-if="fx" class="mt-5">
+      <table class="w-full border-collapse text-sm">
+        <thead>
+          <tr class="border-b border-fa-border text-fa-muted">
+            <th class="py-2.5 pr-3 text-left font-semibold">Date</th>
+            <th class="px-3 py-2.5 text-left font-semibold">Exchange Rate</th>
+            <th class="py-2.5 pl-3 text-right font-semibold">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="border-b border-[#eef1f4]">
+            <td class="py-2.5 pr-3">{{ formatDate(fx.invoice_date) }}</td>
+            <td class="px-3 py-2.5">1 {{ fx.currency }} = {{ fx.invoice_rate }} {{ fx.base_currency }}</td>
+            <td class="py-2.5 pl-3 text-right tabular-nums">{{ formatMoney(fx.invoice_value, fx.base_currency) }}</td>
+          </tr>
+          <tr class="border-b border-[#eef1f4]">
+            <td class="py-2.5 pr-3">Today</td>
+            <td class="px-3 py-2.5">1 {{ fx.currency }} = {{ fx.today_rate }} {{ fx.base_currency }}</td>
+            <td class="py-2.5 pl-3 text-right tabular-nums">{{ formatMoney(fx.today_value, fx.base_currency) }}</td>
+          </tr>
+
+          <!-- Gain/loss breakdown -->
+          <tr class="border-b border-[#eef1f4]">
+            <td class="py-2.5 pr-3 font-bold text-fa-text">Currency Gains/Losses</td>
+            <td class="px-3 py-2.5 font-semibold text-fa-text">Unrealized</td>
+            <td
+              class="py-2.5 pl-3 text-right font-bold tabular-nums"
+              :class="isLoss(fx.unrealized) ? 'text-[#c0392b]' : 'text-fa-text'"
+            >
+              {{ formatMoney(fx.unrealized, fx.base_currency) }}
+            </td>
+          </tr>
+          <tr class="border-b border-[#eef1f4]">
+            <td class="py-2.5 pr-3" />
+            <td class="px-3 py-2.5 font-semibold text-fa-text">Realized</td>
+            <td class="py-2.5 pl-3 text-right font-bold tabular-nums">
+              {{ formatMoney(fx.realized, fx.base_currency) }}
+            </td>
+          </tr>
+          <tr>
+            <td class="py-2.5 pr-3" />
+            <td class="px-3 py-2.5 font-semibold text-fa-text">Net</td>
+            <td
+              class="py-2.5 pl-3 text-right font-bold tabular-nums"
+              :class="isLoss(fx.net) ? 'text-[#c0392b]' : 'text-fa-text'"
+            >
+              {{ formatMoney(fx.net, fx.base_currency) }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </FaCard>
 
     <!-- New / Edit invoice item modal. -->

@@ -385,6 +385,15 @@ Full plan: `~/.claude/plans/in-order-to-create-binary-manatee.md` (4 phases).
     pre-fill an editable rate field and show the home-currency total beside the
     foreign total. Backend is ready; the Vue piece isn't built. _Files: `web/src/...`._
   - **xe.com provider** (paid; interface ready) / HMRC monthly rates as alt sources.
+- **Invoice "Currency Gains/Losses" panel (read-only) — LANDED (2026-06-29).** The
+  FreeAgent-style display on a SENT, foreign-currency invoice detail: revalues the
+  OUTSTANDING (due) amount at the booking rate vs today's stored rate and shows the
+  UNREALISED gain/loss. `internal/invoices` `buildFXSummary` (reuses `s.rates` +
+  `money.Apportion`/`ConvertMinor`); served as `fx_summary` on the GET detail only.
+  `web/src/views/InvoiceDetailView.vue` renders the card. This is DISPLAY ONLY — it
+  posts nothing to the GL (that's Phase 2/3). **Realised is shown as `"0.00"`** (per-
+  payment realised needs receipt-date rates → deferred with Phase 2). Tested in
+  `invoice_service_test.go` (`TestInvoiceFXSummary`).
 - **Phase 2 — realised gain/loss on payment** — NOT STARTED. Wire the (currently
   unwired) bank `INVOICE_RECEIPT` GL posting + per-leg currency on the poster + the
   4-leg balanced journal. See plan.

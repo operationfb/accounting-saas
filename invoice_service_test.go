@@ -280,6 +280,122 @@ func TestInvoiceForeignCurrencyAutoFillsRate(t *testing.T) {
 	})
 }
 
+// TestInvoiceFXSummary covers the read-only "Currency Gains/Losses" panel: a SENT,
+// foreign invoice's detail GET carries an fx_summary that revalues the outstanding
+// amount at the booking rate vs today's rate (the unrealised gain/loss); realised is
+// "0.00" for now and net == unrealized. A native invoice — and a foreign invoice with
+// no current rate — omit the panel.
+// assertEq is a tiny field-by-field string check used by the FX-summary assertions.
+func assertEq(t *testing.T, field, got, want string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: got %q, want %q", field, got, want)
+	}
+}
+
+func TestInvoiceFXSummary(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	authHeader := bearer(t, ts, devUserID, devOrgID)
+
+	t.Run("unrealised loss on an open foreign invoice", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		bookingDay := "2026-06-01"      // invoice date, in the past
+		seedRate(t, ts, "EUR", bookingDay, "0.86") // booking rate: £0.86 per €1
+		seedRate(t, ts, "EUR", today(), "0.80")    // today's rate: £0.80 per €1 (EUR weakened)
+
+		// €100 net + 20% VAT = €120 total (12000 minor EUR). Auto-fills the 0.86 rate.
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID: contactID,
+			DatedOn:   bookingDay,
+			Reference: randomRef(),
+			Currency:  "EUR",
+			Items:     []invoices.InvoiceItemRequest{simpleItem("Export work", "1", "100.00", "20")},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		id := decodeInvoice(t, rec.Body.Bytes()).ID
+		cleanupInvoice(t, ts, id)
+
+		// The panel is SENT-only — a DRAFT carries no fx_summary.
+		if draft := decodeInvoice(t, getInvoiceReq(t, ts, id, authHeader).Body.Bytes()); draft.FXSummary != nil {
+			t.Fatalf("DRAFT invoice should have no fx_summary, got %+v", draft.FXSummary)
+		}
+		if r := statusInvoiceReq(t, ts, id, authHeader, "issue"); r.Code != http.StatusOK {
+			t.Fatalf("issue: expected 200, got %d — body: %s", r.Code, r.Body.String())
+		}
+
+		got := decodeInvoice(t, getInvoiceReq(t, ts, id, authHeader).Body.Bytes())
+		fx := got.FXSummary
+		if fx == nil {
+			t.Fatal("SENT foreign invoice should have an fx_summary, got nil")
+		}
+		// Outstanding = full €120. At booking 0.86 → £103.20; at today 0.80 → £96.00.
+		// Unrealised = 96.00 − 103.20 = −£7.20. Realised deferred ("0.00"); net == unrealised.
+		assertEq(t, "currency", fx.Currency, "EUR")
+		assertEq(t, "base_currency", fx.BaseCurrency, "GBP")
+		assertEq(t, "invoice_date", fx.InvoiceDate, bookingDay)
+		assertEq(t, "invoice_value", fx.InvoiceValue, "103.20")
+		assertEq(t, "today_value", fx.TodayValue, "96.00")
+		assertEq(t, "unrealized", fx.Unrealized, "-7.20")
+		assertEq(t, "realized", fx.Realized, "0.00")
+		assertEq(t, "net", fx.Net, "-7.20")
+		if d, _ := decimal.NewFromString(fx.InvoiceRate); !d.Equal(decimal.RequireFromString("0.86")) {
+			t.Errorf("invoice_rate: got %q, want 0.86", fx.InvoiceRate)
+		}
+	})
+
+	t.Run("native (GBP) invoice has no fx panel", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID: contactID,
+			DatedOn:   today(),
+			Reference: randomRef(),
+			Currency:  "GBP",
+			Items:     []invoices.InvoiceItemRequest{simpleItem("Consulting", "1", "100.00", "20")},
+		})
+		id := decodeInvoice(t, rec.Body.Bytes()).ID
+		cleanupInvoice(t, ts, id)
+		if r := statusInvoiceReq(t, ts, id, authHeader, "issue"); r.Code != http.StatusOK {
+			t.Fatalf("issue: got %d — body: %s", r.Code, r.Body.String())
+		}
+		if got := decodeInvoice(t, getInvoiceReq(t, ts, id, authHeader).Body.Bytes()); got.FXSummary != nil {
+			t.Errorf("native invoice should have no fx_summary, got %+v", got.FXSummary)
+		}
+	})
+
+	t.Run("foreign invoice with no current rate omits the panel", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		// AED isn't in the ECB/Frankfurter set, so the daily refresh never stores a rate
+		// for it. Clear any stray rows so the precondition is deterministic on the shared
+		// DB, then raise the invoice with an EXPLICIT rate (so create needs no stored
+		// rate). The detail's "today" lookup then finds nothing and omits the panel (not a 500).
+		if _, err := ts.pool.Exec(context.Background(), "DELETE FROM exchange_rates WHERE currency = 'AED'"); err != nil {
+			t.Fatalf("clear AED rates: %v", err)
+		}
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID:    contactID,
+			DatedOn:      today(),
+			Reference:    randomRef(),
+			Currency:     "AED",
+			ExchangeRate: "0.21",
+			Items:        []invoices.InvoiceItemRequest{simpleItem("Export work", "1", "100.00", "20")},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		id := decodeInvoice(t, rec.Body.Bytes()).ID
+		cleanupInvoice(t, ts, id)
+		if r := statusInvoiceReq(t, ts, id, authHeader, "issue"); r.Code != http.StatusOK {
+			t.Fatalf("issue: got %d — body: %s", r.Code, r.Body.String())
+		}
+		if got := decodeInvoice(t, getInvoiceReq(t, ts, id, authHeader).Body.Bytes()); got.FXSummary != nil {
+			t.Errorf("foreign invoice with no current rate should omit fx_summary, got %+v", got.FXSummary)
+		}
+	})
+}
+
 // =============================================================================
 // CREATE
 // =============================================================================
