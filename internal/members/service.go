@@ -36,7 +36,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	"github.com/operationfb/accounting-saas/internal/kernel"
@@ -131,6 +133,112 @@ func memberToResponse(r auth.ListMembersByOrganisationRow) *MemberResponse {
 		MemberSince:  r.MemberSince.Time.Format(time.RFC3339),
 		LastLoginAt:  kernel.TimestampToStringPtr(r.LastLoginAt),
 	}
+}
+
+// =============================================================================
+// CREATE (admin)
+// =============================================================================
+
+// CreateMember creates a brand-new user and attaches them to the caller's
+// organisation as an ACTIVE member. Owner/admin only. The admin supplies an
+// initial password (bcrypt-hashed here, like the reset-password path), so the new
+// user can log in immediately — there is no email-invite step (that flow stays
+// deferred; see BACKLOG).
+//
+// Scope: this only ever CREATES a fresh user. If the email already belongs to an
+// existing user we return 409 rather than attaching that user to a second org
+// (out of scope for now). The org is the caller's, from the token — never a param.
+//
+// The user row and the membership row are written in ONE transaction so a partial
+// failure can't leave a user with no membership. The response is the same rich
+// MemberDetailResponse that GetMember returns (re-read after commit).
+func (s *Service) CreateMember(
+	ctx context.Context,
+	authUserID, authOrgID uuid.UUID,
+	req CreateMemberRequest,
+) (*MemberDetailResponse, error) {
+	// Only owners/admins may add users.
+	role, err := s.authorize(ctx, authUserID, authOrgID)
+	if err != nil {
+		return nil, err
+	}
+	if !kernel.IsOrgAdmin(role) {
+		return nil, kernel.ErrForbidden("only owners and admins can add users")
+	}
+
+	// Names: binding catches missing; re-check after trim to reject whitespace-only.
+	firstName := strings.TrimSpace(req.FirstName)
+	lastName := strings.TrimSpace(req.LastName)
+	if firstName == "" {
+		return nil, kernel.ErrValidation("first_name is required", nil)
+	}
+	if lastName == "" {
+		return nil, kernel.ErrValidation("last_name is required", nil)
+	}
+	// Email is stored/compared lowercase (the unique index and login both lowercase).
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+
+	// Pre-check for an existing user with this email. The global users.email unique
+	// index would reject a duplicate anyway, but checking first gives a clean 409.
+	if _, err := s.authQueries.GetUserByEmail(ctx, email); err == nil {
+		return nil, kernel.ErrConflict("a user with this email already exists")
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// Hash the initial password (cost 12, same as login/reset).
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// One transaction: create the user, then the active membership linking them to
+	// this org. A unique violation on email (a race past the pre-check) maps to 409.
+	var newUserID uuid.UUID
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := auth.New(tx)
+
+		user, err := qtx.CreateUser(ctx, auth.CreateUserParams{
+			Email:        email,
+			PasswordHash: pgtype.Text{String: string(hash), Valid: true},
+			FirstName:    firstName,
+			LastName:     lastName,
+			Phone:        pgtype.Text{}, // not collected on this form
+		})
+		if err != nil {
+			if kernel.IsUniqueViolation(err) {
+				return kernel.ErrConflict("a user with this email already exists")
+			}
+			return kernel.ErrInternal(err)
+		}
+		newUserID = user.ID
+
+		if _, err := qtx.CreateMembership(ctx, auth.CreateMembershipParams{
+			OrganisationID: authOrgID,
+			UserID:         user.ID,
+			Role:           auth.OrganisationRole(req.Role),
+			Status:         "active",
+		}); err != nil {
+			return kernel.ErrInternal(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-read so the response reflects the committed state (member_since, etc.),
+	// matching GetMember's shape.
+	membership, user, err := s.loadMember(ctx, authOrgID, newUserID)
+	if err != nil {
+		return nil, err
+	}
+	resp := memberDetailToResponse(membership, user)
+	resp.Payroll, err = s.loadPayrollDTO(ctx, authOrgID, newUserID)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 // =============================================================================

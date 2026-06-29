@@ -753,7 +753,7 @@ func (s *Service) postInvoiceSent(ctx context.Context, tx pgx.Tx, authUserID, or
 	if err != nil {
 		return kernel.ErrInternal(err)
 	}
-	return s.poster.PostEntry(ctx, tx, ledger.EntryContext{
+	if err := s.poster.PostEntry(ctx, tx, ledger.EntryContext{
 		OrganisationID: orgID,
 		CompanyType:    org.CompanyType.String,
 		CountryCode:    org.CountryCode,
@@ -771,7 +771,13 @@ func (s *Service) postInvoiceSent(ctx context.Context, tx pgx.Tx, authUserID, or
 			"NET":   {Txn: inv.NetValueMinor, Base: inv.NativeNetValueMinor},
 			"VAT":   {Txn: inv.SalesTaxValueMinor, Base: inv.NativeSalesTaxValueMinor},
 		},
-	})
+	}); err != nil {
+		if errors.Is(err, ledger.ErrChartNotProvisioned) {
+			return nil // org has no chart of accounts — skip GL
+		}
+		return err
+	}
+	return nil
 }
 
 // =============================================================================

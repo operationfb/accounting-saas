@@ -355,6 +355,177 @@ func TestHandleUpdateMember(t *testing.T) {
 	})
 }
 
+// postMemberReq sends POST /api/v1/members with a JSON body. When the response is
+// 201, it decodes the created member and registers t.Cleanup to delete the new
+// user + membership so the shared dev DB stays clean.
+func postMemberReq(t *testing.T, ts *testServer, authHeader string, body members.CreateMemberRequest) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/members", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	if rec.Code == http.StatusCreated {
+		created := decodeMemberDetail(t, rec.Body.Bytes())
+		t.Cleanup(func() {
+			ctx := context.Background()
+			_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_memberships WHERE user_id = $1`, created.UserID)
+			_, _ = ts.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, created.UserID)
+		})
+	}
+	return rec
+}
+
+// loginCode sends POST /api/v1/auth/login and returns the status code (used to
+// prove the admin-set password actually works for the new user).
+func loginCode(t *testing.T, ts *testServer, email, password string) int {
+	t.Helper()
+	b, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	ts.server.router.ServeHTTP(rec, req)
+	return rec.Code
+}
+
+// TestHandleCreateMember covers POST /api/v1/members (an owner/admin adding a new
+// user to the organisation with an initial password).
+func TestHandleCreateMember(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("owner creates a user → active membership + can log in", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		email := "new-" + uuid.NewString() + "@test.local"
+
+		rec := postMemberReq(t, ts, bearer(t, ts, ownerID, orgID), members.CreateMemberRequest{
+			Email:     email,
+			Password:  "supersecret1",
+			FirstName: "New",
+			LastName:  "User",
+			Role:      "member",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeMemberDetail(t, rec.Body.Bytes())
+		if got.Email != email || got.FirstName != "New" || got.LastName != "User" {
+			t.Errorf("response fields: %+v", got)
+		}
+		if got.Role != "member" || got.Status != "active" {
+			t.Errorf("role/status: got %q/%q, want member/active", got.Role, got.Status)
+		}
+
+		// Active membership row exists in this org.
+		var role, status string
+		if err := ts.pool.QueryRow(context.Background(),
+			`SELECT role, status FROM organisation_memberships WHERE user_id = $1 AND organisation_id = $2`,
+			got.UserID, orgID).Scan(&role, &status); err != nil {
+			t.Fatalf("re-read membership: %v", err)
+		}
+		if role != "member" || status != "active" {
+			t.Errorf("membership not persisted: role=%q status=%q", role, status)
+		}
+
+		// The admin-set password actually works (bcrypt round-trip through login).
+		if code := loginCode(t, ts, email, "supersecret1"); code != http.StatusOK {
+			t.Errorf("new user login: got %d, want 200", code)
+		}
+
+		// And the new user shows up in the members list.
+		list := membersFromList(t, getMembers(t, ts, bearer(t, ts, ownerID, orgID)).Body.Bytes())
+		if findMember(list, got.UserID) == nil {
+			t.Errorf("new user %s missing from members list", got.UserID)
+		}
+	})
+
+	t.Run("plain member caller → 403", func(t *testing.T) {
+		orgID, _ := newOrgWithOwner(t, ts)
+		caller := newMemberUser(t, ts, orgID)
+		rec := postMemberReq(t, ts, bearer(t, ts, caller, orgID), members.CreateMemberRequest{
+			Email: "x-" + uuid.NewString() + "@test.local", Password: "supersecret1",
+			FirstName: "X", LastName: "Y", Role: "member",
+		})
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("duplicate email → 409", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		email := "dup-" + uuid.NewString() + "@test.local"
+		auth := bearer(t, ts, ownerID, orgID)
+
+		first := postMemberReq(t, ts, auth, members.CreateMemberRequest{
+			Email: email, Password: "supersecret1", FirstName: "First", LastName: "User", Role: "member",
+		})
+		if first.Code != http.StatusCreated {
+			t.Fatalf("setup create: expected 201, got %d — body: %s", first.Code, first.Body.String())
+		}
+		second := postMemberReq(t, ts, auth, members.CreateMemberRequest{
+			Email: email, Password: "supersecret1", FirstName: "Second", LastName: "User", Role: "member",
+		})
+		if second.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d — body: %s", second.Code, second.Body.String())
+		}
+	})
+
+	t.Run("owner role is rejected at binding → 400", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		rec := postMemberReq(t, ts, bearer(t, ts, ownerID, orgID), members.CreateMemberRequest{
+			Email: "o-" + uuid.NewString() + "@test.local", Password: "supersecret1",
+			FirstName: "X", LastName: "Y", Role: "owner",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("short password → 400", func(t *testing.T) {
+		orgID, ownerID := newOrgWithOwner(t, ts)
+		rec := postMemberReq(t, ts, bearer(t, ts, ownerID, orgID), members.CreateMemberRequest{
+			Email: "p-" + uuid.NewString() + "@test.local", Password: "short",
+			FirstName: "X", LastName: "Y", Role: "member",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated → 401", func(t *testing.T) {
+		rec := postMemberReq(t, ts, "", members.CreateMemberRequest{
+			Email: "u-" + uuid.NewString() + "@test.local", Password: "supersecret1",
+			FirstName: "X", LastName: "Y", Role: "member",
+		})
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("tenant isolation: created member belongs only to caller's org", func(t *testing.T) {
+		orgA, ownerA := newOrgWithOwner(t, ts)
+		orgB, ownerB := newOrgWithOwner(t, ts)
+
+		rec := postMemberReq(t, ts, bearer(t, ts, ownerA, orgA), members.CreateMemberRequest{
+			Email: "iso-" + uuid.NewString() + "@test.local", Password: "supersecret1",
+			FirstName: "Iso", LastName: "Lated", Role: "member",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		newUserID := decodeMemberDetail(t, rec.Body.Bytes()).UserID
+
+		// orgB must never see orgA's new member.
+		listB := membersFromList(t, getMembers(t, ts, bearer(t, ts, ownerB, orgB)).Body.Bytes())
+		if findMember(listB, newUserID) != nil {
+			t.Errorf("tenant leak: new member %s appeared in orgB's list", newUserID)
+		}
+	})
+}
+
 // TestHandleListMembers covers GET /api/v1/members end-to-end through the router.
 func TestHandleListMembers(t *testing.T) {
 	ts := newTestServer(t)

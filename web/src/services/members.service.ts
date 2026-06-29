@@ -2,6 +2,7 @@ import { apiFetch } from '@/lib/api'
 import {
   ListMembersResponseSchema,
   MemberDetailSchema,
+  type CreateMemberRequest,
   type MemberDetail,
   type OrganisationMember,
   type UpdateMemberRequest,
@@ -16,6 +17,14 @@ import { InboxAddressSchema } from '@/types/user'
 export async function listMembers(): Promise<OrganisationMember[]> {
   const data = await apiFetch<unknown>('/members', { method: 'GET' })
   return ListMembersResponseSchema.parse(data).members ?? []
+}
+
+// POST /api/v1/members — create a new user and add them to the organisation with
+// an initial password. OWNER/ADMIN-ONLY (403 otherwise); a duplicate email is 409.
+// Returns the created member's full detail (same shape as getMember).
+export async function createMember(payload: CreateMemberRequest): Promise<MemberDetail> {
+  const data = await apiFetch<unknown>('/members', { method: 'POST', body: payload })
+  return MemberDetailSchema.parse(data)
 }
 
 // GET /api/v1/members/:id — one member's full detail (profile + payroll +

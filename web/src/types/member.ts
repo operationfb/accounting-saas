@@ -85,6 +85,19 @@ export const MemberDetailSchema = OrganisationMemberSchema.extend({
 })
 export type MemberDetail = z.infer<typeof MemberDetailSchema>
 
+// POST /api/v1/members body. Mirrors the backend CreateMemberRequest: an
+// owner/admin creates a brand-new user with an initial password (so they can log
+// in immediately — no email invite). Role deliberately EXCLUDES 'owner' (owner is
+// assigned later via UpdateMember, behind the owner-only guard). The response is a
+// MemberDetail, same as GET /api/v1/members/:id.
+export interface CreateMemberRequest {
+  email: string
+  password: string
+  first_name: string
+  last_name: string
+  role: 'admin' | 'member' | 'accountant' | 'read_only'
+}
+
 // PUT /api/v1/members/:id body. Mirrors the backend UpdateMemberRequest: names
 // required, payroll fields optional (null clears), role + status from the fixed
 // enums. The service adds the self lock-out and owner-only-owner guards.

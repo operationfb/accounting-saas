@@ -73,6 +73,13 @@ const (
 	RolePayrollDirectorEmployerPensionExpense = "PAYROLL_DIRECTOR_EMPLOYER_PENSION_EXPENSE"
 )
 
+// ErrChartNotProvisioned is returned when a control account's nominal isn't in the
+// org's chart of accounts — i.e. the org hasn't been provisioned with a CoA, so it
+// cannot have a general ledger. Source-service GL hooks treat it as "skip posting"
+// rather than failing the business operation. (Per-org CoA provisioning is a separate
+// piece of work; until then only seeded orgs post to the GL.)
+var ErrChartNotProvisioned = errors.New("ledger: organisation has no chart of accounts")
+
 // Accounts resolves account roles to categories rows. It reads (and, for user
 // sub-accounts, writes) the per-org categories table, the global gl_account_roles
 // map, and users (to label a new sub-account).
@@ -212,7 +219,12 @@ func (a *Accounts) fixedRoleCategory(ctx context.Context, role string, in Resolv
 		NominalCode:    nominal,
 	})
 	if err != nil {
-		return categories.Category{}, fmt.Errorf("ledger: role %s → nominal %s is not in the org's chart of accounts: %w", role, nominal, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The control nominal isn't in the org's chart — the org has no CoA, so it
+			// can't have a GL. Surface the typed sentinel so source hooks skip posting.
+			return categories.Category{}, fmt.Errorf("%w: role %s → nominal %s", ErrChartNotProvisioned, role, nominal)
+		}
+		return categories.Category{}, fmt.Errorf("ledger: role %s → nominal %s lookup failed: %w", role, nominal, err)
 	}
 	return cat, nil
 }

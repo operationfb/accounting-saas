@@ -58,11 +58,15 @@ The owner/admin Users list (`/users`) + the unified User Details edit
 (`GET`/`PUT /api/v1/members/:id`, `internal/members`) shipped, but deliberately
 scoped. Deferred:
 
-- **New User (invite flow).** The screenshot's "New User" button is omitted. Build
-  inviting a user: a create/invite endpoint that sends an email and creates a
-  `pending` membership. The plumbing exists — `CreateInvitedMembership` +
-  `AcceptInvite` (`db/queries/auth.sql`) and the `EmailSender` seam — but there is
-  no sign-up/accept endpoint yet (overlaps with the email-verification item above).
+- **New User — email-invite variant.** The "New user" button + add-user form now
+  ship (`POST /api/v1/members`, `internal/members.CreateMember`): an owner/admin
+  sets an initial password, creating an ACTIVE user who can log in immediately. The
+  alternative **email-invite** flow is still deferred — a create/invite endpoint that
+  sends an email and creates a `pending` membership instead of taking a password.
+  The plumbing exists (`CreateInvitedMembership` + `AcceptInvite`, `db/queries/auth.sql`,
+  and the `EmailSender` seam) but there is no sign-up/accept endpoint yet (overlaps
+  with the email-verification item above). Also deferred: adding a *pre-existing*
+  user to a second org (the current flow returns 409 on a duplicate email).
   _Files: `internal/members`, `internal/userauth`, `db/auth`._
 
 - **Payroll "position" vs access role.** The FreeAgent screenshot's Role dropdown

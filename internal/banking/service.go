@@ -46,6 +46,7 @@ import (
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/internal/ledger"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -67,12 +68,19 @@ type Service struct {
 	invoiceQueries *invoicesdb.Queries
 	billQueries    *billsdb.Queries
 	vatQueries     *vatdb.Queries
+	// poster writes the GL journal entry for an INVOICE_RECEIPT explanation (Dr Bank /
+	// Cr Debtors). Nil-guarded: with no poster wired, the GL is simply not posted.
+	poster ledger.Poster
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
 func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Querier, catQueries *categoriesdb.Queries, invoiceQueries *invoicesdb.Queries, billQueries *billsdb.Queries, vatQueries *vatdb.Queries) *Service {
 	return &Service{pool: pool, queries: queries, authQueries: authQueries, catQueries: catQueries, invoiceQueries: invoiceQueries, billQueries: billQueries, vatQueries: vatQueries}
 }
+
+// SetPoster wires the general-ledger poster after construction (mirrors
+// invoices.SetPoster). Nil leaves GL posting off.
+func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
 
 // assertNotFiled refuses the operation (409 conflict) when any of the given dates
 // falls inside a FILED VAT period — an explanation that is part of a submitted VAT

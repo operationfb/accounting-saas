@@ -100,6 +100,22 @@ type PayrollDTO struct {
 	LeavingDate       *string `json:"leaving_date"` // ISO YYYY-MM-DD; set when leaving = Yes
 }
 
+// CreateMemberRequest is the body for POST /api/v1/members — an owner/admin
+// creating a brand-new user and attaching them to their organisation. The admin
+// sets an initial Password, so the user is created ACTIVE and can log in
+// immediately (no email-invite round-trip). Bindings mirror UpdateMemberRequest:
+// names are required (NOT NULL columns); the password rule matches the
+// reset-password flow (min=8); Role carries oneof binding so an unknown value is a
+// 400 at the edge. Role deliberately EXCLUDES 'owner' — assigning owner stays on
+// the User Details screen behind UpdateMember's owner-only guard.
+type CreateMemberRequest struct {
+	Email     string `json:"email" binding:"required,email"`
+	Password  string `json:"password" binding:"required,min=8"`
+	FirstName string `json:"first_name" binding:"required,max=100"`
+	LastName  string `json:"last_name" binding:"required,max=100"`
+	Role      string `json:"role" binding:"required,oneof=admin member accountant read_only"`
+}
+
 // UpdateMemberRequest is the body for PUT /api/v1/members/:id — an owner/admin
 // editing another user's details, role and status. Names are required (NOT NULL
 // columns); the payroll fields are optional pointers (blank/omitted -> NULL) and

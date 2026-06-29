@@ -27,6 +27,7 @@ import VatReturnDetailView from '@/views/VatReturnDetailView.vue'
 import OverviewDashboardView from '@/views/OverviewDashboardView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import UsersListView from '@/views/UsersListView.vue'
+import UserEntryView from '@/views/UserEntryView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
 import PayrollOverviewView from '@/views/PayrollOverviewView.vue'
 import PayrollRunView from '@/views/PayrollRunView.vue'
@@ -108,6 +109,9 @@ const router = createRouter({
     // it; a non-admin is redirected to their own details). /users/:id is the SAME
     // unified User Details view in ADMIN mode (or self mode if :id is the caller).
     { path: '/users', name: 'users', component: UsersListView, meta: { requiresAuth: true, title: 'Users' } },
+    // /users/new is the owner/admin "add a user" form — declared BEFORE /users/:id
+    // so the literal "new" isn't captured as the :id param (Vue Router matches in order).
+    { path: '/users/new', name: 'user-new', component: UserEntryView, meta: { requiresAuth: true, title: 'Users' } },
     { path: '/users/:id', name: 'user-detail', component: MyDetailsView, meta: { requiresAuth: true, title: 'Users' } },
     // Integration settings (FreeAgent OAuth + status). The path is fixed: the
     // backend OAuth callback redirects the browser to /settings/integrations with

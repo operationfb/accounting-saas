@@ -35,6 +35,7 @@ import (
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	"github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/internal/ledger"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -157,13 +158,21 @@ func (s *Service) CreateExplanation(ctx context.Context, authUserID, authOrgID u
 	// explanations that drive it.
 	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		qtx := s.queries.WithTx(tx)
-		if _, err := qtx.CreateExplanation(ctx, params); err != nil {
+		created, err := qtx.CreateExplanation(ctx, params)
+		if err != nil {
 			return kernel.ErrInternal(err)
 		}
 		if err := s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, params.PaidInvoiceID); err != nil {
 			return err
 		}
-		return s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, params.PaidBillID)
+		if err := s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, params.PaidBillID); err != nil {
+			return err
+		}
+		// GL: an invoice receipt posts Dr Bank / Cr Debtors (home currency).
+		if created.Type == typeInvoiceReceipt {
+			return s.postReceiptGL(ctx, tx, authUserID, authOrgID, accountUUID, created.ID, created.GrossValueMinor, created.DatedOn)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -252,6 +261,15 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 				return err
 			}
 		}
+		// GL: keep the receipt entry in step. The poster replaces the prior entry for
+		// this explanation (handles amount changes); if the type changed away from
+		// INVOICE_RECEIPT, remove it instead.
+		switch {
+		case params.Type == typeInvoiceReceipt:
+			return s.postReceiptGL(ctx, tx, authUserID, authOrgID, accountUUID, explUUID, params.GrossValueMinor, params.DatedOn)
+		case existing.Type == typeInvoiceReceipt:
+			return s.removeReceiptGL(ctx, tx, authOrgID, explUUID)
+		}
 		return nil
 	})
 	if err != nil {
@@ -294,12 +312,75 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 		if err := s.resyncInvoicePaid(ctx, qtx, s.invoiceQueries.WithTx(tx), authOrgID, existing.PaidInvoiceID); err != nil {
 			return err
 		}
-		return s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, existing.PaidBillID)
+		if err := s.resyncBillPaid(ctx, qtx, s.billQueries.WithTx(tx), authOrgID, existing.PaidBillID); err != nil {
+			return err
+		}
+		// GL: remove the receipt's journal entry (its lines cascade).
+		if existing.Type == typeInvoiceReceipt {
+			return s.removeReceiptGL(ctx, tx, authOrgID, explUUID)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return s.buildExplanationsResponse(ctx, authOrgID, txnUUID)
+}
+
+// =============================================================================
+// GENERAL LEDGER (invoice receipt)
+// =============================================================================
+
+// postReceiptGL posts the GL entry for an INVOICE_RECEIPT explanation — Dr Bank (the
+// account's 750-x sub-account) / Cr Debtors (681) — in the org's home currency, on the
+// caller's transaction. grossMinor is positive (a receipt is money-in). Realized FX is
+// not yet supported, so a FOREIGN-currency receipt skips posting (and clears any prior
+// home-currency entry); the explain + paid_value sync still happen.
+func (s *Service) postReceiptGL(ctx context.Context, tx pgx.Tx, authUserID, orgID, accountID, explID uuid.UUID, grossMinor int64, dated pgtype.Date) error {
+	if s.poster == nil {
+		return nil
+	}
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	acct, err := s.queries.WithTx(tx).GetBankAccount(ctx, banking.GetBankAccountParams{ID: accountID, OrganisationID: orgID})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if !strings.EqualFold(acct.Currency, org.NativeCurrency) {
+		return s.removeReceiptGL(ctx, tx, orgID, explID) // foreign — FX deferred
+	}
+	bankID := accountID
+	if err := s.poster.PostEntry(ctx, tx, ledger.EntryContext{
+		OrganisationID: orgID,
+		CompanyType:    org.CompanyType.String,
+		CountryCode:    org.CountryCode,
+		BaseCurrency:   org.NativeCurrency,
+		TxnCurrency:    org.NativeCurrency,
+		EventCode:      typeInvoiceReceipt,
+		SourceType:     typeInvoiceReceipt,
+		SourceID:       explID,
+		EntryDate:      dated,
+		Narrative:      "Invoice receipt",
+		CreatedBy:      authUserID,
+		Amounts:        map[string]ledger.Amount{"GROSS": {Txn: grossMinor, Base: grossMinor}},
+		BankAccountID:  &bankID,
+	}); err != nil {
+		if errors.Is(err, ledger.ErrChartNotProvisioned) {
+			return nil // org has no chart of accounts — skip GL (paid_value sync still ran)
+		}
+		return err
+	}
+	return nil
+}
+
+// removeReceiptGL deletes the receipt's journal entry (lines cascade). Nil-guarded.
+func (s *Service) removeReceiptGL(ctx context.Context, tx pgx.Tx, orgID, explID uuid.UUID) error {
+	if s.poster == nil {
+		return nil
+	}
+	return s.poster.RemoveEntry(ctx, tx, orgID, typeInvoiceReceipt, explID)
 }
 
 // =============================================================================

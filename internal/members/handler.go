@@ -35,6 +35,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 	g.Use(kernel.AuthMiddleware(tokenMaker))
 	{
 		g.GET("", h.ListMembers)
+		g.POST("", h.CreateMember)
 		g.GET("/:id", h.GetMember)
 		g.PUT("/:id", h.UpdateMember)
 	}
@@ -50,6 +51,22 @@ func (h *Handler) ListMembers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"members": list})
+}
+
+// CreateMember handles POST /api/v1/members — an owner/admin creating a new user
+// and attaching them to the organisation. Returns 201 with the created member's
+// full detail. Owner/admin only (enforced in the service).
+func (h *Handler) CreateMember(c *gin.Context) {
+	var req CreateMemberRequest
+	if !kernel.BindJSON(c, &req) {
+		return
+	}
+	resp, err := h.svc.CreateMember(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), req)
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 // GetMember handles GET /api/v1/members/:id — one member's full detail for the

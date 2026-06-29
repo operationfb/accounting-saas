@@ -253,6 +253,7 @@ func newTestServer(t *testing.T) *testServer {
 	// the categories query set; the categories reference endpoints register too.
 	categoryQueries := dbcategories.New(pool)
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
+	bankingSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 

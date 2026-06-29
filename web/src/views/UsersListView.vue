@@ -3,11 +3,11 @@
 // table). Wired to GET /api/v1/members (owner/admin only). Each row opens the
 // unified User Details screen (/users/:id) in admin mode.
 //
-// Scope: the table is real data. "New User" (inviting a user) is DEFERRED — the
-// button is omitted this iteration (see BACKLOG). The "2FA authenticator app"
-// column is a faithful but static "Disabled" placeholder — there is no 2FA
-// feature yet. A non-admin who reaches this route is redirected to their own
-// details (the access gate is enforced both here and by the 403 from the API).
+// Scope: the table is real data. "New user" navigates to /users/new (the add-user
+// form; owner/admin only). The "2FA authenticator app" column is a faithful but
+// static "Disabled" placeholder — there is no 2FA feature yet. A non-admin who
+// reaches this route is redirected to their own details (the access gate is
+// enforced both here and by the 403 from the API).
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import AppLayout from '@/layouts/AppLayout.vue'
@@ -81,7 +81,8 @@ onMounted(load)
   <AppLayout>
     <div class="mb-[18px] flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-[22px] font-bold">Users</h1>
-      <!-- "New User" (invite) is deferred — see BACKLOG. -->
+      <!-- Add a user: owner/admin only (the route + API also gate it). -->
+      <Button v-if="auth.isOrgAdmin" label="New user" icon="pi pi-plus" @click="router.push('/users/new')" />
     </div>
 
     <div class="overflow-hidden rounded-[5px] border border-fa-border bg-white">

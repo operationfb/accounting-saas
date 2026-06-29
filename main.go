@@ -50,10 +50,10 @@ import (
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
-	"github.com/operationfb/accounting-saas/internal/fxrates"
 	email "github.com/operationfb/accounting-saas/internal/email"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
+	"github.com/operationfb/accounting-saas/internal/fxrates"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
@@ -494,7 +494,10 @@ func main() {
 	categoryQueries := dbcategories.New(pool)
 	// dbinvoices.New(pool) is the cross-domain dependency for the Invoice Receipt
 	// explanation: validate the target invoice + keep its paid_value_minor in sync.
-	bankingHandler := banking.NewHandler(banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries))
+	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
+	// GL: explaining a money-in line as an Invoice Receipt posts Dr Bank / Cr Debtors.
+	bankingSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
+	bankingHandler := banking.NewHandler(bankingSvc)
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 
 	// Overview: the read-only dashboard (FreeAgent-style landing page). A
