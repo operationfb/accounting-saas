@@ -238,6 +238,24 @@ func (q *Queries) CreatePayslip(ctx context.Context, arg CreatePayslipParams) (P
 	return i, err
 }
 
+const deletePayslipsForRun = `-- name: DeletePayslipsForRun :exec
+DELETE FROM payslips
+WHERE pay_run_id = $1
+  AND organisation_id = $2
+`
+
+type DeletePayslipsForRunParams struct {
+	PayRunID       uuid.UUID `json:"pay_run_id"`
+	OrganisationID uuid.UUID `json:"organisation_id"`
+}
+
+// Remove all payslips of a draft run (used by "Refresh from profiles", which then
+// re-snapshots them from the current employee profiles).
+func (q *Queries) DeletePayslipsForRun(ctx context.Context, arg DeletePayslipsForRunParams) error {
+	_, err := q.db.Exec(ctx, deletePayslipsForRun, arg.PayRunID, arg.OrganisationID)
+	return err
+}
+
 const getLatestPayRun = `-- name: GetLatestPayRun :one
 SELECT id, organisation_id, created_by_user_id, tax_year_start, frequency, period, period_start, period_end, payment_date, status, employment_allowance_claimed, employment_allowance_amount_minor, deleted_at, created_at, updated_at FROM pay_runs
 WHERE organisation_id = $1

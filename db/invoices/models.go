@@ -18,8 +18,12 @@ type Invoice struct {
 	DatedOn         pgtype.Date `json:"dated_on"`
 	DueOn           pgtype.Date `json:"due_on"`
 	// Customer-facing invoice number. Nullable until issued (auto-numbering deferred). Unique per org once set (uq_invoices_reference).
-	Reference pgtype.Text `json:"reference"`
-	Currency  string      `json:"currency"`
+	Reference                pgtype.Text    `json:"reference"`
+	Currency                 string         `json:"currency"`
+	ExchangeRate             pgtype.Numeric `json:"exchange_rate"`
+	NativeNetValueMinor      int64          `json:"native_net_value_minor"`
+	NativeSalesTaxValueMinor int64          `json:"native_sales_tax_value_minor"`
+	NativeTotalValueMinor    int64          `json:"native_total_value_minor"`
 	// STORED lifecycle only: DRAFT|SCHEDULED|SENT|WRITTEN_OFF|REFUNDED. The display status (Open/Overdue/Paid/Overpaid/Zero Value) is DERIVED in the service from due_on + total_value_minor + paid_value_minor.
 	Status             string `json:"status"`
 	NetValueMinor      int64  `json:"net_value_minor"`

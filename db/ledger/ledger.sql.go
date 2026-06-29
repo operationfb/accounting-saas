@@ -8,8 +8,115 @@ package ledger
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const createJournalEntry = `-- name: CreateJournalEntry :one
+INSERT INTO gl_journal_entries (
+    organisation_id, entry_date, base_currency, narrative,
+    source_type, source_id, created_by_user_id
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7
+)
+RETURNING id
+`
+
+type CreateJournalEntryParams struct {
+	OrganisationID  uuid.UUID   `json:"organisation_id"`
+	EntryDate       pgtype.Date `json:"entry_date"`
+	BaseCurrency    string      `json:"base_currency"`
+	Narrative       pgtype.Text `json:"narrative"`
+	SourceType      string      `json:"source_type"`
+	SourceID        pgtype.UUID `json:"source_id"`
+	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+}
+
+func (q *Queries) CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, createJournalEntry,
+		arg.OrganisationID,
+		arg.EntryDate,
+		arg.BaseCurrency,
+		arg.Narrative,
+		arg.SourceType,
+		arg.SourceID,
+		arg.CreatedByUserID,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createJournalLine = `-- name: CreateJournalLine :exec
+INSERT INTO gl_journal_lines (
+    journal_entry_id, organisation_id, account_id,
+    currency, amount_minor, base_amount_minor, exchange_rate,
+    contact_id, project_id, user_id, description
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    $8, $9, $10, $11
+)
+`
+
+type CreateJournalLineParams struct {
+	JournalEntryID  uuid.UUID      `json:"journal_entry_id"`
+	OrganisationID  uuid.UUID      `json:"organisation_id"`
+	AccountID       uuid.UUID      `json:"account_id"`
+	Currency        string         `json:"currency"`
+	AmountMinor     int64          `json:"amount_minor"`
+	BaseAmountMinor int64          `json:"base_amount_minor"`
+	ExchangeRate    pgtype.Numeric `json:"exchange_rate"`
+	ContactID       pgtype.UUID    `json:"contact_id"`
+	ProjectID       pgtype.UUID    `json:"project_id"`
+	UserID          pgtype.UUID    `json:"user_id"`
+	Description     pgtype.Text    `json:"description"`
+}
+
+func (q *Queries) CreateJournalLine(ctx context.Context, arg CreateJournalLineParams) error {
+	_, err := q.db.Exec(ctx, createJournalLine,
+		arg.JournalEntryID,
+		arg.OrganisationID,
+		arg.AccountID,
+		arg.Currency,
+		arg.AmountMinor,
+		arg.BaseAmountMinor,
+		arg.ExchangeRate,
+		arg.ContactID,
+		arg.ProjectID,
+		arg.UserID,
+		arg.Description,
+	)
+	return err
+}
+
+const deleteJournalEntryForSource = `-- name: DeleteJournalEntryForSource :exec
+
+DELETE FROM gl_journal_entries
+WHERE organisation_id = $1
+  AND source_type     = $2
+  AND source_id       = $3
+  AND NOT is_reversal
+`
+
+type DeleteJournalEntryForSourceParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	SourceType     string      `json:"source_type"`
+	SourceID       pgtype.UUID `json:"source_id"`
+}
+
+// -----------------------------------------------------------------------------
+// JOURNAL ENTRIES + LINES (the poster's write path)
+// The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
+// lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
+// enforced by the deferred constraint trigger (trg_gl_entry_balanced).
+// -----------------------------------------------------------------------------
+// Remove the live entry for a source event (its lines cascade). Idempotent replace.
+func (q *Queries) DeleteJournalEntryForSource(ctx context.Context, arg DeleteJournalEntryForSourceParams) error {
+	_, err := q.db.Exec(ctx, deleteJournalEntryForSource, arg.OrganisationID, arg.SourceType, arg.SourceID)
+	return err
+}
 
 const getAccountRoleNominal = `-- name: GetAccountRoleNominal :one
 SELECT nominal_code
@@ -47,6 +154,86 @@ func (q *Queries) GetAccountRoleNominal(ctx context.Context, arg GetAccountRoleN
 	var nominal_code string
 	err := row.Scan(&nominal_code)
 	return nominal_code, err
+}
+
+const getJournalEntryForSource = `-- name: GetJournalEntryForSource :one
+SELECT id, organisation_id, entry_date, base_currency, narrative,
+       source_type, source_id, is_reversal, reverses_entry_id, created_by_user_id, created_at
+FROM gl_journal_entries
+WHERE organisation_id = $1
+  AND source_type     = $2
+  AND source_id       = $3
+  AND NOT is_reversal
+`
+
+type GetJournalEntryForSourceParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	SourceType     string      `json:"source_type"`
+	SourceID       pgtype.UUID `json:"source_id"`
+}
+
+// The live entry for a source event (for tests / mutation checks).
+func (q *Queries) GetJournalEntryForSource(ctx context.Context, arg GetJournalEntryForSourceParams) (GlJournalEntry, error) {
+	row := q.db.QueryRow(ctx, getJournalEntryForSource, arg.OrganisationID, arg.SourceType, arg.SourceID)
+	var i GlJournalEntry
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.EntryDate,
+		&i.BaseCurrency,
+		&i.Narrative,
+		&i.SourceType,
+		&i.SourceID,
+		&i.IsReversal,
+		&i.ReversesEntryID,
+		&i.CreatedByUserID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listLinesForEntry = `-- name: ListLinesForEntry :many
+SELECT id, journal_entry_id, organisation_id, account_id,
+       currency, amount_minor, base_amount_minor, exchange_rate,
+       contact_id, project_id, user_id, description, created_at
+FROM gl_journal_lines
+WHERE journal_entry_id = $1
+ORDER BY id
+`
+
+// Backs tests + the future account-ledger drill-down.
+func (q *Queries) ListLinesForEntry(ctx context.Context, journalEntryID uuid.UUID) ([]GlJournalLine, error) {
+	rows, err := q.db.Query(ctx, listLinesForEntry, journalEntryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GlJournalLine
+	for rows.Next() {
+		var i GlJournalLine
+		if err := rows.Scan(
+			&i.ID,
+			&i.JournalEntryID,
+			&i.OrganisationID,
+			&i.AccountID,
+			&i.Currency,
+			&i.AmountMinor,
+			&i.BaseAmountMinor,
+			&i.ExchangeRate,
+			&i.ContactID,
+			&i.ProjectID,
+			&i.UserID,
+			&i.Description,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPostingRules = `-- name: ListPostingRules :many

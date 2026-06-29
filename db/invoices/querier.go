@@ -78,6 +78,9 @@ type Querier interface {
 	// transaction, then recomputes the totals. Org-scoped defensively.
 	// -----------------------------------------------------------------------------
 	DeleteInvoiceItemsForInvoice(ctx context.Context, arg DeleteInvoiceItemsForInvoiceParams) error
+	// The minor_unit (decimal places) of an ISO currency, for the native-currency
+	// conversion (money.ConvertMinor needs both currencies' exponents).
+	GetCurrency(ctx context.Context, code string) (GetCurrencyRow, error)
 	// -----------------------------------------------------------------------------
 	// GetInvoice  (the "getter")
 	// Fetch a single invoice header by id, scoped to the organisation. We ALWAYS scope

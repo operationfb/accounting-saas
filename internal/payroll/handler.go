@@ -46,6 +46,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, tokenMaker token.Maker) {
 		g.POST("/periods", h.PreparePayRun)
 		g.GET("/periods/:id", h.GetPayRun)
 		g.POST("/periods/:id/complete", h.CompletePayRun)
+		g.POST("/periods/:id/refresh", h.RefreshPayRun)
 		g.DELETE("/periods/:id", h.DeletePayRun)
 		g.GET("/payslips/:id", h.GetPayslip)
 		g.PUT("/payslips/:id", h.UpdatePayslip)
@@ -112,6 +113,17 @@ func (h *Handler) GetPayRun(c *gin.Context) {
 // CompletePayRun handles POST /api/v1/payroll/periods/:id/complete.
 func (h *Handler) CompletePayRun(c *gin.Context) {
 	run, err := h.svc.CompletePayRun(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"))
+	if err != nil {
+		kernel.RespondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"pay_run": run})
+}
+
+// RefreshPayRun handles POST /api/v1/payroll/periods/:id/refresh — re-snapshot a
+// draft run's payslips from the current employee profiles.
+func (h *Handler) RefreshPayRun(c *gin.Context) {
+	run, err := h.svc.RefreshPayRun(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), c.Param("id"))
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

@@ -733,14 +733,17 @@ sql:
   # Generates the data layer for the gl_posting_rules table into package `ledger`
   # at db/ledger — its own domain package.
   #
-  # ITERATION 1 loads ONLY ledger_schema.sql: gl_posting_rules is GLOBAL reference
-  # data with NO foreign keys (like transaction_types), so no other schema file is
-  # needed to satisfy it. When the journal tables land they reference categories /
-  # organisations / users and this list grows accordingly.
+  # The journal tables (gl_journal_entries / gl_journal_lines) reference categories /
+  # organisations / users / currencies, so the block now loads those schemas in
+  # dependency order ahead of ledger_schema.sql. omit_unused_structs keeps the upstream
+  # models (expenses, categories, …) out of db/ledger — only the gl_* structs emit.
   # ===========================================================================
   - engine: "postgresql"
 
     schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/categories_schema.sql"
       - "db/schema/ledger_schema.sql"
 
     queries: "db/queries/ledger.sql"
@@ -753,6 +756,7 @@ sql:
         emit_interface: true
         emit_json_tags: true
         emit_pointers_for_null_types: false
+        omit_unused_structs: true
 
         # Same type overrides as the other blocks.
         overrides:

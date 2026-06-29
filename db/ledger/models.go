@@ -5,34 +5,38 @@
 package ledger
 
 import (
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Maps a fixed control account_role (DEBTORS, VAT_CONTROL, USER_ACCOUNT, …) to the nominal_code it posts to, soft-linked to per-org categories by nominal_code. Overridable per organisation_id / country_code (both NULL = global default); the resolver picks the most specific match: org → country → company_type → global. Entity-derived roles (EXPLANATION_CATEGORY, BANK) are NOT here — they resolve from the event's links.
-type GlAccountRole struct {
-	Role           string             `json:"role"`
-	NominalCode    string             `json:"nominal_code"`
-	OrganisationID pgtype.UUID        `json:"organisation_id"`
-	CountryCode    pgtype.Text        `json:"country_code"`
-	CompanyType    string             `json:"company_type"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+// Double-entry journal headers — one balanced entry per economic event, written by the ledger poster from gl_posting_rules. base_currency is the org native currency snapshotted at post time. Idempotent per (org, source_type, source_id) for non-reversal, non-MANUAL entries.
+type GlJournalEntry struct {
+	ID              uuid.UUID          `json:"id"`
+	OrganisationID  uuid.UUID          `json:"organisation_id"`
+	EntryDate       pgtype.Date        `json:"entry_date"`
+	BaseCurrency    string             `json:"base_currency"`
+	Narrative       pgtype.Text        `json:"narrative"`
+	SourceType      string             `json:"source_type"`
+	SourceID        pgtype.UUID        `json:"source_id"`
+	IsReversal      bool               `json:"is_reversal"`
+	ReversesEntryID pgtype.UUID        `json:"reverses_entry_id"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
-// The double-entry mapping AS DATA: per economic event, the journal legs (account role + money component + Dr/Cr). GLOBAL reference (no organisation_id), like transaction_types. A generic interpreter reads these to post balanced journal entries; validated against FreeAgent's chart/trial balance.
-type GlPostingRule struct {
-	// Bank explanations: == transaction_types.code (PAYMENT, SALES, …). Non-bank: synthetic (EXPENSE_APPROVED, INVOICE_SENT, BILL_CREATED, BANK_OPENING). Free text — no FK (synthetic codes have no transaction_types row).
-	EventCode string `json:"event_code"`
-	LegNo     int32  `json:"leg_no"`
-	// Symbolic posting target resolved to a categories row at post time (BANK, DEBTORS, CREDITORS, VAT_CONTROL, USER_ACCOUNT, EXPLANATION_CATEGORY, …). EXPLANATION_CATEGORY/SOURCE_CATEGORY resolve to the live picked category.
-	AccountRole string `json:"account_role"`
-	// Which already-computed money component this leg takes: GROSS, NET or VAT. GROSS = NET + VAT, so an entry of (NET + VAT) against GROSS balances.
-	AmountBasis string `json:"amount_basis"`
-	// DR or CR. The interpreter posts +amount for DR, −amount for CR; the legs of an event sum to zero. A leg resolving to amount 0 (no VAT) is dropped.
-	Direction           string             `json:"direction"`
-	CompanyType         string             `json:"company_type"`
-	PerEmployee         bool               `json:"per_employee"`
-	EmployeeFilter      string             `json:"employee_filter"`
-	DescriptionTemplate pgtype.Text        `json:"description_template"`
-	DisplayOrder        int32              `json:"display_order"`
-	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+// Journal legs. MULTI-CURRENCY: currency/amount_minor are the transaction value; base_amount_minor is the home value and is the balancing column (Σ = 0 per entry, enforced by trg_gl_entry_balanced). account_id → categories. Trial balance = SUM(base_amount_minor); a foreign account's own-currency balance = SUM(amount_minor) WHERE currency = …
+type GlJournalLine struct {
+	ID              uuid.UUID          `json:"id"`
+	JournalEntryID  uuid.UUID          `json:"journal_entry_id"`
+	OrganisationID  uuid.UUID          `json:"organisation_id"`
+	AccountID       uuid.UUID          `json:"account_id"`
+	Currency        string             `json:"currency"`
+	AmountMinor     int64              `json:"amount_minor"`
+	BaseAmountMinor int64              `json:"base_amount_minor"`
+	ExchangeRate    pgtype.Numeric     `json:"exchange_rate"`
+	ContactID       pgtype.UUID        `json:"contact_id"`
+	ProjectID       pgtype.UUID        `json:"project_id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	Description     pgtype.Text        `json:"description"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }

@@ -6,15 +6,31 @@ package ledger
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
+	CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error)
+	CreateJournalLine(ctx context.Context, arg CreateJournalLineParams) error
+	// -----------------------------------------------------------------------------
+	// JOURNAL ENTRIES + LINES (the poster's write path)
+	// The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
+	// lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
+	// enforced by the deferred constraint trigger (trg_gl_entry_balanced).
+	// -----------------------------------------------------------------------------
+	// Remove the live entry for a source event (its lines cascade). Idempotent replace.
+	DeleteJournalEntryForSource(ctx context.Context, arg DeleteJournalEntryForSourceParams) error
 	// The nominal_code a FIXED control role resolves to, picking the MOST SPECIFIC scope
 	// that matches the caller: org-specific → country-specific → company_type-specific →
 	// global default. organisation_id / country_code IS NULL = a broader (global/country)
 	// default. The resolver then looks the returned nominal up in the caller's org
 	// categories. An empty country_code arg matches only the country-agnostic rows.
 	GetAccountRoleNominal(ctx context.Context, arg GetAccountRoleNominalParams) (string, error)
+	// The live entry for a source event (for tests / mutation checks).
+	GetJournalEntryForSource(ctx context.Context, arg GetJournalEntryForSourceParams) (GlJournalEntry, error)
+	// Backs tests + the future account-ledger drill-down.
+	ListLinesForEntry(ctx context.Context, journalEntryID uuid.UUID) ([]GlJournalLine, error)
 	// =============================================================================
 	// GENERAL LEDGER — QUERIES (sqlc input)
 	// Generated into package `ledger` at db/ledger (see sqlc.yaml).

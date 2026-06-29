@@ -45,3 +45,59 @@ ORDER BY
     (country_code    IS NOT NULL) DESC,   -- then a country override
     (company_type <> 'ALL')       DESC    -- then a company_type-specific default
 LIMIT 1;
+
+
+-- -----------------------------------------------------------------------------
+-- JOURNAL ENTRIES + LINES (the poster's write path)
+-- The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
+-- lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
+-- enforced by the deferred constraint trigger (trg_gl_entry_balanced).
+-- -----------------------------------------------------------------------------
+
+-- name: DeleteJournalEntryForSource :exec
+-- Remove the live entry for a source event (its lines cascade). Idempotent replace.
+DELETE FROM gl_journal_entries
+WHERE organisation_id = $1
+  AND source_type     = sqlc.arg(source_type)
+  AND source_id       = sqlc.arg(source_id)
+  AND NOT is_reversal;
+
+-- name: CreateJournalEntry :one
+INSERT INTO gl_journal_entries (
+    organisation_id, entry_date, base_currency, narrative,
+    source_type, source_id, created_by_user_id
+) VALUES (
+    $1, sqlc.arg(entry_date), sqlc.arg(base_currency), sqlc.arg(narrative),
+    sqlc.arg(source_type), sqlc.arg(source_id), sqlc.arg(created_by_user_id)
+)
+RETURNING id;
+
+-- name: CreateJournalLine :exec
+INSERT INTO gl_journal_lines (
+    journal_entry_id, organisation_id, account_id,
+    currency, amount_minor, base_amount_minor, exchange_rate,
+    contact_id, project_id, user_id, description
+) VALUES (
+    $1, $2, sqlc.arg(account_id),
+    sqlc.arg(currency), sqlc.arg(amount_minor), sqlc.arg(base_amount_minor), sqlc.arg(exchange_rate),
+    sqlc.arg(contact_id), sqlc.arg(project_id), sqlc.arg(user_id), sqlc.arg(description)
+);
+
+-- name: ListLinesForEntry :many
+-- Backs tests + the future account-ledger drill-down.
+SELECT id, journal_entry_id, organisation_id, account_id,
+       currency, amount_minor, base_amount_minor, exchange_rate,
+       contact_id, project_id, user_id, description, created_at
+FROM gl_journal_lines
+WHERE journal_entry_id = $1
+ORDER BY id;
+
+-- name: GetJournalEntryForSource :one
+-- The live entry for a source event (for tests / mutation checks).
+SELECT id, organisation_id, entry_date, base_currency, narrative,
+       source_type, source_id, is_reversal, reverses_entry_id, created_by_user_id, created_at
+FROM gl_journal_entries
+WHERE organisation_id = $1
+  AND source_type     = sqlc.arg(source_type)
+  AND source_id       = sqlc.arg(source_id)
+  AND NOT is_reversal;

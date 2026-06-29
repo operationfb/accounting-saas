@@ -185,9 +185,120 @@ CREATE TABLE gl_account_roles (
 );
 
 
+-- -----------------------------------------------------------------------------
+-- gl_journal_entries  (the header — one balanced entry per economic event)
+-- The poster writes these from gl_posting_rules. Org-scoped; carries the entry's
+-- base (functional) currency snapshotted at post time, the originating source, and
+-- the reversal links for the filed-period audit path.
+-- -----------------------------------------------------------------------------
+CREATE TABLE gl_journal_entries (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organisation_id     UUID NOT NULL REFERENCES organisations(id),
+    entry_date          DATE NOT NULL,                               -- the accounting date (source's dated_on / issue date)
+    -- The org's native_currency snapshotted here, so the entry keeps its base even if
+    -- the org later changes home currency. All lines' base_amount_minor are in this.
+    base_currency       CHAR(3) NOT NULL REFERENCES currencies(code),
+    narrative           VARCHAR(500),
+
+    -- What produced the entry. event_code lives on gl_posting_rules; here we record the
+    -- SOURCE so a mutation can find-and-replace its own prior entry (idempotency below).
+    source_type         VARCHAR(30) NOT NULL CHECK (source_type IN (
+                            'EXPENSE','INVOICE','INVOICE_RECEIPT','BILL','BILL_PAYMENT',
+                            'BANK_EXPLANATION','BANK_TRANSFER','MONEY_USER','PAYROLL',
+                            'BANK_OPENING','MANUAL')),
+    source_id           UUID,                                        -- the originating row; NULL only for ad-hoc MANUAL journals
+
+    is_reversal         BOOLEAN NOT NULL DEFAULT FALSE,              -- TRUE = a reversing entry (filed-period path)
+    reverses_entry_id   UUID REFERENCES gl_journal_entries(id),     -- the entry this reverses
+
+    created_by_user_id  UUID REFERENCES users(id),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Backs the org-scoped entry list + the source lookup.
+CREATE INDEX idx_gl_journal_entries_org ON gl_journal_entries (organisation_id, entry_date);
+-- Idempotency: at most ONE live (non-reversal) entry per concrete source event, so a
+-- re-post is a replace (the poster DELETEs then INSERTs). MANUAL journals are exempt
+-- (no source) and reversals are exempt (an audit trail, many allowed).
+CREATE UNIQUE INDEX idx_gl_journal_entries_source
+    ON gl_journal_entries (organisation_id, source_type, source_id)
+    WHERE NOT is_reversal AND source_type <> 'MANUAL';
+
+
+-- -----------------------------------------------------------------------------
+-- gl_journal_lines  (the legs — ≥2 per entry, must balance in the base currency)
+-- MULTI-CURRENCY: each line carries its transaction currency + amount AND the base
+-- (home) value. Double-entry balances on base_amount_minor (you can't sum across
+-- currencies). A pure-base entry has amount_minor = base_amount_minor, currency =
+-- the entry's base_currency, exchange_rate NULL.
+-- -----------------------------------------------------------------------------
+CREATE TABLE gl_journal_lines (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    journal_entry_id    UUID NOT NULL REFERENCES gl_journal_entries(id) ON DELETE CASCADE,
+    organisation_id     UUID NOT NULL REFERENCES organisations(id),  -- denormalised so reads are org-scoped without a join
+
+    account_id          UUID NOT NULL REFERENCES categories(id),     -- the GL account (a chart-of-accounts row)
+
+    currency            CHAR(3) NOT NULL REFERENCES currencies(code),-- the line's TRANSACTION currency
+    amount_minor        BIGINT  NOT NULL,                            -- signed (DR + / CR −), in `currency`'s minor units
+    base_amount_minor   BIGINT  NOT NULL,                            -- signed, in the entry's base_currency — THE balancing column
+    exchange_rate       NUMERIC(18,6),                               -- rate used (audit); NULL when currency = base_currency
+
+    -- Optional analysis dimensions for sub-ledger reporting (soft links, no FK).
+    contact_id          UUID,
+    project_id          UUID,
+    user_id             UUID,
+
+    description         VARCHAR(500),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Backs the per-entry read + the per-account trial-balance aggregation.
+CREATE INDEX idx_gl_journal_lines_entry   ON gl_journal_lines (journal_entry_id);
+CREATE INDEX idx_gl_journal_lines_account ON gl_journal_lines (organisation_id, account_id);
+
+
+-- =============================================================================
+-- TRIGGER — every entry balances in the base currency (Σ base_amount_minor = 0)
+-- A DEFERRABLE INITIALLY DEFERRED constraint trigger: the check runs at COMMIT, so a
+-- multi-line entry is valid mid-transaction (lines inserted one at a time). An entry
+-- that was fully removed (lines cascade-deleted, header gone) is skipped. Belt-and-
+-- braces with the poster's own assert — the DB guarantees the books balance.
+-- =============================================================================
+CREATE OR REPLACE FUNCTION gl_assert_entry_balanced()
+RETURNS TRIGGER AS $$
+DECLARE
+    eid     UUID;
+    net_sum BIGINT;
+BEGIN
+    eid := COALESCE(NEW.journal_entry_id, OLD.journal_entry_id);
+
+    -- If the parent entry no longer exists (whole entry deleted), nothing to check.
+    IF NOT EXISTS (SELECT 1 FROM gl_journal_entries WHERE id = eid) THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT COALESCE(SUM(base_amount_minor), 0) INTO net_sum
+        FROM gl_journal_lines WHERE journal_entry_id = eid;
+
+    IF net_sum <> 0 THEN
+        RAISE EXCEPTION 'gl journal entry % does not balance: Σ base_amount_minor = %', eid, net_sum;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER trg_gl_entry_balanced
+    AFTER INSERT OR UPDATE OR DELETE ON gl_journal_lines
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION gl_assert_entry_balanced();
+
+
 -- =============================================================================
 -- COMMENTS
 -- =============================================================================
+COMMENT ON TABLE  gl_journal_entries IS 'Double-entry journal headers — one balanced entry per economic event, written by the ledger poster from gl_posting_rules. base_currency is the org native currency snapshotted at post time. Idempotent per (org, source_type, source_id) for non-reversal, non-MANUAL entries.';
+COMMENT ON TABLE  gl_journal_lines IS 'Journal legs. MULTI-CURRENCY: currency/amount_minor are the transaction value; base_amount_minor is the home value and is the balancing column (Σ = 0 per entry, enforced by trg_gl_entry_balanced). account_id → categories. Trial balance = SUM(base_amount_minor); a foreign account''s own-currency balance = SUM(amount_minor) WHERE currency = …';
 COMMENT ON TABLE  gl_posting_rules IS 'The double-entry mapping AS DATA: per economic event, the journal legs (account role + money component + Dr/Cr). GLOBAL reference (no organisation_id), like transaction_types. A generic interpreter reads these to post balanced journal entries; validated against FreeAgent''s chart/trial balance.';
 COMMENT ON TABLE  gl_account_roles IS 'Maps a fixed control account_role (DEBTORS, VAT_CONTROL, USER_ACCOUNT, …) to the nominal_code it posts to, soft-linked to per-org categories by nominal_code. Overridable per organisation_id / country_code (both NULL = global default); the resolver picks the most specific match: org → country → company_type → global. Entity-derived roles (EXPLANATION_CATEGORY, BANK) are NOT here — they resolve from the event''s links.';
 COMMENT ON COLUMN gl_posting_rules.event_code   IS 'Bank explanations: == transaction_types.code (PAYMENT, SALES, …). Non-bank: synthetic (EXPENSE_APPROVED, INVOICE_SENT, BILL_CREATED, BANK_OPENING). Free text — no FK (synthetic codes have no transaction_types row).';

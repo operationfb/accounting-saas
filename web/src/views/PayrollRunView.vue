@@ -7,7 +7,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import AppLayout from '@/layouts/AppLayout.vue'
-import { getPayRun, completePayRun, deletePayRun } from '@/services/payroll.service'
+import { getPayRun, completePayRun, deletePayRun, refreshPayRun } from '@/services/payroll.service'
 import { monthLabel } from '@/lib/payrollPeriods'
 import { formatMoney, formatDate } from '@/lib/format'
 import type { PayRun } from '@/types/payroll'
@@ -49,6 +49,20 @@ async function runReport() {
   }
 }
 
+async function refreshFromProfiles() {
+  if (!run.value) return
+  if (!confirm('Re-pull every payslip from the current employee profiles? This discards manual edits made to this run’s payslips.')) return
+  busy.value = true
+  error.value = ''
+  try {
+    run.value = await refreshPayRun(run.value.id)
+  } catch (err) {
+    error.value = (err as ApiError)?.message ?? 'Could not refresh the pay run.'
+  } finally {
+    busy.value = false
+  }
+}
+
 async function removeRun() {
   if (!run.value) return
   if (!confirm(`Delete ${monthLabel(run.value.period)} payroll? This cannot be undone.`)) return
@@ -84,6 +98,7 @@ onMounted(load)
         <div class="flex gap-2">
           <Button label="Back" severity="secondary" outlined @click="router.push('/payroll')" />
           <template v-if="isDraft">
+            <Button label="Refresh from profiles" severity="secondary" outlined :disabled="busy" @click="refreshFromProfiles" />
             <Button label="Delete Payroll" severity="danger" outlined :disabled="busy" @click="removeRun" />
             <Button label="Run &amp; Report" :loading="busy" @click="runReport" />
           </template>

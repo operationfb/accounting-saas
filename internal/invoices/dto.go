@@ -23,24 +23,28 @@ type InvoiceItemRequest struct {
 // CreateInvoiceRequest is the body for POST /api/v1/invoices. The owning org +
 // creator come from the token, never the body. Line items are embedded.
 type CreateInvoiceRequest struct {
-	ContactID string               `json:"contact_id" binding:"required,uuid"`
-	DatedOn   string               `json:"dated_on" binding:"required"` // YYYY-MM-DD
-	DueOn     *string              `json:"due_on"`                      // YYYY-MM-DD, optional
-	Reference string               `json:"reference" binding:"required"`
-	Currency  string               `json:"currency" binding:"omitempty,len=3"` // ISO 4217; default GBP
-	Items     []InvoiceItemRequest `json:"items"`
+	ContactID string  `json:"contact_id" binding:"required,uuid"`
+	DatedOn   string  `json:"dated_on" binding:"required"` // YYYY-MM-DD
+	DueOn     *string `json:"due_on"`                      // YYYY-MM-DD, optional
+	Reference string  `json:"reference" binding:"required"`
+	Currency  string  `json:"currency" binding:"omitempty,len=3"` // ISO 4217; default GBP
+	// Rate to the org's native currency (native per 1 unit of Currency), required only
+	// when Currency differs from the org's native currency; ignored otherwise.
+	ExchangeRate string               `json:"exchange_rate" binding:"omitempty"`
+	Items        []InvoiceItemRequest `json:"items"`
 }
 
 // UpdateInvoiceRequest is the body for PUT /api/v1/invoices/:id. PUT is a full
 // replace of the editable representation INCLUDING the line items (which are
 // rebuilt). Allowed only while the invoice is DRAFT.
 type UpdateInvoiceRequest struct {
-	ContactID string               `json:"contact_id" binding:"required,uuid"`
-	DatedOn   string               `json:"dated_on" binding:"required"`
-	DueOn     *string              `json:"due_on"`
-	Reference string               `json:"reference" binding:"required"`
-	Currency  string               `json:"currency" binding:"omitempty,len=3"`
-	Items     []InvoiceItemRequest `json:"items"`
+	ContactID    string               `json:"contact_id" binding:"required,uuid"`
+	DatedOn      string               `json:"dated_on" binding:"required"`
+	DueOn        *string              `json:"due_on"`
+	Reference    string               `json:"reference" binding:"required"`
+	Currency     string               `json:"currency" binding:"omitempty,len=3"`
+	ExchangeRate string               `json:"exchange_rate" binding:"omitempty"`
+	Items        []InvoiceItemRequest `json:"items"`
 }
 
 // ChangeStatusRequest is the body for POST /api/v1/invoices/:id/status. The action

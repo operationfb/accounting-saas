@@ -53,6 +53,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
+	dbledger "github.com/operationfb/accounting-saas/db/ledger"
 	dbpayroll "github.com/operationfb/accounting-saas/db/payroll"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	dbvat "github.com/operationfb/accounting-saas/db/vat"
@@ -66,6 +67,7 @@ import (
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
+	ledger "github.com/operationfb/accounting-saas/internal/ledger"
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
@@ -207,6 +209,7 @@ func newTestServer(t *testing.T) *testServer {
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries)
+	invoiceSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 	memberSvc := members.NewService(pool, authQueries)
 	organisationSvc := organisation.NewService(authQueries)
 	vatSvc := vat.NewService(authQueries, vatQueries, nil /* HMRC not wired in tests */)

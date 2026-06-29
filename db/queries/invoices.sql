@@ -142,14 +142,23 @@ RETURNING *;
 -- -----------------------------------------------------------------------------
 -- name: UpdateInvoiceTotals :one
 UPDATE invoices SET
-    net_value_minor       = $3,
-    sales_tax_value_minor = $4,
-    total_value_minor     = $5,
-    updated_at            = now()
+    net_value_minor              = $3,
+    sales_tax_value_minor        = $4,
+    total_value_minor            = $5,
+    exchange_rate                = sqlc.arg(exchange_rate),
+    native_net_value_minor       = sqlc.arg(native_net_value_minor),
+    native_sales_tax_value_minor = sqlc.arg(native_sales_tax_value_minor),
+    native_total_value_minor     = sqlc.arg(native_total_value_minor),
+    updated_at                   = now()
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
 RETURNING *;
+
+-- name: GetCurrency :one
+-- The minor_unit (decimal places) of an ISO currency, for the native-currency
+-- conversion (money.ConvertMinor needs both currencies' exponents).
+SELECT code, minor_unit FROM currencies WHERE code = $1;
 
 
 -- -----------------------------------------------------------------------------

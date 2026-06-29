@@ -3,6 +3,8 @@ package money
 import (
 	"math"
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestMinorToPounds(t *testing.T) {
@@ -275,5 +277,41 @@ func TestApportion(t *testing.T) {
 		if got := Apportion(c.amount, c.num, c.den); got != c.want {
 			t.Errorf("Apportion(%d, %d, %d) = %d, want %d", c.amount, c.num, c.den, got, c.want)
 		}
+	}
+}
+
+// dec is a test helper: a decimal from a string, failing the test on a bad literal.
+func dec(t *testing.T, s string) decimal.Decimal {
+	t.Helper()
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		t.Fatalf("bad decimal literal %q: %v", s, err)
+	}
+	return d
+}
+
+func TestConvertMinor(t *testing.T) {
+	cases := []struct {
+		name           string
+		amount         int64
+		fromExp, toExp int
+		rate           string
+		want           int64
+	}{
+		{"same currency identity", 4250, 2, 2, "1", 4250},
+		{"EUR→GBP both 2dp", 10000, 2, 2, "0.86", 8600},  // €100.00 → £86.00
+		{"JPY→GBP 0dp→2dp", 10000, 0, 2, "0.0055", 5500}, // ¥10000 → £55.00
+		{"GBP→JPY 2dp→0dp", 5500, 2, 0, "181.8", 9999},   // £55.00 → ¥9999
+		{"negative refund preserves sign", -10000, 2, 2, "0.86", -8600},
+		{"half away from zero rounds up", 100, 2, 2, "0.865", 87}, // 86.5 → 87
+		{"zero is zero", 0, 2, 2, "0.86", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ConvertMinor(c.amount, c.fromExp, c.toExp, dec(t, c.rate))
+			if got != c.want {
+				t.Errorf("ConvertMinor(%d, %d→%d, %s) = %d, want %d", c.amount, c.fromExp, c.toExp, c.rate, got, c.want)
+			}
+		})
 	}
 }

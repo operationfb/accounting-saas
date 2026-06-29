@@ -170,6 +170,29 @@ func Apportion(amount, numerator, denominator int64) int64 {
 		IntPart()
 }
 
+// ConvertMinor converts an amount in one currency's minor units to another
+// currency's minor units, applying `rate` (units of the TO currency per unit of the
+// FROM currency, in MAJOR terms — e.g. 0.86 GBP per 1 EUR). fromExp / toExp are the
+// two currencies' minor_unit (decimal places: 2 for GBP/EUR, 0 for JPY, 3 for KWD).
+// The decimal-places difference is applied as 10^(toExp − fromExp) so the result is
+// in the TO currency's minor units. Rounds HALF-UP (away from zero) — the same single
+// rounding rule as PoundsToMinor. Centralises the FX conversion the expenses service
+// currently does inline (the deferred money-kernel FX helper).
+//
+//	toMinor = round( amountMinor × rate × 10^(toExp − fromExp) )
+//
+// A same-currency conversion (rate 1, equal exps) is exact. amount 0 → 0.
+func ConvertMinor(amountMinor int64, fromExp, toExp int, rate decimal.Decimal) int64 {
+	if amountMinor == 0 {
+		return 0
+	}
+	res := decimal.NewFromInt(amountMinor).Mul(rate)
+	if d := toExp - fromExp; d != 0 {
+		res = res.Mul(decimal.New(1, int32(d))) // × 10^d (d may be negative)
+	}
+	return res.Round(0).IntPart() // whole minor units, half away from zero
+}
+
 // ClampToInt32 saturates an int64 into int32 range. Used as a defensive guard
 // before writing to an INTEGER (int32) money column: a pathological value is
 // pinned to the column's ceiling/floor rather than silently wrapping. A real

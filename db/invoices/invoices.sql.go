@@ -62,7 +62,7 @@ INSERT INTO invoices (
     $6,   -- reference           VARCHAR (nullable until issued)
     $7    -- currency            CHAR(3) e.g. 'GBP'
 )
-RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
 `
 
 type CreateInvoiceParams struct {
@@ -131,6 +131,10 @@ func (q *Queries) CreateInvoice(ctx context.Context, arg CreateInvoiceParams) (I
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
@@ -255,8 +259,26 @@ func (q *Queries) DeleteInvoiceItemsForInvoice(ctx context.Context, arg DeleteIn
 	return err
 }
 
+const getCurrency = `-- name: GetCurrency :one
+SELECT code, minor_unit FROM currencies WHERE code = $1
+`
+
+type GetCurrencyRow struct {
+	Code      string `json:"code"`
+	MinorUnit int16  `json:"minor_unit"`
+}
+
+// The minor_unit (decimal places) of an ISO currency, for the native-currency
+// conversion (money.ConvertMinor needs both currencies' exponents).
+func (q *Queries) GetCurrency(ctx context.Context, code string) (GetCurrencyRow, error) {
+	row := q.db.QueryRow(ctx, getCurrency, code)
+	var i GetCurrencyRow
+	err := row.Scan(&i.Code, &i.MinorUnit)
+	return i, err
+}
+
 const getInvoice = `-- name: GetInvoice :one
-SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
+SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
 WHERE id              = $1   -- invoice UUID
   AND organisation_id = $2   -- tenant scope — never skip this
   AND deleted_at IS NULL
@@ -285,6 +307,10 @@ func (q *Queries) GetInvoice(ctx context.Context, arg GetInvoiceParams) (Invoice
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
@@ -349,7 +375,7 @@ func (q *Queries) ListInvoiceItems(ctx context.Context, arg ListInvoiceItemsPara
 const listInvoices = `-- name: ListInvoices :many
 
 
-SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
+SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
 WHERE organisation_id = $1
   AND deleted_at IS NULL
 ORDER BY dated_on DESC, created_at DESC
@@ -378,6 +404,10 @@ func (q *Queries) ListInvoices(ctx context.Context, organisationID uuid.UUID) ([
 			&i.DueOn,
 			&i.Reference,
 			&i.Currency,
+			&i.ExchangeRate,
+			&i.NativeNetValueMinor,
+			&i.NativeSalesTaxValueMinor,
+			&i.NativeTotalValueMinor,
 			&i.Status,
 			&i.NetValueMinor,
 			&i.SalesTaxValueMinor,
@@ -399,7 +429,7 @@ func (q *Queries) ListInvoices(ctx context.Context, organisationID uuid.UUID) ([
 }
 
 const listInvoicesByContact = `-- name: ListInvoicesByContact :many
-SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
+SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
 WHERE organisation_id = $1
   AND contact_id      = $2
   AND deleted_at IS NULL
@@ -434,6 +464,10 @@ func (q *Queries) ListInvoicesByContact(ctx context.Context, arg ListInvoicesByC
 			&i.DueOn,
 			&i.Reference,
 			&i.Currency,
+			&i.ExchangeRate,
+			&i.NativeNetValueMinor,
+			&i.NativeSalesTaxValueMinor,
+			&i.NativeTotalValueMinor,
 			&i.Status,
 			&i.NetValueMinor,
 			&i.SalesTaxValueMinor,
@@ -455,7 +489,7 @@ func (q *Queries) ListInvoicesByContact(ctx context.Context, arg ListInvoicesByC
 }
 
 const listOutstandingInvoices = `-- name: ListOutstandingInvoices :many
-SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
+SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
 WHERE organisation_id   = $1
   AND status            = 'SENT'
   AND due_value_minor   > 0
@@ -489,6 +523,10 @@ func (q *Queries) ListOutstandingInvoices(ctx context.Context, organisationID uu
 			&i.DueOn,
 			&i.Reference,
 			&i.Currency,
+			&i.ExchangeRate,
+			&i.NativeNetValueMinor,
+			&i.NativeSalesTaxValueMinor,
+			&i.NativeTotalValueMinor,
 			&i.Status,
 			&i.NetValueMinor,
 			&i.SalesTaxValueMinor,
@@ -571,7 +609,7 @@ UPDATE invoices SET
 WHERE id              = $1   -- invoice UUID
   AND organisation_id = $2   -- tenant scope
   AND deleted_at IS NULL     -- can't update a deleted invoice
-RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
 `
 
 type UpdateInvoiceParams struct {
@@ -612,6 +650,10 @@ func (q *Queries) UpdateInvoice(ctx context.Context, arg UpdateInvoiceParams) (I
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
@@ -632,7 +674,7 @@ UPDATE invoices SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
 `
 
 type UpdateInvoicePaidValueParams struct {
@@ -660,6 +702,10 @@ func (q *Queries) UpdateInvoicePaidValue(ctx context.Context, arg UpdateInvoiceP
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
@@ -680,7 +726,7 @@ UPDATE invoices SET
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
 `
 
 type UpdateInvoiceStatusParams struct {
@@ -709,6 +755,10 @@ func (q *Queries) UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStat
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,
@@ -724,22 +774,30 @@ func (q *Queries) UpdateInvoiceStatus(ctx context.Context, arg UpdateInvoiceStat
 
 const updateInvoiceTotals = `-- name: UpdateInvoiceTotals :one
 UPDATE invoices SET
-    net_value_minor       = $3,
-    sales_tax_value_minor = $4,
-    total_value_minor     = $5,
-    updated_at            = now()
+    net_value_minor              = $3,
+    sales_tax_value_minor        = $4,
+    total_value_minor            = $5,
+    exchange_rate                = $6,
+    native_net_value_minor       = $7,
+    native_sales_tax_value_minor = $8,
+    native_total_value_minor     = $9,
+    updated_at                   = now()
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at
 `
 
 type UpdateInvoiceTotalsParams struct {
-	ID                 uuid.UUID `json:"id"`
-	OrganisationID     uuid.UUID `json:"organisation_id"`
-	NetValueMinor      int64     `json:"net_value_minor"`
-	SalesTaxValueMinor int64     `json:"sales_tax_value_minor"`
-	TotalValueMinor    int64     `json:"total_value_minor"`
+	ID                       uuid.UUID      `json:"id"`
+	OrganisationID           uuid.UUID      `json:"organisation_id"`
+	NetValueMinor            int64          `json:"net_value_minor"`
+	SalesTaxValueMinor       int64          `json:"sales_tax_value_minor"`
+	TotalValueMinor          int64          `json:"total_value_minor"`
+	ExchangeRate             pgtype.Numeric `json:"exchange_rate"`
+	NativeNetValueMinor      int64          `json:"native_net_value_minor"`
+	NativeSalesTaxValueMinor int64          `json:"native_sales_tax_value_minor"`
+	NativeTotalValueMinor    int64          `json:"native_total_value_minor"`
 }
 
 // -----------------------------------------------------------------------------
@@ -756,6 +814,10 @@ func (q *Queries) UpdateInvoiceTotals(ctx context.Context, arg UpdateInvoiceTota
 		arg.NetValueMinor,
 		arg.SalesTaxValueMinor,
 		arg.TotalValueMinor,
+		arg.ExchangeRate,
+		arg.NativeNetValueMinor,
+		arg.NativeSalesTaxValueMinor,
+		arg.NativeTotalValueMinor,
 	)
 	var i Invoice
 	err := row.Scan(
@@ -767,6 +829,10 @@ func (q *Queries) UpdateInvoiceTotals(ctx context.Context, arg UpdateInvoiceTota
 		&i.DueOn,
 		&i.Reference,
 		&i.Currency,
+		&i.ExchangeRate,
+		&i.NativeNetValueMinor,
+		&i.NativeSalesTaxValueMinor,
+		&i.NativeTotalValueMinor,
 		&i.Status,
 		&i.NetValueMinor,
 		&i.SalesTaxValueMinor,

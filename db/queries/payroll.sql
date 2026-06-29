@@ -179,6 +179,13 @@ SELECT * FROM payslips
 WHERE id = $1
   AND organisation_id = $2;
 
+-- name: DeletePayslipsForRun :exec
+-- Remove all payslips of a draft run (used by "Refresh from profiles", which then
+-- re-snapshots them from the current employee profiles).
+DELETE FROM payslips
+WHERE pay_run_id = $1
+  AND organisation_id = $2;
+
 -- name: ListPayslipsForRun :many
 SELECT * FROM payslips
 WHERE pay_run_id = $1

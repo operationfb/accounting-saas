@@ -47,6 +47,13 @@ export async function completePayRun(id: string): Promise<PayRun> {
   return GetPayRunResponseSchema.parse(data).pay_run
 }
 
+// POST /api/v1/payroll/periods/:id/refresh — re-snapshot a draft run's payslips from
+// the current employee profiles (discards manual payslip edits).
+export async function refreshPayRun(id: string): Promise<PayRun> {
+  const data = await apiFetch<unknown>(`/payroll/periods/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+  return GetPayRunResponseSchema.parse(data).pay_run
+}
+
 // DELETE /api/v1/payroll/periods/:id — delete the latest run (204 No Content).
 export async function deletePayRun(id: string): Promise<void> {
   await apiFetch<unknown>(`/payroll/periods/${encodeURIComponent(id)}`, { method: 'DELETE' })

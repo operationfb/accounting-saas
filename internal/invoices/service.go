@@ -50,6 +50,7 @@ import (
 	invoicesdb "github.com/operationfb/accounting-saas/db/invoices"
 	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	"github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/internal/ledger"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -65,7 +66,14 @@ type Service struct {
 	// reopening an invoice changes whether it counts in its VAT period, so an invoice
 	// dated in an already-filed period can't cross the SENT boundary (assertNotFiled).
 	vatQueries *vatdb.Queries
+	// poster writes the GL journal entry when an invoice is issued (→SENT) and removes
+	// it when reopened. Nil-guarded: with no poster wired, the GL is simply not posted.
+	poster ledger.Poster
 }
+
+// SetPoster wires the general-ledger poster after construction (mirrors the
+// expenses.SetPublisher seam). Nil leaves GL posting off.
+func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
 
 // NewService is the constructor, called once in main.go. contactQueries is a
 // cross-domain dependency (like authQueries), used to validate contact_id — the
@@ -207,12 +215,20 @@ func (s *Service) CreateInvoice(
 			return err
 		}
 
+		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, net, tax, total)
+		if err != nil {
+			return err
+		}
 		updated, err := qtx.UpdateInvoiceTotals(ctx, invoicesdb.UpdateInvoiceTotalsParams{
-			ID:                 inv.ID,
-			OrganisationID:     authOrgID,
-			NetValueMinor:      net,
-			SalesTaxValueMinor: tax,
-			TotalValueMinor:    total,
+			ID:                       inv.ID,
+			OrganisationID:           authOrgID,
+			NetValueMinor:            net,
+			SalesTaxValueMinor:       tax,
+			TotalValueMinor:          total,
+			ExchangeRate:             rate,
+			NativeNetValueMinor:      nNet,
+			NativeSalesTaxValueMinor: nTax,
+			NativeTotalValueMinor:    nTotal,
 		})
 		if err != nil {
 			return kernel.ErrInternal(err)
@@ -432,12 +448,20 @@ func (s *Service) UpdateInvoice(
 			return err
 		}
 
+		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, net, tax, total)
+		if err != nil {
+			return err
+		}
 		updated, err := qtx.UpdateInvoiceTotals(ctx, invoicesdb.UpdateInvoiceTotalsParams{
-			ID:                 invID,
-			OrganisationID:     authOrgID,
-			NetValueMinor:      net,
-			SalesTaxValueMinor: tax,
-			TotalValueMinor:    total,
+			ID:                       invID,
+			OrganisationID:           authOrgID,
+			NetValueMinor:            net,
+			SalesTaxValueMinor:       tax,
+			TotalValueMinor:          total,
+			ExchangeRate:             rate,
+			NativeNetValueMinor:      nNet,
+			NativeSalesTaxValueMinor: nTax,
+			NativeTotalValueMinor:    nTotal,
 		})
 		if err != nil {
 			return kernel.ErrInternal(err)
@@ -571,6 +595,21 @@ func (s *Service) ChangeStatus(
 			return kernel.ErrInternal(err)
 		}
 
+		// GL: post the receivable when the invoice is issued (→SENT); remove it when it
+		// leaves SENT (reopen / write_off / refund). Atomic with the status change.
+		if s.poster != nil {
+			switch {
+			case target == StatusSent:
+				if err := s.postInvoiceSent(ctx, tx, authUserID, authOrgID, updated); err != nil {
+					return err
+				}
+			case existing.Status == StatusSent:
+				if err := s.poster.RemoveEntry(ctx, tx, authOrgID, ledgerSourceInvoice, updated.ID); err != nil {
+					return err
+				}
+			}
+		}
+
 		detail, err = s.buildDetail(ctx, qtx, updated)
 		return err
 	})
@@ -578,6 +617,106 @@ func (s *Service) ChangeStatus(
 		return nil, err
 	}
 	return detail, nil
+}
+
+// =============================================================================
+// NATIVE-CURRENCY CONVERSION (for the general ledger)
+// =============================================================================
+
+// nativeAmounts converts an invoice's net / sales-tax / total into the organisation's
+// native (home) currency, so the GL can post the invoice in the base currency (mirrors
+// the expenses dual-currency pattern). For a native-currency invoice the amounts pass
+// through unchanged and the rate is NULL; for a foreign invoice the request must supply
+// an exchange_rate (native per 1 unit of the invoice currency) and the amounts are
+// converted via money.ConvertMinor using each currency's minor_unit. `cur` must already
+// be normalised (upper-cased / defaulted).
+func (s *Service) nativeAmounts(
+	ctx context.Context, q *invoicesdb.Queries, orgID uuid.UUID,
+	cur, rateInput string, net, tax, total int64,
+) (rate pgtype.Numeric, nativeNet, nativeTax, nativeTotal int64, err error) {
+	org, gerr := s.authQueries.GetOrganisation(ctx, orgID)
+	if gerr != nil {
+		return rate, 0, 0, 0, kernel.ErrInternal(gerr)
+	}
+
+	// Same currency as the org's home currency: native == transaction, no rate.
+	if strings.EqualFold(cur, org.NativeCurrency) {
+		return pgtype.Numeric{}, net, tax, total, nil
+	}
+
+	rateStr := strings.TrimSpace(rateInput)
+	if rateStr == "" {
+		return rate, 0, 0, 0, kernel.ErrValidation("exchange_rate is required for an invoice not in the organisation's native currency", nil)
+	}
+	rateDec, derr := decimal.NewFromString(rateStr)
+	if derr != nil || !rateDec.IsPositive() {
+		return rate, 0, 0, 0, kernel.ErrValidation("exchange_rate must be a positive number", derr)
+	}
+
+	fromExp, err := s.currencyExp(ctx, q, cur)
+	if err != nil {
+		return rate, 0, 0, 0, err
+	}
+	toExp, err := s.currencyExp(ctx, q, org.NativeCurrency)
+	if err != nil {
+		return rate, 0, 0, 0, err
+	}
+
+	nativeNet = money.ConvertMinor(net, fromExp, toExp, rateDec)
+	nativeTax = money.ConvertMinor(tax, fromExp, toExp, rateDec)
+	nativeTotal = money.ConvertMinor(total, fromExp, toExp, rateDec)
+	if serr := rate.Scan(rateStr); serr != nil {
+		return rate, 0, 0, 0, kernel.ErrInternal(serr)
+	}
+	return rate, nativeNet, nativeTax, nativeTotal, nil
+}
+
+// currencyExp returns a currency's minor_unit (decimal places) for money.ConvertMinor.
+func (s *Service) currencyExp(ctx context.Context, q *invoicesdb.Queries, code string) (int, error) {
+	c, err := q.GetCurrency(ctx, code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, kernel.ErrValidation("unknown currency "+code, nil)
+		}
+		return 0, kernel.ErrInternal(err)
+	}
+	return int(c.MinorUnit), nil
+}
+
+// GL event/source codes for the invoice receivable.
+const (
+	ledgerEventInvoiceSent = "INVOICE_SENT" // gl_posting_rules.event_code
+	ledgerSourceInvoice    = "INVOICE"      // gl_journal_entries.source_type
+)
+
+// postInvoiceSent posts the issued invoice to the general ledger (Dr Debtors / Cr Sales
+// + VAT control) in the org's base currency. The transaction-currency amounts come off
+// the invoice; the base amounts are the native_* totals computed on save. Runs on the
+// caller's tx, so the entry commits with the status change.
+func (s *Service) postInvoiceSent(ctx context.Context, tx pgx.Tx, authUserID, orgID uuid.UUID, inv invoicesdb.Invoice) error {
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	return s.poster.PostEntry(ctx, tx, ledger.EntryContext{
+		OrganisationID: orgID,
+		CompanyType:    org.CompanyType.String,
+		CountryCode:    org.CountryCode,
+		BaseCurrency:   org.NativeCurrency,
+		TxnCurrency:    inv.Currency,
+		ExchangeRate:   inv.ExchangeRate,
+		EventCode:      ledgerEventInvoiceSent,
+		SourceType:     ledgerSourceInvoice,
+		SourceID:       inv.ID,
+		EntryDate:      inv.DatedOn,
+		Narrative:      "Invoice " + inv.Reference.String,
+		CreatedBy:      authUserID,
+		Amounts: map[string]ledger.Amount{
+			"GROSS": {Txn: inv.TotalValueMinor, Base: inv.NativeTotalValueMinor},
+			"NET":   {Txn: inv.NetValueMinor, Base: inv.NativeNetValueMinor},
+			"VAT":   {Txn: inv.SalesTaxValueMinor, Base: inv.NativeSalesTaxValueMinor},
+		},
+	})
 }
 
 // =============================================================================

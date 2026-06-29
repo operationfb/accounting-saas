@@ -26,6 +26,9 @@ type Querier interface {
 	// COMPUTED figures too (the service computes them in-memory before inserting), so
 	// there's no follow-up UPDATE per payslip. Columns not listed default to 0/now().
 	CreatePayslipComputed(ctx context.Context, arg []CreatePayslipComputedParams) *CreatePayslipComputedBatchResults
+	// Remove all payslips of a draft run (used by "Refresh from profiles", which then
+	// re-snapshots them from the current employee profiles).
+	DeletePayslipsForRun(ctx context.Context, arg DeletePayslipsForRunParams) error
 	// The most recent live run for a year — used for the sequencing check (next period
 	// = latest + 1) AND the edit-lock (only the latest run may be edited/deleted).
 	GetLatestPayRun(ctx context.Context, arg GetLatestPayRunParams) (PayRun, error)

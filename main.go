@@ -38,6 +38,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
+	dbledger "github.com/operationfb/accounting-saas/db/ledger"
 	dboverview "github.com/operationfb/accounting-saas/db/overview"
 	dbpayroll "github.com/operationfb/accounting-saas/db/payroll"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
@@ -56,6 +57,7 @@ import (
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	hmrc "github.com/operationfb/accounting-saas/internal/integrations/hmrc"
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
+	ledger "github.com/operationfb/accounting-saas/internal/ledger"
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
@@ -164,6 +166,9 @@ func main() {
 	// needs the contacts querier to validate an invoice's contact belongs to the
 	// same org. Self-registers /api/v1/invoices after NewServer.
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries, vatQueries)
+	// General-ledger poster: issuing an invoice (→SENT) posts the receivable journal
+	// entry (Dr Debtors / Cr Sales + VAT control) atomically with the status change.
+	invoiceSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 
 	// Members: the internal/members service over the auth queries for listing an
 	// organisation's members and the admin User Details edit (owner/admin only).

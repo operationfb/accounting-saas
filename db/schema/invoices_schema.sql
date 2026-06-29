@@ -75,9 +75,18 @@ CREATE TABLE invoices (
     reference               VARCHAR(100),
 
     -- ISO 4217 currency the invoice is denominated in (FK to the global currencies
-    -- table). Defaults to GBP. Conversion to the company's native currency
-    -- (exchange_rate + native_* totals) is deferred — see BACKLOG.
+    -- table). Defaults to GBP.
     currency                CHAR(3) NOT NULL DEFAULT 'GBP' REFERENCES currencies(code),
+
+    -- Conversion to the company's native (home) currency, so the GL can post the
+    -- invoice in the base currency (mirrors the expenses dual-currency pattern).
+    -- exchange_rate is units of native currency per unit of `currency` (NULL/1 when
+    -- the invoice IS in the native currency). The native_* totals are the net/VAT/total
+    -- converted to home pence; the service computes them on save.
+    exchange_rate                NUMERIC(18,6),                 -- NULL when currency = org native_currency
+    native_net_value_minor       BIGINT NOT NULL DEFAULT 0,     -- net   in home-currency minor units
+    native_sales_tax_value_minor BIGINT NOT NULL DEFAULT 0,     -- VAT   in home-currency minor units
+    native_total_value_minor     BIGINT NOT NULL DEFAULT 0,     -- total in home-currency minor units
 
     -- -------------------------------------------------------------------------
     -- Status — the STORED lifecycle only (display status is derived; see header note)

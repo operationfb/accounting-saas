@@ -161,85 +161,8 @@ func (s *Service) PreparePayRun(ctx context.Context, authUserID, authOrgID uuid.
 			return kernel.ErrInternal(err)
 		}
 
-		// Snapshot active employees into draft payslips. To keep this O(1) round-trips
-		// regardless of headcount: fetch the employee list (1), fetch every employee's
-		// cumulative PRIOR-period YTD in one grouped query (1), compute each payslip
-		// IN-MEMORY via the engine, then bulk-insert them with their computed figures in
-		// a single pipelined batch (1) — instead of an insert + YTD lookup + update per
-		// employee.
-		employees, err := qtx.ListActivePayrollEmployees(ctx, authOrgID)
-		if err != nil {
-			return kernel.ErrInternal(err)
-		}
-		priorByUser, err := s.ytdByUserUpToPeriod(ctx, qtx, authOrgID, taxYear, req.Period-1)
-		if err != nil {
-			return err
-		}
-
-		params := make([]payrolldb.CreatePayslipComputedParams, 0, len(employees))
-		for _, emp := range employees {
-			// Leavers & mid-year joiners: only pay employees who are employed DURING this
-			// tax month. Skip anyone who hasn't started by the period end, or who left
-			// before the period began. An employee whose leaving date falls within (or on)
-			// the period gets their FINAL payslip (leaving_payslip = true).
-			if emp.StartDate.Valid && emp.StartDate.Time.After(end) {
-				continue // not started yet
-			}
-			if emp.LeavingDate.Valid && emp.LeavingDate.Time.Before(start) {
-				continue // already left in an earlier period
-			}
-			leaving := emp.LeavingNextPayRun || (emp.LeavingDate.Valid && !emp.LeavingDate.Time.After(end))
-
-			taxCode := emp.TaxCode
-			if !taxCode.Valid || strings.TrimSpace(taxCode.String) == "" {
-				taxCode = pgtype.Text{String: rt.DefaultTaxCode, Valid: true}
-			}
-			prior := priorByUser[emp.UserID] // zero value when the employee has no prior payslips
-			inputs := PayslipInputs{
-				BasicPay:              emp.BasicPayMinor,
-				Allowance:             emp.AllowanceMinor,
-				OtherPayments:         emp.OtherPaymentsMinor,
-				PayNotSubjectToTaxNI:  emp.PayNotSubjectToTaxNiMinor,
-				PayrollGiving:         emp.PayrollGivingMinor,
-				OtherDeductionsNetPay: emp.OtherDeductionsNetPayMinor,
-				ItemsClass1NicNotPaye: emp.ItemsClass1NicNotPayeMinor,
-				SalarySacrifice:       emp.SalarySacrificeDeductionsMinor,
-			}
-			res, ok := ComputePayslip(rt, taxCodeOf(taxCode), emp.NiCategoryLetter, emp.NicCalculation, emp.Week1Month1Basis, req.Period,
-				inputs,
-				YTDPrior{TaxablePay: prior.TaxablePayMinor, TaxDeducted: prior.TaxDeductedMinor, NiablePay: prior.NiablePayMinor})
-			if !ok {
-				return kernel.ErrValidation("NI category "+emp.NiCategoryLetter+" is not configured for this tax year", nil)
-			}
-			params = append(params, payrolldb.CreatePayslipComputedParams{
-				OrganisationID:                 authOrgID,
-				PayRunID:                       run.ID,
-				UserID:                         emp.UserID,
-				TaxCode:                        taxCode,
-				NiCategoryLetter:               emp.NiCategoryLetter,
-				NicCalculation:                 emp.NicCalculation,
-				Week1Month1Basis:               emp.Week1Month1Basis,
-				StudentLoanUndergraduate:       emp.StudentLoanUndergraduate,
-				StudentLoanPostgraduate:        emp.StudentLoanPostgraduate,
-				BasicPayMinor:                  emp.BasicPayMinor,
-				AllowanceMinor:                 emp.AllowanceMinor,
-				OtherPaymentsMinor:             emp.OtherPaymentsMinor,
-				PayNotSubjectToTaxNiMinor:      emp.PayNotSubjectToTaxNiMinor,
-				PayrollGivingMinor:             emp.PayrollGivingMinor,
-				OtherDeductionsNetPayMinor:     emp.OtherDeductionsNetPayMinor,
-				ItemsClass1NicNotPayeMinor:     emp.ItemsClass1NicNotPayeMinor,
-				SalarySacrificeDeductionsMinor: emp.SalarySacrificeDeductionsMinor,
-				LeavingPayslip:                 leaving,
-				GrossPayMinor:                  res.GrossPay,
-				TaxablePayMinor:                res.TaxablePay,
-				NiablePayMinor:                 res.NiablePay,
-				TaxDeductedMinor:               res.TaxDeducted,
-				EmployeeNiMinor:                res.EmployeeNI,
-				EmployerNiMinor:                res.EmployerNI,
-				NetPayMinor:                    res.NetPay,
-			})
-		}
-		if err := bulkInsertPayslips(ctx, qtx, params); err != nil {
+		// Snapshot active employees into draft payslips from their current profiles.
+		if err := s.snapshotRunPayslips(ctx, qtx, run, rt); err != nil {
 			return err
 		}
 
@@ -476,6 +399,144 @@ func (s *Service) DeletePayRun(ctx context.Context, authUserID, authOrgID uuid.U
 		}
 		return mapExec(qtx.SoftDeletePayRun(ctx, payrolldb.SoftDeletePayRunParams{ID: runID, OrganisationID: authOrgID}))
 	})
+}
+
+// RefreshPayRun re-snapshots a DRAFT run's payslips from the CURRENT employee
+// profiles and recomputes — the way to pull profile edits (tax code, NIC basis, pay
+// defaults, …) onto an already-prepared run, since a payslip is otherwise a snapshot
+// taken at prepare time. It DISCARDS any manual payslip edits (the frontend warns).
+// Latest, still-draft run only.
+func (s *Service) RefreshPayRun(ctx context.Context, authUserID, authOrgID uuid.UUID, id string) (*PayRunResponse, error) {
+	if err := s.requireAdmin(ctx, authUserID, authOrgID); err != nil {
+		return nil, err
+	}
+	runID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, kernel.ErrValidation("id is not a valid UUID", err)
+	}
+
+	var detail *PayRunResponse
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.queries.WithTx(tx)
+		run, err := qtx.GetPayRun(ctx, payrolldb.GetPayRunParams{ID: runID, OrganisationID: authOrgID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return kernel.ErrNotFound("pay run", id)
+			}
+			return kernel.ErrInternal(err)
+		}
+		if run.Status != "draft" {
+			return kernel.ErrConflict("only a draft pay run can be refreshed")
+		}
+		if err := assertLatestEditable(ctx, qtx, run); err != nil {
+			return err
+		}
+		rt, err := LoadRateTable(ctx, qtx, run.TaxYearStart)
+		if err != nil {
+			return err
+		}
+		if err := s.snapshotRunPayslips(ctx, qtx, run, rt); err != nil {
+			return err
+		}
+		if _, err := s.recomputeRunEA(ctx, qtx, run, rt); err != nil {
+			return err
+		}
+		run, err = qtx.GetPayRun(ctx, payrolldb.GetPayRunParams{ID: runID, OrganisationID: authOrgID})
+		if err != nil {
+			return kernel.ErrInternal(err)
+		}
+		detail, err = s.buildPayRunDetail(ctx, qtx, run, rt)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return detail, nil
+}
+
+// snapshotRunPayslips (re)builds a run's payslips from the CURRENT employee profiles:
+// it clears any existing payslips, then for every active employee employed during the
+// run's tax month (respecting joiner/leaver dates) it snapshots the profile config +
+// pay defaults, computes the figures via the engine, and bulk-inserts them in one
+// pipelined batch (O(1) round-trips regardless of headcount). Shared by PreparePayRun
+// (first build — the delete is a no-op) and RefreshPayRun (re-pull after profile edits).
+func (s *Service) snapshotRunPayslips(ctx context.Context, qtx *payrolldb.Queries, run payrolldb.PayRun, rt RateTable) error {
+	if err := qtx.DeletePayslipsForRun(ctx, payrolldb.DeletePayslipsForRunParams{PayRunID: run.ID, OrganisationID: run.OrganisationID}); err != nil {
+		return kernel.ErrInternal(err)
+	}
+
+	employees, err := qtx.ListActivePayrollEmployees(ctx, run.OrganisationID)
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	period := int(run.Period)
+	priorByUser, err := s.ytdByUserUpToPeriod(ctx, qtx, run.OrganisationID, int(run.TaxYearStart), period-1)
+	if err != nil {
+		return err
+	}
+	start, end := run.PeriodStart.Time, run.PeriodEnd.Time
+
+	params := make([]payrolldb.CreatePayslipComputedParams, 0, len(employees))
+	for _, emp := range employees {
+		// Leavers & mid-year joiners: only pay employees employed DURING this tax month.
+		if emp.StartDate.Valid && emp.StartDate.Time.After(end) {
+			continue // not started yet
+		}
+		if emp.LeavingDate.Valid && emp.LeavingDate.Time.Before(start) {
+			continue // already left in an earlier period
+		}
+		leaving := emp.LeavingNextPayRun || (emp.LeavingDate.Valid && !emp.LeavingDate.Time.After(end))
+
+		taxCode := emp.TaxCode
+		if !taxCode.Valid || strings.TrimSpace(taxCode.String) == "" {
+			taxCode = pgtype.Text{String: rt.DefaultTaxCode, Valid: true}
+		}
+		prior := priorByUser[emp.UserID] // zero value when the employee has no prior payslips
+		inputs := PayslipInputs{
+			BasicPay:              emp.BasicPayMinor,
+			Allowance:             emp.AllowanceMinor,
+			OtherPayments:         emp.OtherPaymentsMinor,
+			PayNotSubjectToTaxNI:  emp.PayNotSubjectToTaxNiMinor,
+			PayrollGiving:         emp.PayrollGivingMinor,
+			OtherDeductionsNetPay: emp.OtherDeductionsNetPayMinor,
+			ItemsClass1NicNotPaye: emp.ItemsClass1NicNotPayeMinor,
+			SalarySacrifice:       emp.SalarySacrificeDeductionsMinor,
+		}
+		res, ok := ComputePayslip(rt, taxCodeOf(taxCode), emp.NiCategoryLetter, emp.NicCalculation, emp.Week1Month1Basis, period,
+			inputs,
+			YTDPrior{TaxablePay: prior.TaxablePayMinor, TaxDeducted: prior.TaxDeductedMinor, NiablePay: prior.NiablePayMinor})
+		if !ok {
+			return kernel.ErrValidation("NI category "+emp.NiCategoryLetter+" is not configured for this tax year", nil)
+		}
+		params = append(params, payrolldb.CreatePayslipComputedParams{
+			OrganisationID:                 run.OrganisationID,
+			PayRunID:                       run.ID,
+			UserID:                         emp.UserID,
+			TaxCode:                        taxCode,
+			NiCategoryLetter:               emp.NiCategoryLetter,
+			NicCalculation:                 emp.NicCalculation,
+			Week1Month1Basis:               emp.Week1Month1Basis,
+			StudentLoanUndergraduate:       emp.StudentLoanUndergraduate,
+			StudentLoanPostgraduate:        emp.StudentLoanPostgraduate,
+			BasicPayMinor:                  emp.BasicPayMinor,
+			AllowanceMinor:                 emp.AllowanceMinor,
+			OtherPaymentsMinor:             emp.OtherPaymentsMinor,
+			PayNotSubjectToTaxNiMinor:      emp.PayNotSubjectToTaxNiMinor,
+			PayrollGivingMinor:             emp.PayrollGivingMinor,
+			OtherDeductionsNetPayMinor:     emp.OtherDeductionsNetPayMinor,
+			ItemsClass1NicNotPayeMinor:     emp.ItemsClass1NicNotPayeMinor,
+			SalarySacrificeDeductionsMinor: emp.SalarySacrificeDeductionsMinor,
+			LeavingPayslip:                 leaving,
+			GrossPayMinor:                  res.GrossPay,
+			TaxablePayMinor:                res.TaxablePay,
+			NiablePayMinor:                 res.NiablePay,
+			TaxDeductedMinor:               res.TaxDeducted,
+			EmployeeNiMinor:                res.EmployeeNI,
+			EmployerNiMinor:                res.EmployerNI,
+			NetPayMinor:                    res.NetPay,
+		})
+	}
+	return bulkInsertPayslips(ctx, qtx, params)
 }
 
 // =============================================================================
