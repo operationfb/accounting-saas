@@ -27,8 +27,27 @@ type Querier interface {
 	// default. The resolver then looks the returned nominal up in the caller's org
 	// categories. An empty country_code arg matches only the country-agnostic rows.
 	GetAccountRoleNominal(ctx context.Context, arg GetAccountRoleNominalParams) (string, error)
+	// The general-ledger lines posted to ONE account (by nominal_code) for an org, over
+	// an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
+	// (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
+	// are real lines). Ordered chronologically (entry_date, then insertion order) so the
+	// report reads top-to-bottom in time. Backs the Account Transactions report (the
+	// trial-balance drill-down).
+	GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error)
 	// The live entry for a source event (for tests / mutation checks).
 	GetJournalEntryForSource(ctx context.Context, arg GetJournalEntryForSourceParams) (GlJournalEntry, error)
+	// -----------------------------------------------------------------------------
+	// REPORTING (read models over the posted ledger)
+	// -----------------------------------------------------------------------------
+	// Trial balance as of a date: every CoA account with >=1 journal line on/before the
+	// date, with its net signed balance (DR +, CR -) in the org base currency. Reversal
+	// entries ARE included (they are real lines and keep the books balanced — excluding
+	// them would unbalance the report). Zero-net accounts that still HAVE lines appear
+	// (the GROUP BY only emits accounts with lines), so there is no HAVING filter.
+	// Ordered by nominal_code (text order is correct for the zero-padded codes; a
+	// sub-account like '750-1' sorts right after its '750' parent). Σ over all rows is
+	// zero (the DB balance trigger guarantees it), so total debit == total credit.
+	GetTrialBalance(ctx context.Context, arg GetTrialBalanceParams) ([]GetTrialBalanceRow, error)
 	// Backs tests + the future account-ledger drill-down.
 	ListLinesForEntry(ctx context.Context, journalEntryID uuid.UUID) ([]GlJournalLine, error)
 	// =============================================================================

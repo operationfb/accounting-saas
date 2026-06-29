@@ -156,6 +156,77 @@ func (q *Queries) GetAccountRoleNominal(ctx context.Context, arg GetAccountRoleN
 	return nominal_code, err
 }
 
+const getAccountTransactions = `-- name: GetAccountTransactions :many
+SELECT e.entry_date,
+       e.narrative,
+       e.source_type,
+       e.source_id,
+       l.base_amount_minor,
+       l.description
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE l.organisation_id = $1
+  AND c.nominal_code = $2
+  AND ($3::date IS NULL OR e.entry_date >= $3)
+  AND e.entry_date <= $4
+ORDER BY e.entry_date, e.created_at
+`
+
+type GetAccountTransactionsParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	NominalCode    string      `json:"nominal_code"`
+	FromDate       pgtype.Date `json:"from_date"`
+	ToDate         pgtype.Date `json:"to_date"`
+}
+
+type GetAccountTransactionsRow struct {
+	EntryDate       pgtype.Date `json:"entry_date"`
+	Narrative       pgtype.Text `json:"narrative"`
+	SourceType      string      `json:"source_type"`
+	SourceID        pgtype.UUID `json:"source_id"`
+	BaseAmountMinor int64       `json:"base_amount_minor"`
+	Description     pgtype.Text `json:"description"`
+}
+
+// The general-ledger lines posted to ONE account (by nominal_code) for an org, over
+// an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
+// (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
+// are real lines). Ordered chronologically (entry_date, then insertion order) so the
+// report reads top-to-bottom in time. Backs the Account Transactions report (the
+// trial-balance drill-down).
+func (q *Queries) GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error) {
+	rows, err := q.db.Query(ctx, getAccountTransactions,
+		arg.OrganisationID,
+		arg.NominalCode,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAccountTransactionsRow
+	for rows.Next() {
+		var i GetAccountTransactionsRow
+		if err := rows.Scan(
+			&i.EntryDate,
+			&i.Narrative,
+			&i.SourceType,
+			&i.SourceID,
+			&i.BaseAmountMinor,
+			&i.Description,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getJournalEntryForSource = `-- name: GetJournalEntryForSource :one
 SELECT id, organisation_id, entry_date, base_currency, narrative,
        source_type, source_id, is_reversal, reverses_entry_id, created_by_user_id, created_at
@@ -190,6 +261,69 @@ func (q *Queries) GetJournalEntryForSource(ctx context.Context, arg GetJournalEn
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const getTrialBalance = `-- name: GetTrialBalance :many
+
+SELECT c.nominal_code,
+       c.name,
+       c.account_type,
+       SUM(l.base_amount_minor)::bigint AS balance_minor
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE l.organisation_id = $1
+  AND e.entry_date <= $2
+GROUP BY c.nominal_code, c.name, c.account_type
+ORDER BY c.nominal_code
+`
+
+type GetTrialBalanceParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	AsOfDate       pgtype.Date `json:"as_of_date"`
+}
+
+type GetTrialBalanceRow struct {
+	NominalCode  string `json:"nominal_code"`
+	Name         string `json:"name"`
+	AccountType  string `json:"account_type"`
+	BalanceMinor int64  `json:"balance_minor"`
+}
+
+// -----------------------------------------------------------------------------
+// REPORTING (read models over the posted ledger)
+// -----------------------------------------------------------------------------
+// Trial balance as of a date: every CoA account with >=1 journal line on/before the
+// date, with its net signed balance (DR +, CR -) in the org base currency. Reversal
+// entries ARE included (they are real lines and keep the books balanced — excluding
+// them would unbalance the report). Zero-net accounts that still HAVE lines appear
+// (the GROUP BY only emits accounts with lines), so there is no HAVING filter.
+// Ordered by nominal_code (text order is correct for the zero-padded codes; a
+// sub-account like '750-1' sorts right after its '750' parent). Σ over all rows is
+// zero (the DB balance trigger guarantees it), so total debit == total credit.
+func (q *Queries) GetTrialBalance(ctx context.Context, arg GetTrialBalanceParams) ([]GetTrialBalanceRow, error) {
+	rows, err := q.db.Query(ctx, getTrialBalance, arg.OrganisationID, arg.AsOfDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTrialBalanceRow
+	for rows.Next() {
+		var i GetTrialBalanceRow
+		if err := rows.Scan(
+			&i.NominalCode,
+			&i.Name,
+			&i.AccountType,
+			&i.BalanceMinor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listLinesForEntry = `-- name: ListLinesForEntry :many

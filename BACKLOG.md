@@ -702,6 +702,38 @@ Optional polish once cards exist: deep-link the active tab via a `?tab=` query
 param (the shell currently uses a local `ref`), and a top-right "Add new"
 quick-action menu.
 
+## Reports (Trial Balance + future)
+
+The reports surface (`internal/reports`, the SPA's `Reports` nav group) has shipped
+two reports: **Trial Balance** (`GET /reports/trial-balance` → `TrialBalanceView.vue`,
+a cumulative-from-inception today snapshot) and **Account Transactions**
+(`GET /reports/account-transactions` + `/reports/accounts` → `AccountTransactionsView.vue`,
+the per-account drill-down; the Trial Balance codes link into it). Deferred:
+
+- **Accounting-year boundary / true FreeAgent TB semantics.** Iteration 1 sums all
+  journal lines on/before the date (a valid, balancing cumulative TB). FreeAgent's
+  Trial Balance shows current-year P&L *movement* with prior-year P&L rolled into a
+  retained-earnings/opening-balance figure, while balance-sheet accounts stay
+  cumulative. Needs the org's accounting-year start + a retained-earnings posting.
+- **Real date pickers / accounting-year presets.** The TB `?date=` param and the
+  Account Transactions `?from=/?to=` params are plumbed end-to-end; the TB Date
+  control is a single "Today" option, and Account Transactions' "Year to date"
+  preset uses the **calendar** year (no stored accounting-year start). Add a custom
+  date picker + true accounting-year presets once the org carries a year-start.
+- **Account Transactions: more source links + filters.** Description links cover
+  INVOICE / INVOICE_RECEIPT / EXPENSE / BILL / BILL_PAYMENT; BANK_EXPLANATION /
+  BANK_TRANSFER (need a bank-account id, not just `source_id`), PAYROLL, MONEY_USER,
+  BANK_OPENING, MANUAL render as plain text. The mockup's **"Has attachments"**
+  filter and **Export Report** button + layout-toggle icons were dropped for v1.
+  An **all-accounts (multi-section)** view is also deferred (one account at a time now).
+- **Natural-numeric code ordering.** `ORDER BY nominal_code` is text order (correct
+  for today's zero-padded `001`…`908-1`); revisit if codes outgrow that.
+- **Multi-base-currency orgs.** The reports sum `base_amount_minor` and label the
+  result with the org's current `native_currency`; they assume a single base
+  currency across all entries (fine today — entries snapshot the base at post time).
+- **More reports.** P&L and Balance Sheet are the natural next siblings in
+  `internal/reports` + the Reports nav group.
+
 ## Cleanups (also flagged as background tasks)
 
 - **Extract `AttachmentService` out of `package main` → `internal/attachments`.**

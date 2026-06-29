@@ -101,3 +101,51 @@ WHERE organisation_id = $1
   AND source_type     = sqlc.arg(source_type)
   AND source_id       = sqlc.arg(source_id)
   AND NOT is_reversal;
+
+
+-- -----------------------------------------------------------------------------
+-- REPORTING (read models over the posted ledger)
+-- -----------------------------------------------------------------------------
+
+-- name: GetTrialBalance :many
+-- Trial balance as of a date: every CoA account with >=1 journal line on/before the
+-- date, with its net signed balance (DR +, CR -) in the org base currency. Reversal
+-- entries ARE included (they are real lines and keep the books balanced — excluding
+-- them would unbalance the report). Zero-net accounts that still HAVE lines appear
+-- (the GROUP BY only emits accounts with lines), so there is no HAVING filter.
+-- Ordered by nominal_code (text order is correct for the zero-padded codes; a
+-- sub-account like '750-1' sorts right after its '750' parent). Σ over all rows is
+-- zero (the DB balance trigger guarantees it), so total debit == total credit.
+SELECT c.nominal_code,
+       c.name,
+       c.account_type,
+       SUM(l.base_amount_minor)::bigint AS balance_minor
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE l.organisation_id = $1
+  AND e.entry_date <= sqlc.arg(as_of_date)
+GROUP BY c.nominal_code, c.name, c.account_type
+ORDER BY c.nominal_code;
+
+-- name: GetAccountTransactions :many
+-- The general-ledger lines posted to ONE account (by nominal_code) for an org, over
+-- an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
+-- (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
+-- are real lines). Ordered chronologically (entry_date, then insertion order) so the
+-- report reads top-to-bottom in time. Backs the Account Transactions report (the
+-- trial-balance drill-down).
+SELECT e.entry_date,
+       e.narrative,
+       e.source_type,
+       e.source_id,
+       l.base_amount_minor,
+       l.description
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE l.organisation_id = $1
+  AND c.nominal_code = sqlc.arg(nominal_code)
+  AND (sqlc.narg(from_date)::date IS NULL OR e.entry_date >= sqlc.narg(from_date))
+  AND e.entry_date <= sqlc.arg(to_date)
+ORDER BY e.entry_date, e.created_at;

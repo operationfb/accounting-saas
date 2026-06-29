@@ -52,6 +52,13 @@ const navItems: NavItem[] = [
   },
   { label: 'Banking', to: '/bank-accounts' },
   { label: 'VAT', to: '/vat-returns' },
+  {
+    label: 'Reports',
+    children: [
+      { label: 'Trial Balance', to: '/reports/trial-balance' },
+      { label: 'Account Transactions', to: '/reports/account-transactions' },
+    ],
+  },
 ]
 
 // A direct item is active when the route sits under its `to`; a group is active

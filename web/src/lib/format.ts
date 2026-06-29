@@ -13,6 +13,19 @@ export function formatMoney(amountPounds: string, currency = 'GBP'): string {
   }
 }
 
+// Like formatMoney but WITHOUT the currency symbol — a thousands-separated number
+// at a fixed decimal precision (e.g. "48158.79" → "48,158.79"). Used in report
+// tables (the Trial Balance) where the column header carries the meaning, not a £
+// on every cell. Returns the input unchanged if it isn't a number.
+export function formatNumber(amountPounds: string, dp = 2): string {
+  const n = Number(amountPounds)
+  if (Number.isNaN(n)) return amountPounds
+  return new Intl.NumberFormat('en-GB', {
+    minimumFractionDigits: dp,
+    maximumFractionDigits: dp,
+  }).format(n)
+}
+
 export function formatDate(iso: string): string {
   // iso is "YYYY-MM-DD". Parse as LOCAL midnight (T00:00:00) so the displayed
   // day doesn't shift across timezones.

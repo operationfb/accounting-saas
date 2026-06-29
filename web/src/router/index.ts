@@ -32,6 +32,8 @@ import PayrollOverviewView from '@/views/PayrollOverviewView.vue'
 import PayrollRunView from '@/views/PayrollRunView.vue'
 import PayslipView from '@/views/PayslipView.vue'
 import PayslipEditView from '@/views/PayslipEditView.vue'
+import TrialBalanceView from '@/views/TrialBalanceView.vue'
+import AccountTransactionsView from '@/views/AccountTransactionsView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -87,6 +89,12 @@ const router = createRouter({
     { path: '/vat-returns', name: 'vat-returns', component: VatReturnListView, meta: { requiresAuth: true, title: 'VAT' } },
     // Per-period return detail (Preview + Full Report). :periodKey is the period-end date.
     { path: '/vat-returns/:periodKey', name: 'vat-return-detail', component: VatReturnDetailView, meta: { requiresAuth: true, title: 'VAT' } },
+    // Reports: read-only financial reports over the general ledger. First is the
+    // Trial Balance (a today snapshot); P&L / Balance Sheet are later siblings.
+    { path: '/reports/trial-balance', name: 'trial-balance', component: TrialBalanceView, meta: { requiresAuth: true, title: 'Reports' } },
+    // Account Transactions: the per-account drill-down. Reached from the Reports menu
+    // or by clicking an account on the Trial Balance (?account=<nominal_code>).
+    { path: '/reports/account-transactions', name: 'account-transactions', component: AccountTransactionsView, meta: { requiresAuth: true, title: 'Reports' } },
     // The organisation's own "Company Details" — a singleton settings screen
     // (the org comes from the token, so there's no id in the path).
     { path: '/company-details', name: 'company-details', component: CompanyDetailsView, meta: { requiresAuth: true, title: 'Settings' } },

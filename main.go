@@ -64,6 +64,7 @@ import (
 	overview "github.com/operationfb/accounting-saas/internal/overview"
 	payroll "github.com/operationfb/accounting-saas/internal/payroll"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
+	reports "github.com/operationfb/accounting-saas/internal/reports"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 	vat "github.com/operationfb/accounting-saas/internal/vat"
@@ -477,6 +478,11 @@ func main() {
 	// authQueries (authorisation) + its own db/overview read queries. First card is
 	// Cashflow (from bank_transactions); more cards add sibling GET routes.
 	overview.NewHandler(overview.NewService(authQueries, dboverview.New(pool))).RegisterRoutes(server.Router(), tokenMaker)
+
+	// Reports: read-only financial reports over the posted general ledger. The first
+	// is the Trial Balance (a today snapshot). Service takes the ledger read queries
+	// (db/ledger, the same set the poster writes) + the shared authQueries.
+	reports.NewHandler(reports.NewService(dbledger.New(pool), dbcategories.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its
 	// per-type category picker), a thin read-only service over the categories queries.

@@ -73,6 +73,7 @@ import (
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	payroll "github.com/operationfb/accounting-saas/internal/payroll"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
+	reports "github.com/operationfb/accounting-saas/internal/reports"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
@@ -265,6 +266,8 @@ func newTestServer(t *testing.T) *testServer {
 	payroll.NewHandler(payroll.NewService(pool, dbpayroll.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
 	vat.NewHandler(vatSvc, vat.FraudConfig{}).RegisterRoutes(server.Router(), tokenMaker)
+	// Reports: read-only financial reports over the ledger (Trial Balance). Mirrors main.
+	reports.NewHandler(reports.NewService(dbledger.New(pool), dbcategories.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
 	return &testServer{
 		server:              server,
