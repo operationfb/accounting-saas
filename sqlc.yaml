@@ -424,6 +424,45 @@ sql:
             go_type: "string"
 
   # ===========================================================================
+  # EXCHANGE RATES MODULE
+  # Daily FX reference rates (global, like currencies), generated into package
+  # `fxrates` at db/exchange_rates.
+  #
+  # Loads schema.sql (for the currencies FK target) + fxrates_schema.sql (the
+  # exchange_rates table itself). omit_unused_structs keeps the other tables out of
+  # db/exchange_rates — only the ExchangeRate-shaped row structs are emitted.
+  # ===========================================================================
+  - engine: "postgresql"
+
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/fxrates_schema.sql"
+
+    queries: "db/queries/fxrates.sql"
+
+    gen:
+      go:
+        package: "fxrates"
+        out: "db/exchange_rates"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_json_tags: true
+        emit_pointers_for_null_types: false
+        omit_unused_structs: true
+
+        overrides:
+          - db_type: "uuid"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - db_type: "jsonb"
+            go_type:
+              import: "encoding/json"
+              type: "RawMessage"
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"
+
+  # ===========================================================================
   # VAT MODULE
   # Cross-domain READ queries for the VAT-return calculation engine, generated into
   # package `vat` at db/vat (imported as `vatdb` in internal/vat). The engine sums

@@ -11,11 +11,9 @@ package integrations
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"google.golang.org/api/idtoken"
 
 	"github.com/operationfb/accounting-saas/internal/kernel"
 )
@@ -36,40 +34,11 @@ func (h *Handler) RegisterInternalRoutes(r *gin.Engine, workflowSA string) {
 }
 
 // requireWorkflowOIDC authenticates a service-to-service call from the Cloud
-// Workflow. The workflow attaches a Google-issued OIDC identity token for its
-// service account; we verify it is genuinely Google-signed and that the email
-// claim matches our configured workflow service account.
-//
-// audience is intentionally not pinned in v1 (idtoken.Validate with "" skips the
-// aud check): the dedicated workflow service-account email IS the authorisation.
+// Workflow. It delegates to the shared kernel.RequireWorkflowOIDC (lifted there so
+// internal/fxrates can reuse the same gate); this thin wrapper keeps the existing
+// in-package callers/tests stable.
 func requireWorkflowOIDC(expectedServiceAccount string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Fail CLOSED when unconfigured.
-		if expectedServiceAccount == "" {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "internal endpoints are not configured"})
-			return
-		}
-
-		fields := strings.Fields(c.GetHeader("Authorization"))
-		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
-			return
-		}
-
-		payload, err := idtoken.Validate(c.Request.Context(), fields[1], "")
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid oidc token"})
-			return
-		}
-		email, _ := payload.Claims["email"].(string)
-		verified, _ := payload.Claims["email_verified"].(bool)
-		if !verified || !strings.EqualFold(email, expectedServiceAccount) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "caller is not the authorised workflow service account"})
-			return
-		}
-
-		c.Next()
-	}
+	return kernel.RequireWorkflowOIDC(expectedServiceAccount)
 }
 
 // internalOrgParam parses the required ?org=<uuid> query parameter.

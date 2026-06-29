@@ -49,7 +49,9 @@ import (
 	dbbills "github.com/operationfb/accounting-saas/db/bills"
 	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
+	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	dbfxrates "github.com/operationfb/accounting-saas/db/exchange_rates"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
@@ -64,6 +66,7 @@ import (
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
+	"github.com/operationfb/accounting-saas/internal/fxrates"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
@@ -209,7 +212,11 @@ func newTestServer(t *testing.T) *testServer {
 	attachmentService := attachments.NewService(pool, queries, authQueries, store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
-	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries)
+	// fxRateSvc serves stored daily rates to the invoice auto-fill. Provider is nil in
+	// tests (no network) — the only-mock-external-services rule; rate rows are seeded
+	// directly via the fxrates queries where a test needs auto-fill.
+	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), dbcurrencies.New(pool), nil, "GBP", "ecb")
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries, fxRateSvc)
 	invoiceSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 	memberSvc := members.NewService(pool, authQueries)
 	organisationSvc := organisation.NewService(authQueries)

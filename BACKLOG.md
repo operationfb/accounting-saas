@@ -363,6 +363,36 @@ module's to write. Tested in `bill_service_test.go` + `money/money_test.go` (`Ex
   checks (PAYE `NNN/XXNNNNN`, Accounts Office `NNNXXNNNNNNNN`, UK postcode) in the
   service. _File: `organisation_service.go`._
 
+## Exchange rates & foreign-currency gain/loss
+
+Full plan: `~/.claude/plans/in-order-to-create-binary-manatee.md` (4 phases).
+
+- **Phase 1 — exchange-rate module + invoice auto-fill — LANDED (2026-06-29).** New
+  `exchange_rates` table (global, GBP-relative: HOME per 1 unit of currency) +
+  `db/queries/fxrates.sql` → sqlc package `db/exchange_rates`; `internal/fxrates`
+  (`Provider` seam + `frankfurterProvider` = ECB, free, no key; `Service`
+  RefreshRates/RateOnOrBefore/Lookup/ListOnDate; read `Handler`
+  `GET /api/v1/exchange-rates[/:currency]`; OIDC-gated
+  `POST /internal/v1/fxrates/refresh`). The OIDC middleware was lifted to
+  `kernel.RequireWorkflowOIDC` (integrations now delegates to it). Invoices
+  auto-fill a foreign `exchange_rate` from the stored rate for `dated_on`
+  (`internal/invoices` `RateLookup` seam) — explicit rate still wins; no rate ⇒ 422.
+  Daily refresh runs via Cloud Scheduler (`deploy-fxrates/README.md`) + a best-effort
+  startup fetch. Tested in `internal/fxrates/*_test.go` + `invoice_service_test.go`
+  (`TestInvoiceForeignCurrencyAutoFillsRate`). Deferred within Phase 1:
+  - **SPA auto-fill UI.** `InvoiceEntryView.vue` should call
+    `GET /api/v1/exchange-rates/:currency?on=<dated_on>` on currency/date change to
+    pre-fill an editable rate field and show the home-currency total beside the
+    foreign total. Backend is ready; the Vue piece isn't built. _Files: `web/src/...`._
+  - **xe.com provider** (paid; interface ready) / HMRC monthly rates as alt sources.
+- **Phase 2 — realised gain/loss on payment** — NOT STARTED. Wire the (currently
+  unwired) bank `INVOICE_RECEIPT` GL posting + per-leg currency on the poster + the
+  4-leg balanced journal. See plan.
+- **Phase 3 — periodic unrealised revaluation of open foreign debtors** — NOT STARTED.
+- **Phase 4 — foreign-currency bank-balance revaluation** (750-x vs 390) — NOT STARTED.
+  Account-scheme decision pending: invoice realised FX uses 218 + a sibling loss
+  account; bank-cash uses a single combined 390 — confirm whether to unify on 390.
+
 ## Currencies
 
 - **Make money conversion `minor_unit`-aware.** `currencies.minor_unit` is now

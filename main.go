@@ -35,6 +35,7 @@ import (
 	dbcontacts "github.com/operationfb/accounting-saas/db/contacts"
 	dbcurrencies "github.com/operationfb/accounting-saas/db/currencies"
 	dbemailinbox "github.com/operationfb/accounting-saas/db/email_inbox"
+	dbfxrates "github.com/operationfb/accounting-saas/db/exchange_rates"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
@@ -49,6 +50,7 @@ import (
 	categories "github.com/operationfb/accounting-saas/internal/categories"
 	contacts "github.com/operationfb/accounting-saas/internal/contacts"
 	currencies "github.com/operationfb/accounting-saas/internal/currencies"
+	"github.com/operationfb/accounting-saas/internal/fxrates"
 	email "github.com/operationfb/accounting-saas/internal/email"
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
@@ -163,10 +165,23 @@ func main() {
 	contactSvc := contacts.NewService(pool, contactQueries, authQueries, projectQueries)
 	projectSvc := projects.NewService(pool, projectQueries, authQueries, contactQueries)
 
+	// Exchange rates: the GLOBAL daily FX reference table. Built early because the
+	// invoices service takes it (to auto-fill a foreign invoice's rate). The provider
+	// (ECB via Frankfurter — free, no key) is opt-out via FXRATES_PROVIDER_URL="none";
+	// an empty value uses the default public host, a URL points at a custom/self-hosted
+	// instance. With no provider the module still SERVES stored rates (refresh no-ops).
+	currencyQueries := dbcurrencies.New(pool)
+	var fxProvider fxrates.Provider
+	if url := os.Getenv("FXRATES_PROVIDER_URL"); url != "none" {
+		fxProvider = fxrates.NewFrankfurterProvider(url) // url == "" → default host
+	}
+	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), currencyQueries, fxProvider, "GBP", "ecb")
+
 	// Invoices: sales documents an org issues to its contacts. Like projects it
 	// needs the contacts querier to validate an invoice's contact belongs to the
-	// same org. Self-registers /api/v1/invoices after NewServer.
-	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries, vatQueries)
+	// same org. fxRateSvc auto-fills a foreign invoice's exchange_rate from the stored
+	// daily rates. Self-registers /api/v1/invoices after NewServer.
+	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, contactQueries, vatQueries, fxRateSvc)
 	// General-ledger poster: issuing an invoice (→SENT) posts the receivable journal
 	// entry (Dr Debtors / Cr Sales + VAT control) atomically with the status change.
 	invoiceSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
@@ -461,8 +476,17 @@ func main() {
 	// table. Like the integration handler it registers its own route on the shared
 	// engine (the per-domain pattern), behind bearer-token auth. No org scoping —
 	// the list is universal.
-	currencyHandler := currencies.NewHandler(currencies.NewService(dbcurrencies.New(pool)))
+	currencyHandler := currencies.NewHandler(currencies.NewService(currencyQueries))
 	currencyHandler.RegisterRoutes(server.Router(), tokenMaker)
+
+	// Exchange rates: the read API (GET /api/v1/exchange-rates[/:currency], behind
+	// bearer auth) for the SPA, plus the OIDC-gated POST /internal/v1/fxrates/refresh
+	// a daily Cloud Scheduler job hits. A best-effort fetch on startup seeds today's
+	// rates locally without waiting for the scheduler (no-op when the provider is off).
+	fxRateHandler := fxrates.NewHandler(fxRateSvc)
+	fxRateHandler.RegisterRoutes(server.Router(), tokenMaker)
+	fxRateHandler.RegisterInternalRoutes(server.Router(), workflowServiceAccount)
+	go fxRateSvc.RefreshTodayBestEffort(context.Background())
 
 	// Banking: the org's own bank accounts + the explain/reconcile flow. Its service
 	// takes the categories query set (the explain reference lookups + VAT). Registers

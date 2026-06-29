@@ -69,6 +69,18 @@ type Service struct {
 	// poster writes the GL journal entry when an invoice is issued (→SENT) and removes
 	// it when reopened. Nil-guarded: with no poster wired, the GL is simply not posted.
 	poster ledger.Poster
+	// rates is the cross-domain FX-rate read seam (internal/fxrates): when a foreign
+	// invoice arrives WITHOUT an explicit exchange_rate, nativeAmounts auto-fills it
+	// from the stored daily rate for the invoice date. Nil-guarded — with no rates
+	// wired, a missing rate on a foreign invoice stays a 422 (the old behaviour).
+	rates RateLookup
+}
+
+// RateLookup is the read seam over the exchange-rate service. Given a currency and a
+// date it returns the rate (HOME units per 1 unit of currency) effective on or before
+// that date; the bool is false when no rate is stored. fxrates.Service satisfies this.
+type RateLookup interface {
+	RateOnOrBefore(ctx context.Context, currency string, on time.Time) (decimal.Decimal, bool, error)
 }
 
 // SetPoster wires the general-ledger poster after construction (mirrors the
@@ -78,13 +90,15 @@ func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
 // NewService is the constructor, called once in main.go. contactQueries is a
 // cross-domain dependency (like authQueries), used to validate contact_id — the
 // same pattern projects uses. vatQueries powers the filed-period lock; pass nil to
-// disable it (the lock is then off).
+// disable it (the lock is then off). rates auto-fills a foreign invoice's exchange
+// rate; pass nil to disable auto-fill.
 func NewService(
 	pool *pgxpool.Pool,
 	queries *invoicesdb.Queries,
 	authQueries auth.Querier,
 	contactQueries contactsdb.Querier,
 	vatQueries *vatdb.Queries,
+	rates RateLookup,
 ) *Service {
 	return &Service{
 		pool:           pool,
@@ -92,6 +106,7 @@ func NewService(
 		authQueries:    authQueries,
 		contactQueries: contactQueries,
 		vatQueries:     vatQueries,
+		rates:          rates,
 	}
 }
 
@@ -215,7 +230,7 @@ func (s *Service) CreateInvoice(
 			return err
 		}
 
-		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, net, tax, total)
+		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, datedOn, net, tax, total)
 		if err != nil {
 			return err
 		}
@@ -448,7 +463,7 @@ func (s *Service) UpdateInvoice(
 			return err
 		}
 
-		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, net, tax, total)
+		rate, nNet, nTax, nTotal, err := s.nativeAmounts(ctx, qtx, authOrgID, normaliseCurrency(req.Currency), req.ExchangeRate, datedOn, net, tax, total)
 		if err != nil {
 			return err
 		}
@@ -632,7 +647,7 @@ func (s *Service) ChangeStatus(
 // be normalised (upper-cased / defaulted).
 func (s *Service) nativeAmounts(
 	ctx context.Context, q *invoicesdb.Queries, orgID uuid.UUID,
-	cur, rateInput string, net, tax, total int64,
+	cur, rateInput string, dated pgtype.Date, net, tax, total int64,
 ) (rate pgtype.Numeric, nativeNet, nativeTax, nativeTotal int64, err error) {
 	org, gerr := s.authQueries.GetOrganisation(ctx, orgID)
 	if gerr != nil {
@@ -644,9 +659,16 @@ func (s *Service) nativeAmounts(
 		return pgtype.Numeric{}, net, tax, total, nil
 	}
 
+	// A foreign invoice needs a rate. The caller may supply one explicitly; otherwise
+	// we AUTO-FILL it from the stored daily rate for the invoice date (so the user
+	// doesn't hand-type it). Only when neither is available is it a 422.
 	rateStr := strings.TrimSpace(rateInput)
 	if rateStr == "" {
-		return rate, 0, 0, 0, kernel.ErrValidation("exchange_rate is required for an invoice not in the organisation's native currency", nil)
+		filled, ferr := s.autoFillRate(ctx, cur, dated)
+		if ferr != nil {
+			return rate, 0, 0, 0, ferr
+		}
+		rateStr = filled
 	}
 	rateDec, derr := decimal.NewFromString(rateStr)
 	if derr != nil || !rateDec.IsPositive() {
@@ -669,6 +691,24 @@ func (s *Service) nativeAmounts(
 		return rate, 0, 0, 0, kernel.ErrInternal(serr)
 	}
 	return rate, nativeNet, nativeTax, nativeTotal, nil
+}
+
+// autoFillRate looks up the stored daily rate for a foreign invoice when the request
+// omitted an explicit exchange_rate. Returns the rate as a decimal string (for the
+// NUMERIC scan path) or a 422 when no rate source is wired or no rate is stored for
+// the currency on/before the invoice date.
+func (s *Service) autoFillRate(ctx context.Context, cur string, dated pgtype.Date) (string, error) {
+	if s.rates == nil || !dated.Valid {
+		return "", kernel.ErrValidation("exchange_rate is required for an invoice not in the organisation's native currency", nil)
+	}
+	rateDec, ok, err := s.rates.RateOnOrBefore(ctx, cur, dated.Time)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", kernel.ErrValidation("no exchange rate is available for "+cur+" on the invoice date — please enter one", nil)
+	}
+	return rateDec.String(), nil
 }
 
 // currencyExp returns a currency's minor_unit (decimal places) for money.ConvertMinor.

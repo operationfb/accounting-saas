@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
@@ -169,6 +170,115 @@ func createInvoiceAs(t *testing.T, ts *testServer, userID, orgID, contactID stri
 // today / yesterday as YYYY-MM-DD.
 func today() string     { return time.Now().Format("2006-01-02") }
 func yesterday() string { return time.Now().AddDate(0, 0, -1).Format("2006-01-02") }
+
+// seedRate inserts a global FX rate (HOME per 1 unit of code) for a date and
+// hard-deletes it in t.Cleanup, so the shared exchange_rates table stays clean.
+func seedRate(t *testing.T, ts *testServer, code, day, rate string) {
+	t.Helper()
+	d, err := time.Parse("2006-01-02", day)
+	if err != nil {
+		t.Fatalf("seedRate: bad date %q: %v", day, err)
+	}
+	if _, err := ts.pool.Exec(context.Background(),
+		`INSERT INTO exchange_rates (currency, rate_date, rate, source) VALUES ($1, $2, $3, 'test')
+		 ON CONFLICT (currency, rate_date) DO UPDATE SET rate = EXCLUDED.rate`, code, d, rate); err != nil {
+		t.Fatalf("seedRate insert: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(context.Background(), "DELETE FROM exchange_rates WHERE currency = $1 AND rate_date = $2", code, d)
+	})
+}
+
+// TestInvoiceForeignCurrencyAutoFillsRate covers Phase 1's invoice auto-fill: a
+// foreign invoice raised WITHOUT an exchange_rate gets one from the stored daily
+// rate for its date (and the native_* totals are converted with it); an explicit
+// rate still wins; and with no stored rate it's a clean 422, not a 500.
+func TestInvoiceForeignCurrencyAutoFillsRate(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+	authHeader := bearer(t, ts, devUserID, devOrgID)
+
+	t.Run("auto-fills from the stored rate for the invoice date", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		day := today()
+		seedRate(t, ts, "EUR", day, "0.86") // £0.86 per €1
+
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID: contactID,
+			DatedOn:   day,
+			Reference: randomRef(),
+			Currency:  "EUR",
+			// no ExchangeRate — must be auto-filled from the seeded rate
+			Items: []invoices.InvoiceItemRequest{simpleItem("Export work", "1", "100.00", "20")},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201 (auto-filled), got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeInvoice(t, rec.Body.Bytes())
+		cleanupInvoice(t, ts, got.ID)
+
+		// €120 total (12000 minor EUR). native = round(12000 × 0.86) = 10320 (£103.20).
+		var rate string
+		var nativeTotal, total int64
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT exchange_rate, native_total_value_minor, total_value_minor FROM invoices WHERE id = $1",
+			got.ID).Scan(&rate, &nativeTotal, &total); err != nil {
+			t.Fatalf("read invoice: %v", err)
+		}
+		if total != 12000 {
+			t.Errorf("txn total: got %d, want 12000 (€120)", total)
+		}
+		if nativeTotal != 10320 {
+			t.Errorf("native total: got %d, want 10320 (£103.20 at 0.86)", nativeTotal)
+		}
+		if d, _ := decimal.NewFromString(rate); !d.Equal(decimal.RequireFromString("0.86")) {
+			t.Errorf("stored exchange_rate: got %q, want 0.86", rate)
+		}
+	})
+
+	t.Run("explicit rate still wins over the stored one", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		day := today()
+		seedRate(t, ts, "EUR", day, "0.86")
+
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID:    contactID,
+			DatedOn:      day,
+			Reference:    randomRef(),
+			Currency:     "EUR",
+			ExchangeRate: "0.90", // overrides the stored 0.86
+			Items:        []invoices.InvoiceItemRequest{simpleItem("Export work", "1", "100.00", "20")},
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		got := decodeInvoice(t, rec.Body.Bytes())
+		cleanupInvoice(t, ts, got.ID)
+
+		var nativeTotal int64
+		if err := ts.pool.QueryRow(context.Background(),
+			"SELECT native_total_value_minor FROM invoices WHERE id = $1", got.ID).Scan(&nativeTotal); err != nil {
+			t.Fatalf("read invoice: %v", err)
+		}
+		if nativeTotal != 10800 { // 12000 × 0.90
+			t.Errorf("native total: got %d, want 10800 (explicit 0.90)", nativeTotal)
+		}
+	})
+
+	t.Run("no stored rate → 422 (not 500)", func(t *testing.T) {
+		contactID := createContactAs(t, ts, devUserID, devOrgID)
+		rec := postInvoice(t, ts, authHeader, invoices.CreateInvoiceRequest{
+			ContactID: contactID,
+			DatedOn:   "1971-01-04", // no EUR rate seeded on/before this date
+			Reference: randomRef(),
+			Currency:  "EUR",
+			Items:     []invoices.InvoiceItemRequest{simpleItem("Export work", "1", "100.00", "20")},
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 (no rate available), got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
 
 // =============================================================================
 // CREATE
