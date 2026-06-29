@@ -617,6 +617,9 @@ const pageTitle = computed(() =>
           </FormRow>
           <FormRow label="Employee start date" label-for="pay-start">
             <InputText id="pay-start" v-model="payroll.start_date" type="date" class="w-48" />
+            <p class="text-xs text-fa-muted">
+              Used by payroll — the employee is only included from the tax month containing this date.
+            </p>
           </FormRow>
           <FormRow label="Starting declaration" label-for="pay-decl">
             <Select id="pay-decl" v-model="payroll.starting_declaration" :options="startingDeclarationOptions"
@@ -708,6 +711,9 @@ const pageTitle = computed(() =>
           </FormRow>
           <FormRow v-if="payroll.leaving_next_pay_run" label="Leave date" label-for="pay-leavedate">
             <InputText id="pay-leavedate" v-model="payroll.leaving_date" type="date" class="w-48" />
+            <p class="text-xs text-fa-muted">
+              Their final payslip is the pay run containing this date; later runs skip them.
+            </p>
           </FormRow>
         </FaCard>
       </template>

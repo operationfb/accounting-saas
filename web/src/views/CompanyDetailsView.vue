@@ -54,6 +54,7 @@ const defaults = () => ({
   companiesHouseNumber: '',
   payeReference: '',
   accountsOfficeReference: '',
+  claimsEmploymentAllowance: true,
   utr: '',
   contactEmail: '',
   contactPhone: '',
@@ -84,6 +85,7 @@ function hydrate(o: OrganisationDetails) {
   form.companiesHouseNumber = o.companies_house_number ?? ''
   form.payeReference = o.paye_reference ?? ''
   form.accountsOfficeReference = o.accounts_office_reference ?? ''
+  form.claimsEmploymentAllowance = o.claims_employment_allowance
   form.utr = o.utr ?? ''
   form.contactEmail = o.contact_email ?? ''
   form.contactPhone = o.contact_phone ?? ''
@@ -157,6 +159,7 @@ function buildPayload(): UpdateOrganisationRequest {
     utr: opt(form.utr), // "Corporation Tax Reference"
     paye_reference: opt(form.payeReference),
     accounts_office_reference: opt(form.accountsOfficeReference),
+    claims_employment_allowance: form.claimsEmploymentAllowance,
     address_line_1: opt(form.addressLine1),
     address_line_2: opt(form.addressLine2),
     address_line_3: opt(form.addressLine3),
@@ -354,6 +357,39 @@ function cancel() {
         <FormRow label="PAYE Reference" label-for="paye">
           <InputText id="paye" v-model="form.payeReference" class="w-full sm:w-56" :disabled="!canEdit" />
           <p class="text-xs text-fa-muted">e.g. 123/A246</p>
+        </FormRow>
+        <FormRow label="Employment allowance">
+          <div class="flex flex-col gap-2">
+            <div class="flex items-center gap-6">
+              <label class="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="ea"
+                  :value="false"
+                  :checked="!form.claimsEmploymentAllowance"
+                  :disabled="!canEdit"
+                  @change="form.claimsEmploymentAllowance = false"
+                />
+                <span>Don't claim</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="ea"
+                  :value="true"
+                  :checked="form.claimsEmploymentAllowance"
+                  :disabled="!canEdit"
+                  @change="form.claimsEmploymentAllowance = true"
+                />
+                <span>Claim</span>
+              </label>
+            </div>
+            <p class="max-w-xl text-xs text-fa-muted">
+              Each payroll year, make sure you double check whether you're eligible before claiming
+              Employment Allowance. When claimed, the payroll run offsets the company's employer NI
+              by up to the annual cap.
+            </p>
+          </div>
         </FormRow>
         <FormRow label="Accounts Office Reference" label-for="aor">
           <InputText

@@ -84,6 +84,31 @@ CREATE TABLE categories (
     -- TRUE = FreeAgent-managed (VAT control, debtors, user sub-accounts, …): posted
     -- to automatically, never offered as a free pick for a normal explanation.
     is_system_managed   BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Per-USER sub-accounts (FreeAgent's 908-1, 907-2, … one per director). A PARENT
+    -- account flagged is_user_subdivided is NEVER posted to directly when the event
+    -- links a user: the general-ledger resolver (internal/ledger.Accounts) expands it
+    -- to THAT user's sub-account ROW, creating it lazily. So a Dividend (908) paid to
+    -- director A lands in 908-1, to director B in 908-2 — each its own ledger account,
+    -- the parent being the roll-up.
+    is_user_subdivided  BOOLEAN NOT NULL DEFAULT FALSE,               -- TRUE on a parent that splits per user (all USER_ACCOUNT 900–910)
+    -- Set ONLY on a sub-account row: the parent nominal it subdivides and the OWNER it
+    -- belongs to — a user (e.g. '908-1', parent '908', user_id = A) OR a bank account
+    -- (e.g. '750-1', parent '750', bank_account_id = the account). NULL on every
+    -- normal / parent account. Same "sub-account is its own row" shape as the seeded
+    -- 602-x capital-asset sub-accounts, extended with an owner link.
+    --
+    -- bank_account_id is a PLAIN column (no FK): categories is created BEFORE
+    -- bank_accounts in the DDL/sqlc order, so an FK would be a cycle. Soft-linked like
+    -- transaction_type_categories; integrity is enforced by the ledger resolver, which
+    -- is the only writer of these rows.
+    parent_nominal_code VARCHAR(20),
+    user_id             UUID REFERENCES users(id),
+    bank_account_id     UUID,                                        -- the bank account a 750-x sub-account belongs to
+
+    -- A sub-account has at most ONE owner kind.
+    CONSTRAINT ck_categories_subaccount_owner CHECK (user_id IS NULL OR bank_account_id IS NULL),
+
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
 
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -98,6 +123,19 @@ CREATE TABLE categories (
 CREATE INDEX idx_categories_org       ON categories (organisation_id) WHERE is_active;
 -- Backs the explain picker filtering a type's offered api_group(s) to the org's CoA.
 CREATE INDEX idx_categories_org_group ON categories (organisation_id, api_group) WHERE is_active;
+
+-- At most ONE user sub-account per (org, parent account, user) — the DB guarantee
+-- behind the resolver's idempotent find-or-create (two concurrent posts for the same
+-- director can't make 908-1 AND 908-2 for them). Partial: only the sub-account rows.
+CREATE UNIQUE INDEX idx_categories_user_subaccount
+    ON categories (organisation_id, parent_nominal_code, user_id)
+    WHERE user_id IS NOT NULL;
+
+-- At most ONE ledger account per (org, bank account) — FreeAgent's 750-x sub-accounts,
+-- one per bank account. Same idempotent-find-or-create guarantee as the user index.
+CREATE UNIQUE INDEX idx_categories_bank_subaccount
+    ON categories (organisation_id, parent_nominal_code, bank_account_id)
+    WHERE bank_account_id IS NOT NULL;
 
 
 -- -----------------------------------------------------------------------------

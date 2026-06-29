@@ -184,7 +184,7 @@ func TestListCategoriesForType(t *testing.T) {
 		if len(ltd) != 5 {
 			t.Errorf("MONEY_PAID_TO_USER/limited: got %d, want 5", len(ltd))
 		}
-		if lbl, _ := label(ltd, "908"); lbl != "Dividend" { // tab label overrides CoA name
+		if lbl, _ := label(ltd, "908"); lbl != "Dividend" { // tab label agrees with the CoA name (908 = Dividend)
 			t.Errorf("908 under Ltd Money Paid to User: got %q, want Dividend", lbl)
 		}
 		if lbl, _ := label(ltd, "907"); lbl != "Director's Loan Account" {

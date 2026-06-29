@@ -47,6 +47,7 @@ const navItems: NavItem[] = [
     children: [
       { label: 'Expenses', to: '/expenses' },
       { label: 'Bills', to: '/bills' },
+      { label: 'Payroll', to: '/payroll' },
     ],
   },
   { label: 'Banking', to: '/bank-accounts' },

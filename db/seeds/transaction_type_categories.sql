@@ -70,7 +70,7 @@ INSERT INTO transaction_type_categories (transaction_type_code, nominal_code, co
   ('MONEY_PAID_TO_USER', '908', 'limited',     'Dividend',                 4),
   ('MONEY_PAID_TO_USER', '907', 'limited',     'Director''s Loan Account',  5),
   ('MONEY_PAID_TO_USER', '907', 'sole_trader', 'Drawings',                 1),
-  ('MONEY_PAID_TO_USER', '908', 'sole_trader', 'Expense Payment',          2)
+  ('MONEY_PAID_TO_USER', '905', 'sole_trader', 'Expense Payment',          2)
 ON CONFLICT DO NOTHING;
 
 -- MONEY RECEIVED FROM USER: Ltd vs sole trader (links a user). -----------------

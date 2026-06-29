@@ -112,6 +112,13 @@ CREATE TABLE organisations (
     paye_reference              VARCHAR(20),
     accounts_office_reference   VARCHAR(20),
 
+    -- Employment Allowance: whether the company claims the annual NI relief that
+    -- offsets employer (secondary) Class 1 NI. Set on the Company Details screen;
+    -- the payroll engine copies it onto each pay run and, when claimed, reduces the
+    -- run's employer-NI liability by up to the annual cap. Eligibility is the user's
+    -- declaration (HMRC rules vary year to year) — see the FreeAgent EA guide.
+    claims_employment_allowance BOOLEAN     NOT NULL DEFAULT TRUE,
+
     -- -------------------------------------------------------------------------
     -- VAT registration settings (the "UK VAT Registration" screen, FreeAgent-style)
     -- Captured at the organisation level; the VAT-return calculation engine reads

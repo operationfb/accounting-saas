@@ -51,8 +51,168 @@ func (q *Queries) CategoryOfferedForType(ctx context.Context, arg CategoryOffere
 	return offered, err
 }
 
+const createBankSubAccount = `-- name: CreateBankSubAccount :one
+INSERT INTO categories (
+    organisation_id, nominal_code, name, account_type, api_group,
+    is_system_managed, parent_nominal_code, bank_account_id
+) VALUES (
+    $1, $2, $3, $4, $5,
+    TRUE, $6, $7
+)
+RETURNING id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at
+`
+
+type CreateBankSubAccountParams struct {
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	NominalCode       string      `json:"nominal_code"`
+	Name              string      `json:"name"`
+	AccountType       string      `json:"account_type"`
+	ApiGroup          pgtype.Text `json:"api_group"`
+	ParentNominalCode pgtype.Text `json:"parent_nominal_code"`
+	BankAccountID     pgtype.UUID `json:"bank_account_id"`
+}
+
+// Create a per-bank-account sub-account row (750-x), inheriting the parent's
+// account_type / api_group. System-managed. RETURNING * for the resolver. :one.
+func (q *Queries) CreateBankSubAccount(ctx context.Context, arg CreateBankSubAccountParams) (Category, error) {
+	row := q.db.QueryRow(ctx, createBankSubAccount,
+		arg.OrganisationID,
+		arg.NominalCode,
+		arg.Name,
+		arg.AccountType,
+		arg.ApiGroup,
+		arg.ParentNominalCode,
+		arg.BankAccountID,
+	)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.AccountType,
+		&i.ApiGroup,
+		&i.TaxReportingName,
+		&i.AllowableForTax,
+		&i.DefaultVat,
+		&i.IsCapitalAsset,
+		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createUserSubAccount = `-- name: CreateUserSubAccount :one
+INSERT INTO categories (
+    organisation_id, nominal_code, name, account_type, api_group,
+    is_system_managed, parent_nominal_code, user_id
+) VALUES (
+    $1, $2, $3, $4, $5,
+    TRUE, $6, $7
+)
+RETURNING id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at
+`
+
+type CreateUserSubAccountParams struct {
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	NominalCode       string      `json:"nominal_code"`
+	Name              string      `json:"name"`
+	AccountType       string      `json:"account_type"`
+	ApiGroup          pgtype.Text `json:"api_group"`
+	ParentNominalCode pgtype.Text `json:"parent_nominal_code"`
+	UserID            pgtype.UUID `json:"user_id"`
+}
+
+// Create a per-user sub-account row, inheriting the parent's account_type / api_group.
+// Always system-managed (never a free pick). RETURNING * so the resolver gets its id.
+// :one.
+func (q *Queries) CreateUserSubAccount(ctx context.Context, arg CreateUserSubAccountParams) (Category, error) {
+	row := q.db.QueryRow(ctx, createUserSubAccount,
+		arg.OrganisationID,
+		arg.NominalCode,
+		arg.Name,
+		arg.AccountType,
+		arg.ApiGroup,
+		arg.ParentNominalCode,
+		arg.UserID,
+	)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.AccountType,
+		&i.ApiGroup,
+		&i.TaxReportingName,
+		&i.AllowableForTax,
+		&i.DefaultVat,
+		&i.IsCapitalAsset,
+		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getBankSubAccount = `-- name: GetBankSubAccount :one
+SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = $2
+  AND bank_account_id     = $3
+`
+
+type GetBankSubAccountParams struct {
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	ParentNominalCode pgtype.Text `json:"parent_nominal_code"`
+	BankAccountID     pgtype.UUID `json:"bank_account_id"`
+}
+
+// An existing 750-x sub-account for this org+bank account. The find half of the
+// resolver's idempotent find-or-create (idx_categories_bank_subaccount guarantees at
+// most one). :one.
+func (q *Queries) GetBankSubAccount(ctx context.Context, arg GetBankSubAccountParams) (Category, error) {
+	row := q.db.QueryRow(ctx, getBankSubAccount, arg.OrganisationID, arg.ParentNominalCode, arg.BankAccountID)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.AccountType,
+		&i.ApiGroup,
+		&i.TaxReportingName,
+		&i.AllowableForTax,
+		&i.DefaultVat,
+		&i.IsCapitalAsset,
+		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getCategory = `-- name: GetCategory :one
-SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_active, created_at, updated_at FROM categories
+SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at FROM categories
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -81,6 +241,59 @@ func (q *Queries) GetCategory(ctx context.Context, arg GetCategoryParams) (Categ
 		&i.DefaultVat,
 		&i.IsCapitalAsset,
 		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getCategoryByNominal = `-- name: GetCategoryByNominal :one
+
+SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at FROM categories
+WHERE organisation_id = $1
+  AND nominal_code    = $2
+  AND is_active
+`
+
+type GetCategoryByNominalParams struct {
+	OrganisationID uuid.UUID `json:"organisation_id"`
+	NominalCode    string    `json:"nominal_code"`
+}
+
+// -----------------------------------------------------------------------------
+// GENERAL-LEDGER RESOLVER SUPPORT
+// The ledger.Accounts resolver (internal/ledger) turns an account_role into a real
+// categories row. These back that: look up a control nominal, and find-or-create a
+// per-user sub-account of an is_user_subdivided parent (e.g. 908 Dividend → 908-1).
+// -----------------------------------------------------------------------------
+// One active category by (org, nominal_code) — the natural-key lookup the resolver
+// uses for fixed-role nominals AND to inspect a picked category's account_type /
+// is_user_subdivided flag. :one.
+func (q *Queries) GetCategoryByNominal(ctx context.Context, arg GetCategoryByNominalParams) (Category, error) {
+	row := q.db.QueryRow(ctx, getCategoryByNominal, arg.OrganisationID, arg.NominalCode)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.AccountType,
+		&i.ApiGroup,
+		&i.TaxReportingName,
+		&i.AllowableForTax,
+		&i.DefaultVat,
+		&i.IsCapitalAsset,
+		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -107,6 +320,49 @@ func (q *Queries) GetTransactionType(ctx context.Context, code string) (Transact
 		&i.DisplayOrder,
 		&i.IsActive,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getUserSubAccount = `-- name: GetUserSubAccount :one
+SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = $2
+  AND user_id             = $3
+`
+
+type GetUserSubAccountParams struct {
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	ParentNominalCode pgtype.Text `json:"parent_nominal_code"`
+	UserID            pgtype.UUID `json:"user_id"`
+}
+
+// An existing per-user sub-account of a parent, for this org+user. The first half of
+// the resolver's idempotent find-or-create (idx_categories_user_subaccount guarantees
+// at most one). :one.
+func (q *Queries) GetUserSubAccount(ctx context.Context, arg GetUserSubAccountParams) (Category, error) {
+	row := q.db.QueryRow(ctx, getUserSubAccount, arg.OrganisationID, arg.ParentNominalCode, arg.UserID)
+	var i Category
+	err := row.Scan(
+		&i.ID,
+		&i.OrganisationID,
+		&i.NominalCode,
+		&i.Name,
+		&i.Description,
+		&i.AccountType,
+		&i.ApiGroup,
+		&i.TaxReportingName,
+		&i.AllowableForTax,
+		&i.DefaultVat,
+		&i.IsCapitalAsset,
+		&i.IsSystemManaged,
+		&i.IsUserSubdivided,
+		&i.ParentNominalCode,
+		&i.UserID,
+		&i.BankAccountID,
+		&i.IsActive,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -139,7 +395,7 @@ func (q *Queries) GetVatRate(ctx context.Context, id uuid.UUID) (VatRate, error)
 const listCategories = `-- name: ListCategories :many
 
 
-SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_active, created_at, updated_at FROM categories
+SELECT id, organisation_id, nominal_code, name, description, account_type, api_group, tax_reporting_name, allowable_for_tax, default_vat, is_capital_asset, is_system_managed, is_user_subdivided, parent_nominal_code, user_id, bank_account_id, is_active, created_at, updated_at FROM categories
 WHERE organisation_id = $1
   AND is_active
 ORDER BY nominal_code
@@ -190,6 +446,10 @@ func (q *Queries) ListCategories(ctx context.Context, organisationID uuid.UUID) 
 			&i.DefaultVat,
 			&i.IsCapitalAsset,
 			&i.IsSystemManaged,
+			&i.IsUserSubdivided,
+			&i.ParentNominalCode,
+			&i.UserID,
+			&i.BankAccountID,
 			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -205,7 +465,7 @@ func (q *Queries) ListCategories(ctx context.Context, organisationID uuid.UUID) 
 }
 
 const listCategoriesForType = `-- name: ListCategoriesForType :many
-SELECT c.id, c.organisation_id, c.nominal_code, c.name, c.description, c.account_type, c.api_group, c.tax_reporting_name, c.allowable_for_tax, c.default_vat, c.is_capital_asset, c.is_system_managed, c.is_active, c.created_at, c.updated_at, m.display_label
+SELECT c.id, c.organisation_id, c.nominal_code, c.name, c.description, c.account_type, c.api_group, c.tax_reporting_name, c.allowable_for_tax, c.default_vat, c.is_capital_asset, c.is_system_managed, c.is_user_subdivided, c.parent_nominal_code, c.user_id, c.bank_account_id, c.is_active, c.created_at, c.updated_at, m.display_label
 FROM transaction_type_categories m
 JOIN categories c
   ON  c.organisation_id = $1
@@ -262,6 +522,10 @@ func (q *Queries) ListCategoriesForType(ctx context.Context, arg ListCategoriesF
 			&i.Category.DefaultVat,
 			&i.Category.IsCapitalAsset,
 			&i.Category.IsSystemManaged,
+			&i.Category.IsUserSubdivided,
+			&i.Category.ParentNominalCode,
+			&i.Category.UserID,
+			&i.Category.BankAccountID,
 			&i.Category.IsActive,
 			&i.Category.CreatedAt,
 			&i.Category.UpdatedAt,
@@ -313,4 +577,26 @@ func (q *Queries) ListTransactionTypes(ctx context.Context) ([]TransactionType, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const nextSubAccountSuffix = `-- name: NextSubAccountSuffix :one
+SELECT COALESCE(MAX(NULLIF(split_part(nominal_code, '-', 2), '')::int), 0) + 1 AS next_suffix
+FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = $2
+`
+
+type NextSubAccountSuffixParams struct {
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	ParentNominalCode pgtype.Text `json:"parent_nominal_code"`
+}
+
+// The next '-N' suffix for a parent in this org (1 if none yet): MAX(existing N)+1.
+// So 908's first sub-account is 908-1, the next 908-2, … Keyed only by org+parent, so
+// it serves BOTH user (908-x) and bank (750-x) sub-accounts. :one.
+func (q *Queries) NextSubAccountSuffix(ctx context.Context, arg NextSubAccountSuffixParams) (int32, error) {
+	row := q.db.QueryRow(ctx, nextSubAccountSuffix, arg.OrganisationID, arg.ParentNominalCode)
+	var next_suffix int32
+	err := row.Scan(&next_suffix)
+	return next_suffix, err
 }

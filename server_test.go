@@ -53,6 +53,7 @@ import (
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	integrationsdb "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
+	dbpayroll "github.com/operationfb/accounting-saas/db/payroll"
 	projectsdb "github.com/operationfb/accounting-saas/db/projects"
 	dbvat "github.com/operationfb/accounting-saas/db/vat"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
@@ -68,6 +69,7 @@ import (
 	members "github.com/operationfb/accounting-saas/internal/members"
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
+	payroll "github.com/operationfb/accounting-saas/internal/payroll"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	testutil "github.com/operationfb/accounting-saas/internal/testutil"
@@ -257,6 +259,7 @@ func newTestServer(t *testing.T) *testServer {
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
 	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
+	payroll.NewHandler(payroll.NewService(pool, dbpayroll.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
 	vat.NewHandler(vatSvc, vat.FraudConfig{}).RegisterRoutes(server.Router(), tokenMaker)
 

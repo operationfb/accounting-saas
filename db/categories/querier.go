@@ -17,15 +17,40 @@ type Querier interface {
 	// chosen type" guard. Returns the matching nominal_code(s) (empty = not offered).
 	// -----------------------------------------------------------------------------
 	CategoryOfferedForType(ctx context.Context, arg CategoryOfferedForTypeParams) (bool, error)
+	// Create a per-bank-account sub-account row (750-x), inheriting the parent's
+	// account_type / api_group. System-managed. RETURNING * for the resolver. :one.
+	CreateBankSubAccount(ctx context.Context, arg CreateBankSubAccountParams) (Category, error)
+	// Create a per-user sub-account row, inheriting the parent's account_type / api_group.
+	// Always system-managed (never a free pick). RETURNING * so the resolver gets its id.
+	// :one.
+	CreateUserSubAccount(ctx context.Context, arg CreateUserSubAccountParams) (Category, error)
+	// An existing 750-x sub-account for this org+bank account. The find half of the
+	// resolver's idempotent find-or-create (idx_categories_bank_subaccount guarantees at
+	// most one). :one.
+	GetBankSubAccount(ctx context.Context, arg GetBankSubAccountParams) (Category, error)
 	// -----------------------------------------------------------------------------
 	// GetCategory — one category by id, org-scoped. :one.
 	// -----------------------------------------------------------------------------
 	GetCategory(ctx context.Context, arg GetCategoryParams) (Category, error)
 	// -----------------------------------------------------------------------------
+	// GENERAL-LEDGER RESOLVER SUPPORT
+	// The ledger.Accounts resolver (internal/ledger) turns an account_role into a real
+	// categories row. These back that: look up a control nominal, and find-or-create a
+	// per-user sub-account of an is_user_subdivided parent (e.g. 908 Dividend → 908-1).
+	// -----------------------------------------------------------------------------
+	// One active category by (org, nominal_code) — the natural-key lookup the resolver
+	// uses for fixed-role nominals AND to inspect a picked category's account_type /
+	// is_user_subdivided flag. :one.
+	GetCategoryByNominal(ctx context.Context, arg GetCategoryByNominalParams) (Category, error)
+	// -----------------------------------------------------------------------------
 	// GetTransactionType — one type by code (global reference). :one.
 	// Used by the explain service to read a type's direction + entity_link.
 	// -----------------------------------------------------------------------------
 	GetTransactionType(ctx context.Context, code string) (TransactionType, error)
+	// An existing per-user sub-account of a parent, for this org+user. The first half of
+	// the resolver's idempotent find-or-create (idx_categories_user_subaccount guarantees
+	// at most one). :one.
+	GetUserSubAccount(ctx context.Context, arg GetUserSubAccountParams) (Category, error)
 	// -----------------------------------------------------------------------------
 	// GetVatRate — one VAT rate by id (for the VAT extraction on an explanation).
 	// The frontend picks the id from GET /api/v1/vat-rates; the service reads rate_bps
@@ -71,6 +96,10 @@ type Querier interface {
 	// Drives the "Type" dropdown, grouped by direction then display order.
 	// -----------------------------------------------------------------------------
 	ListTransactionTypes(ctx context.Context) ([]TransactionType, error)
+	// The next '-N' suffix for a parent in this org (1 if none yet): MAX(existing N)+1.
+	// So 908's first sub-account is 908-1, the next 908-2, … Keyed only by org+parent, so
+	// it serves BOTH user (908-x) and bank (750-x) sub-accounts. :one.
+	NextSubAccountSuffix(ctx context.Context, arg NextSubAccountSuffixParams) (int32, error)
 }
 
 var _ Querier = (*Queries)(nil)

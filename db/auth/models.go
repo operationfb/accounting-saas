@@ -113,29 +113,30 @@ type Organisation struct {
 	// HMRC Unique Taxpayer Reference. Required for Self Assessment / Corp Tax.
 	Utr pgtype.Text `json:"utr"`
 	// VAT Registration Number, stored as the bare 9 digits (no GB prefix) — the form input and the HMRC MTD {vrn} path segment. NULL if not VAT-registered.
-	Vrn                     pgtype.Text        `json:"vrn"`
-	PayeReference           pgtype.Text        `json:"paye_reference"`
-	AccountsOfficeReference pgtype.Text        `json:"accounts_office_reference"`
-	VatRegistered           bool               `json:"vat_registered"`
-	VatUsesNonStandardRates bool               `json:"vat_uses_non_standard_rates"`
-	VatEffectiveDate        pgtype.Date        `json:"vat_effective_date"`
-	VatFirstReturnPeriodEnd pgtype.Date        `json:"vat_first_return_period_end"`
-	VatReturnFrequency      pgtype.Text        `json:"vat_return_frequency"`
-	VatAccountingBasis      pgtype.Text        `json:"vat_accounting_basis"`
-	VatFlatRateScheme       bool               `json:"vat_flat_rate_scheme"`
-	VatFlatRateBps          pgtype.Int4        `json:"vat_flat_rate_bps"`
-	VatPreRegExpenseMonths  pgtype.Int4        `json:"vat_pre_reg_expense_months"`
-	BusinessPhone           pgtype.Text        `json:"business_phone"`
-	ContactEmail            pgtype.Text        `json:"contact_email"`
-	ContactPhone            pgtype.Text        `json:"contact_phone"`
-	Website                 pgtype.Text        `json:"website"`
-	BusinessCategory        pgtype.Text        `json:"business_category"`
-	BusinessDescription     pgtype.Text        `json:"business_description"`
-	Plan                    string             `json:"plan"`
-	TrialEndsAt             pgtype.Timestamptz `json:"trial_ends_at"`
-	StripeCustomerID        pgtype.Text        `json:"stripe_customer_id"`
-	StripeSubscriptionID    pgtype.Text        `json:"stripe_subscription_id"`
-	NativeCurrency          string             `json:"native_currency"`
+	Vrn                       pgtype.Text        `json:"vrn"`
+	PayeReference             pgtype.Text        `json:"paye_reference"`
+	AccountsOfficeReference   pgtype.Text        `json:"accounts_office_reference"`
+	ClaimsEmploymentAllowance bool               `json:"claims_employment_allowance"`
+	VatRegistered             bool               `json:"vat_registered"`
+	VatUsesNonStandardRates   bool               `json:"vat_uses_non_standard_rates"`
+	VatEffectiveDate          pgtype.Date        `json:"vat_effective_date"`
+	VatFirstReturnPeriodEnd   pgtype.Date        `json:"vat_first_return_period_end"`
+	VatReturnFrequency        pgtype.Text        `json:"vat_return_frequency"`
+	VatAccountingBasis        pgtype.Text        `json:"vat_accounting_basis"`
+	VatFlatRateScheme         bool               `json:"vat_flat_rate_scheme"`
+	VatFlatRateBps            pgtype.Int4        `json:"vat_flat_rate_bps"`
+	VatPreRegExpenseMonths    pgtype.Int4        `json:"vat_pre_reg_expense_months"`
+	BusinessPhone             pgtype.Text        `json:"business_phone"`
+	ContactEmail              pgtype.Text        `json:"contact_email"`
+	ContactPhone              pgtype.Text        `json:"contact_phone"`
+	Website                   pgtype.Text        `json:"website"`
+	BusinessCategory          pgtype.Text        `json:"business_category"`
+	BusinessDescription       pgtype.Text        `json:"business_description"`
+	Plan                      string             `json:"plan"`
+	TrialEndsAt               pgtype.Timestamptz `json:"trial_ends_at"`
+	StripeCustomerID          pgtype.Text        `json:"stripe_customer_id"`
+	StripeSubscriptionID      pgtype.Text        `json:"stripe_subscription_id"`
+	NativeCurrency            string             `json:"native_currency"`
 	// ISO 3166-1 alpha-2 country the org belongs to (e.g. GB). Selects the applicable vat_rates, which are keyed by the same country_code. NOT NULL, defaults to GB.
 	CountryCode       string             `json:"country_code"`
 	Timezone          string             `json:"timezone"`

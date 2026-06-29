@@ -185,7 +185,7 @@ INSERT INTO organisations (
     $4,   -- timezone         VARCHAR  e.g. 'Europe/London'
     $5    -- country_code     CHAR(2)  ISO 3166-1 alpha-2, e.g. 'GB'
 )
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, claims_employment_allowance, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateOrganisationParams struct {
@@ -232,6 +232,7 @@ func (q *Queries) CreateOrganisation(ctx context.Context, arg CreateOrganisation
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
+		&i.ClaimsEmploymentAllowance,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -550,7 +551,7 @@ func (q *Queries) GetNextInvoiceNumber(ctx context.Context, id uuid.UUID) (int32
 }
 
 const getOrganisation = `-- name: GetOrganisation :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, claims_employment_allowance, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -580,6 +581,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
+		&i.ClaimsEmploymentAllowance,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -612,7 +614,7 @@ func (q *Queries) GetOrganisation(ctx context.Context, id uuid.UUID) (Organisati
 }
 
 const getOrganisationBySlug = `-- name: GetOrganisationBySlug :one
-SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
+SELECT id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, claims_employment_allowance, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at FROM organisations
 WHERE slug = $1
   AND deleted_at IS NULL
 `
@@ -643,6 +645,7 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
+		&i.ClaimsEmploymentAllowance,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -953,7 +956,7 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 
 const listOrganisationsForUser = `-- name: ListOrganisationsForUser :many
 SELECT
-    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.vat_registered, o.vat_uses_non_standard_rates, o.vat_effective_date, o.vat_first_return_period_end, o.vat_return_frequency, o.vat_accounting_basis, o.vat_flat_rate_scheme, o.vat_flat_rate_bps, o.vat_pre_reg_expense_months, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.next_invoice_number, o.is_active, o.created_at, o.updated_at, o.deleted_at,
+    o.id, o.name, o.slug, o.companies_house_number, o.legal_name, o.registered_address, o.company_type, o.address_line_1, o.address_line_2, o.address_line_3, o.town, o.region, o.postcode, o.utr, o.vrn, o.paye_reference, o.accounts_office_reference, o.claims_employment_allowance, o.vat_registered, o.vat_uses_non_standard_rates, o.vat_effective_date, o.vat_first_return_period_end, o.vat_return_frequency, o.vat_accounting_basis, o.vat_flat_rate_scheme, o.vat_flat_rate_bps, o.vat_pre_reg_expense_months, o.business_phone, o.contact_email, o.contact_phone, o.website, o.business_category, o.business_description, o.plan, o.trial_ends_at, o.stripe_customer_id, o.stripe_subscription_id, o.native_currency, o.country_code, o.timezone, o.next_invoice_number, o.is_active, o.created_at, o.updated_at, o.deleted_at,
     m.role
 FROM organisations o
 JOIN organisation_memberships m ON m.organisation_id = o.id
@@ -964,51 +967,52 @@ ORDER BY o.name
 `
 
 type ListOrganisationsForUserRow struct {
-	ID                      uuid.UUID          `json:"id"`
-	Name                    string             `json:"name"`
-	Slug                    pgtype.Text        `json:"slug"`
-	CompaniesHouseNumber    pgtype.Text        `json:"companies_house_number"`
-	LegalName               pgtype.Text        `json:"legal_name"`
-	RegisteredAddress       pgtype.Text        `json:"registered_address"`
-	CompanyType             pgtype.Text        `json:"company_type"`
-	AddressLine1            pgtype.Text        `json:"address_line_1"`
-	AddressLine2            pgtype.Text        `json:"address_line_2"`
-	AddressLine3            pgtype.Text        `json:"address_line_3"`
-	Town                    pgtype.Text        `json:"town"`
-	Region                  pgtype.Text        `json:"region"`
-	Postcode                pgtype.Text        `json:"postcode"`
-	Utr                     pgtype.Text        `json:"utr"`
-	Vrn                     pgtype.Text        `json:"vrn"`
-	PayeReference           pgtype.Text        `json:"paye_reference"`
-	AccountsOfficeReference pgtype.Text        `json:"accounts_office_reference"`
-	VatRegistered           bool               `json:"vat_registered"`
-	VatUsesNonStandardRates bool               `json:"vat_uses_non_standard_rates"`
-	VatEffectiveDate        pgtype.Date        `json:"vat_effective_date"`
-	VatFirstReturnPeriodEnd pgtype.Date        `json:"vat_first_return_period_end"`
-	VatReturnFrequency      pgtype.Text        `json:"vat_return_frequency"`
-	VatAccountingBasis      pgtype.Text        `json:"vat_accounting_basis"`
-	VatFlatRateScheme       bool               `json:"vat_flat_rate_scheme"`
-	VatFlatRateBps          pgtype.Int4        `json:"vat_flat_rate_bps"`
-	VatPreRegExpenseMonths  pgtype.Int4        `json:"vat_pre_reg_expense_months"`
-	BusinessPhone           pgtype.Text        `json:"business_phone"`
-	ContactEmail            pgtype.Text        `json:"contact_email"`
-	ContactPhone            pgtype.Text        `json:"contact_phone"`
-	Website                 pgtype.Text        `json:"website"`
-	BusinessCategory        pgtype.Text        `json:"business_category"`
-	BusinessDescription     pgtype.Text        `json:"business_description"`
-	Plan                    string             `json:"plan"`
-	TrialEndsAt             pgtype.Timestamptz `json:"trial_ends_at"`
-	StripeCustomerID        pgtype.Text        `json:"stripe_customer_id"`
-	StripeSubscriptionID    pgtype.Text        `json:"stripe_subscription_id"`
-	NativeCurrency          string             `json:"native_currency"`
-	CountryCode             string             `json:"country_code"`
-	Timezone                string             `json:"timezone"`
-	NextInvoiceNumber       int32              `json:"next_invoice_number"`
-	IsActive                bool               `json:"is_active"`
-	CreatedAt               pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
-	DeletedAt               pgtype.Timestamptz `json:"deleted_at"`
-	Role                    OrganisationRole   `json:"role"`
+	ID                        uuid.UUID          `json:"id"`
+	Name                      string             `json:"name"`
+	Slug                      pgtype.Text        `json:"slug"`
+	CompaniesHouseNumber      pgtype.Text        `json:"companies_house_number"`
+	LegalName                 pgtype.Text        `json:"legal_name"`
+	RegisteredAddress         pgtype.Text        `json:"registered_address"`
+	CompanyType               pgtype.Text        `json:"company_type"`
+	AddressLine1              pgtype.Text        `json:"address_line_1"`
+	AddressLine2              pgtype.Text        `json:"address_line_2"`
+	AddressLine3              pgtype.Text        `json:"address_line_3"`
+	Town                      pgtype.Text        `json:"town"`
+	Region                    pgtype.Text        `json:"region"`
+	Postcode                  pgtype.Text        `json:"postcode"`
+	Utr                       pgtype.Text        `json:"utr"`
+	Vrn                       pgtype.Text        `json:"vrn"`
+	PayeReference             pgtype.Text        `json:"paye_reference"`
+	AccountsOfficeReference   pgtype.Text        `json:"accounts_office_reference"`
+	ClaimsEmploymentAllowance bool               `json:"claims_employment_allowance"`
+	VatRegistered             bool               `json:"vat_registered"`
+	VatUsesNonStandardRates   bool               `json:"vat_uses_non_standard_rates"`
+	VatEffectiveDate          pgtype.Date        `json:"vat_effective_date"`
+	VatFirstReturnPeriodEnd   pgtype.Date        `json:"vat_first_return_period_end"`
+	VatReturnFrequency        pgtype.Text        `json:"vat_return_frequency"`
+	VatAccountingBasis        pgtype.Text        `json:"vat_accounting_basis"`
+	VatFlatRateScheme         bool               `json:"vat_flat_rate_scheme"`
+	VatFlatRateBps            pgtype.Int4        `json:"vat_flat_rate_bps"`
+	VatPreRegExpenseMonths    pgtype.Int4        `json:"vat_pre_reg_expense_months"`
+	BusinessPhone             pgtype.Text        `json:"business_phone"`
+	ContactEmail              pgtype.Text        `json:"contact_email"`
+	ContactPhone              pgtype.Text        `json:"contact_phone"`
+	Website                   pgtype.Text        `json:"website"`
+	BusinessCategory          pgtype.Text        `json:"business_category"`
+	BusinessDescription       pgtype.Text        `json:"business_description"`
+	Plan                      string             `json:"plan"`
+	TrialEndsAt               pgtype.Timestamptz `json:"trial_ends_at"`
+	StripeCustomerID          pgtype.Text        `json:"stripe_customer_id"`
+	StripeSubscriptionID      pgtype.Text        `json:"stripe_subscription_id"`
+	NativeCurrency            string             `json:"native_currency"`
+	CountryCode               string             `json:"country_code"`
+	Timezone                  string             `json:"timezone"`
+	NextInvoiceNumber         int32              `json:"next_invoice_number"`
+	IsActive                  bool               `json:"is_active"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt                 pgtype.Timestamptz `json:"deleted_at"`
+	Role                      OrganisationRole   `json:"role"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1044,6 +1048,7 @@ func (q *Queries) ListOrganisationsForUser(ctx context.Context, userID uuid.UUID
 			&i.Vrn,
 			&i.PayeReference,
 			&i.AccountsOfficeReference,
+			&i.ClaimsEmploymentAllowance,
 			&i.VatRegistered,
 			&i.VatUsesNonStandardRates,
 			&i.VatEffectiveDate,
@@ -1375,6 +1380,7 @@ UPDATE organisations SET
     vrn                       = $14,
     paye_reference            = $15,
     accounts_office_reference = $16,
+    claims_employment_allowance = $26,
     business_phone            = $17,
     contact_email             = $18,
     contact_phone             = $19,
@@ -1387,35 +1393,36 @@ UPDATE organisations SET
     updated_at                = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, claims_employment_allowance, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationParams struct {
-	ID                      uuid.UUID   `json:"id"`
-	Name                    string      `json:"name"`
-	Slug                    pgtype.Text `json:"slug"`
-	CompaniesHouseNumber    pgtype.Text `json:"companies_house_number"`
-	LegalName               pgtype.Text `json:"legal_name"`
-	CompanyType             pgtype.Text `json:"company_type"`
-	AddressLine1            pgtype.Text `json:"address_line_1"`
-	AddressLine2            pgtype.Text `json:"address_line_2"`
-	AddressLine3            pgtype.Text `json:"address_line_3"`
-	Town                    pgtype.Text `json:"town"`
-	Region                  pgtype.Text `json:"region"`
-	Postcode                pgtype.Text `json:"postcode"`
-	Utr                     pgtype.Text `json:"utr"`
-	Vrn                     pgtype.Text `json:"vrn"`
-	PayeReference           pgtype.Text `json:"paye_reference"`
-	AccountsOfficeReference pgtype.Text `json:"accounts_office_reference"`
-	BusinessPhone           pgtype.Text `json:"business_phone"`
-	ContactEmail            pgtype.Text `json:"contact_email"`
-	ContactPhone            pgtype.Text `json:"contact_phone"`
-	Website                 pgtype.Text `json:"website"`
-	BusinessCategory        pgtype.Text `json:"business_category"`
-	BusinessDescription     pgtype.Text `json:"business_description"`
-	NativeCurrency          string      `json:"native_currency"`
-	Timezone                string      `json:"timezone"`
-	CountryCode             string      `json:"country_code"`
+	ID                        uuid.UUID   `json:"id"`
+	Name                      string      `json:"name"`
+	Slug                      pgtype.Text `json:"slug"`
+	CompaniesHouseNumber      pgtype.Text `json:"companies_house_number"`
+	LegalName                 pgtype.Text `json:"legal_name"`
+	CompanyType               pgtype.Text `json:"company_type"`
+	AddressLine1              pgtype.Text `json:"address_line_1"`
+	AddressLine2              pgtype.Text `json:"address_line_2"`
+	AddressLine3              pgtype.Text `json:"address_line_3"`
+	Town                      pgtype.Text `json:"town"`
+	Region                    pgtype.Text `json:"region"`
+	Postcode                  pgtype.Text `json:"postcode"`
+	Utr                       pgtype.Text `json:"utr"`
+	Vrn                       pgtype.Text `json:"vrn"`
+	PayeReference             pgtype.Text `json:"paye_reference"`
+	AccountsOfficeReference   pgtype.Text `json:"accounts_office_reference"`
+	BusinessPhone             pgtype.Text `json:"business_phone"`
+	ContactEmail              pgtype.Text `json:"contact_email"`
+	ContactPhone              pgtype.Text `json:"contact_phone"`
+	Website                   pgtype.Text `json:"website"`
+	BusinessCategory          pgtype.Text `json:"business_category"`
+	BusinessDescription       pgtype.Text `json:"business_description"`
+	NativeCurrency            string      `json:"native_currency"`
+	Timezone                  string      `json:"timezone"`
+	CountryCode               string      `json:"country_code"`
+	ClaimsEmploymentAllowance bool        `json:"claims_employment_allowance"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1455,6 +1462,7 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		arg.NativeCurrency,
 		arg.Timezone,
 		arg.CountryCode,
+		arg.ClaimsEmploymentAllowance,
 	)
 	var i Organisation
 	err := row.Scan(
@@ -1475,6 +1483,7 @@ func (q *Queries) UpdateOrganisation(ctx context.Context, arg UpdateOrganisation
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
+		&i.ClaimsEmploymentAllowance,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,
@@ -1521,7 +1530,7 @@ UPDATE organisations SET
     updated_at                   = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
+RETURNING id, name, slug, companies_house_number, legal_name, registered_address, company_type, address_line_1, address_line_2, address_line_3, town, region, postcode, utr, vrn, paye_reference, accounts_office_reference, claims_employment_allowance, vat_registered, vat_uses_non_standard_rates, vat_effective_date, vat_first_return_period_end, vat_return_frequency, vat_accounting_basis, vat_flat_rate_scheme, vat_flat_rate_bps, vat_pre_reg_expense_months, business_phone, contact_email, contact_phone, website, business_category, business_description, plan, trial_ends_at, stripe_customer_id, stripe_subscription_id, native_currency, country_code, timezone, next_invoice_number, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateOrganisationVatSettingsParams struct {
@@ -1581,6 +1590,7 @@ func (q *Queries) UpdateOrganisationVatSettings(ctx context.Context, arg UpdateO
 		&i.Vrn,
 		&i.PayeReference,
 		&i.AccountsOfficeReference,
+		&i.ClaimsEmploymentAllowance,
 		&i.VatRegistered,
 		&i.VatUsesNonStandardRates,
 		&i.VatEffectiveDate,

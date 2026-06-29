@@ -25,10 +25,14 @@ type Category struct {
 	DefaultVat       pgtype.Text `json:"default_vat"`
 	IsCapitalAsset   bool        `json:"is_capital_asset"`
 	// TRUE = FreeAgent-managed control account (VAT, debtors, user sub-accounts). Posted to automatically; not a free pick for explanations.
-	IsSystemManaged bool               `json:"is_system_managed"`
-	IsActive        bool               `json:"is_active"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	IsSystemManaged   bool               `json:"is_system_managed"`
+	IsUserSubdivided  bool               `json:"is_user_subdivided"`
+	ParentNominalCode pgtype.Text        `json:"parent_nominal_code"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	BankAccountID     pgtype.UUID        `json:"bank_account_id"`
+	IsActive          bool               `json:"is_active"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 // The 18 bank-transaction explanation types (GLOBAL reference, like vat_rates). entity_link records what the type links to (bank account, user, invoice…).

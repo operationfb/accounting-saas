@@ -21,6 +21,11 @@ type UpdateOrganisationRequest struct {
 	Utr                     *string `json:"utr"` // "Corporation Tax Reference" on the form
 	PayeReference           *string `json:"paye_reference"`
 	AccountsOfficeReference *string `json:"accounts_office_reference"`
+	// Whether the company claims the Employment Allowance (the payroll EA offset).
+	// Defaults to true when the field is omitted (a non-pointer bool with no `binding`
+	// tag would be false, which would silently turn off an existing claim — so it's a
+	// pointer and the service treats nil as "leave unchanged / default true").
+	ClaimsEmploymentAllowance *bool `json:"claims_employment_allowance"`
 
 	AddressLine1 *string `json:"address_line_1"`
 	AddressLine2 *string `json:"address_line_2"`
@@ -51,11 +56,12 @@ type OrganisationDetailsResponse struct {
 	LegalName   *string `json:"legal_name,omitempty"`
 	CompanyType *string `json:"company_type,omitempty"`
 
-	CompaniesHouseNumber    *string `json:"companies_house_number,omitempty"`
-	Utr                     *string `json:"utr,omitempty"`
-	Vrn                     *string `json:"vrn,omitempty"`
-	PayeReference           *string `json:"paye_reference,omitempty"`
-	AccountsOfficeReference *string `json:"accounts_office_reference,omitempty"`
+	CompaniesHouseNumber      *string `json:"companies_house_number,omitempty"`
+	Utr                       *string `json:"utr,omitempty"`
+	Vrn                       *string `json:"vrn,omitempty"`
+	PayeReference             *string `json:"paye_reference,omitempty"`
+	AccountsOfficeReference   *string `json:"accounts_office_reference,omitempty"`
+	ClaimsEmploymentAllowance bool    `json:"claims_employment_allowance"`
 
 	AddressLine1 *string `json:"address_line_1,omitempty"`
 	AddressLine2 *string `json:"address_line_2,omitempty"`

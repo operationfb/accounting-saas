@@ -21,6 +21,7 @@ export const OrganisationDetailsSchema = z.object({
   vrn: z.string().nullish(),
   paye_reference: z.string().nullish(),
   accounts_office_reference: z.string().nullish(),
+  claims_employment_allowance: z.boolean(),
 
   address_line_1: z.string().nullish(),
   address_line_2: z.string().nullish(),
@@ -69,6 +70,7 @@ export interface UpdateOrganisationRequest {
   utr?: string
   paye_reference?: string
   accounts_office_reference?: string
+  claims_employment_allowance?: boolean
 
   address_line_1?: string
   address_line_2?: string

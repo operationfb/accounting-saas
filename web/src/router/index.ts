@@ -28,6 +28,10 @@ import OverviewDashboardView from '@/views/OverviewDashboardView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import UsersListView from '@/views/UsersListView.vue'
 import IntegrationsView from '@/views/IntegrationsView.vue'
+import PayrollOverviewView from '@/views/PayrollOverviewView.vue'
+import PayrollRunView from '@/views/PayrollRunView.vue'
+import PayslipView from '@/views/PayslipView.vue'
+import PayslipEditView from '@/views/PayslipEditView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -72,6 +76,12 @@ const router = createRouter({
     { path: '/expenses/new', name: 'expense-new', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/:id', name: 'expense-detail', component: ExpenseDetailView, meta: { requiresAuth: true, title: 'Expenses' } },
     { path: '/expenses/:id/edit', name: 'expense-edit', component: ExpenseEntryView, meta: { requiresAuth: true, title: 'Expenses' } },
+    // Payroll: the pay-run / payslip engine (owner/admin). Overview → run wizard →
+    // payslip view/edit. Lives under the "Money Out" nav group.
+    { path: '/payroll', name: 'payroll', component: PayrollOverviewView, meta: { requiresAuth: true, title: 'Payroll' } },
+    { path: '/payroll/run/:id', name: 'payroll-run', component: PayrollRunView, meta: { requiresAuth: true, title: 'Payroll' } },
+    { path: '/payroll/payslips/:id', name: 'payslip', component: PayslipView, meta: { requiresAuth: true, title: 'Payroll' } },
+    { path: '/payroll/payslips/:id/edit', name: 'payslip-edit', component: PayslipEditView, meta: { requiresAuth: true, title: 'Payroll' } },
     // VAT returns: the list of return periods generated from the org's VAT settings.
     // The per-period detail (Preview / Full Report) is a later slice.
     { path: '/vat-returns', name: 'vat-returns', component: VatReturnListView, meta: { requiresAuth: true, title: 'VAT' } },

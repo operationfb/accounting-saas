@@ -15,7 +15,7 @@
 -- seeded — the explanation's entity links represent those.
 --
 -- account_type names follow the detailed P&L / Balance-Sheet sheets; where the
--- Money IN/OUT tabs use a friendlier label (e.g. 904 "BiK", 908 "Dividend") that
+-- Money IN/OUT tabs use a friendlier label (e.g. 904 "BiK") that
 -- label lives on the MAPPING (transaction_type_categories.display_label), not here.
 --
 -- Idempotent: INSERT ... ON CONFLICT (organisation_id, nominal_code) DO NOTHING.
@@ -167,16 +167,16 @@ ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
 
 -- 10. USER / DIRECTOR ACCOUNTS (general_categories, system-managed) ------------
 --     Names per the Balance-Sheet sheet; the Money Paid/Received-to-User picker
---     relabels some of these (e.g. 904 "BiK", 908 "Dividend") via the mapping.
+--     relabels some of these (e.g. 904 "BiK") via the mapping.
 INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group, is_system_managed)
 SELECT '00000000-0000-0000-0000-000000000001', v.code, v.name, 'USER_ACCOUNT', 'general_categories', TRUE
 FROM (VALUES
   ('900','Capital Account'),
   ('902','Net Salary and Bonuses'),
   ('904','Employer NI'),
-  ('905','Employer Pension'),
-  ('907','Drawings / Money Paid to User'),
-  ('908','Expense Payment'),
+  ('905','Expense Payment'),
+  ('907','Director Loan Account'),
+  ('908','Dividend'),
   ('910','Capital Introduced')
 ) AS v(code, name)
 ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
@@ -187,7 +187,7 @@ SELECT '00000000-0000-0000-0000-000000000001', v.code, v.name, 'EQUITY', 'genera
 FROM (VALUES
   ('670','Share Premium',    FALSE),
   ('921','Share Capital',    TRUE),
-  ('968','Retained Profits', TRUE)
+  ('968','Profit and Loss', TRUE)
 ) AS v(code, name, sys)
 ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
 

@@ -180,6 +180,9 @@ func (s *Service) UpdateOrganisation(
 		Utr:                     kernel.NullText(req.Utr), // "Corporation Tax Reference"
 		PayeReference:           kernel.NullText(req.PayeReference),
 		AccountsOfficeReference: kernel.NullText(req.AccountsOfficeReference),
+		// Employment Allowance claim flag: nil (field omitted) preserves the stored
+		// value, so an older client that doesn't send it can't accidentally clear it.
+		ClaimsEmploymentAllowance: boolOr(req.ClaimsEmploymentAllowance, existing.ClaimsEmploymentAllowance),
 
 		// Structured address.
 		AddressLine1: kernel.NullText(req.AddressLine1),
@@ -230,6 +233,15 @@ func normaliseCompanyType(raw *string) (*string, error) {
 	return &v, nil
 }
 
+// boolOr returns *v when the pointer is set, else the fallback (used to preserve a
+// stored bool when the request omits the field).
+func boolOr(v *bool, fallback bool) bool {
+	if v != nil {
+		return *v
+	}
+	return fallback
+}
+
 // =============================================================================
 // RESPONSE FORMATTER
 // =============================================================================
@@ -248,11 +260,12 @@ func organisationToResponse(o auth.Organisation) *OrganisationDetailsResponse {
 		LegalName:   kernel.NullTextToPtr(o.LegalName),
 		CompanyType: kernel.NullTextToPtr(o.CompanyType),
 
-		CompaniesHouseNumber:    kernel.NullTextToPtr(o.CompaniesHouseNumber),
-		Utr:                     kernel.NullTextToPtr(o.Utr),
-		Vrn:                     kernel.NullTextToPtr(o.Vrn),
-		PayeReference:           kernel.NullTextToPtr(o.PayeReference),
-		AccountsOfficeReference: kernel.NullTextToPtr(o.AccountsOfficeReference),
+		CompaniesHouseNumber:      kernel.NullTextToPtr(o.CompaniesHouseNumber),
+		Utr:                       kernel.NullTextToPtr(o.Utr),
+		Vrn:                       kernel.NullTextToPtr(o.Vrn),
+		PayeReference:             kernel.NullTextToPtr(o.PayeReference),
+		AccountsOfficeReference:   kernel.NullTextToPtr(o.AccountsOfficeReference),
+		ClaimsEmploymentAllowance: o.ClaimsEmploymentAllowance,
 
 		AddressLine1: kernel.NullTextToPtr(o.AddressLine1),
 		AddressLine2: kernel.NullTextToPtr(o.AddressLine2),

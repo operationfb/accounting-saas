@@ -39,6 +39,7 @@ import (
 	dbintegrations "github.com/operationfb/accounting-saas/db/integrations"
 	dbinvoices "github.com/operationfb/accounting-saas/db/invoices"
 	dboverview "github.com/operationfb/accounting-saas/db/overview"
+	dbpayroll "github.com/operationfb/accounting-saas/db/payroll"
 	dbprojects "github.com/operationfb/accounting-saas/db/projects"
 	dbvat "github.com/operationfb/accounting-saas/db/vat"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
@@ -59,6 +60,7 @@ import (
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	overview "github.com/operationfb/accounting-saas/internal/overview"
+	payroll "github.com/operationfb/accounting-saas/internal/payroll"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
@@ -168,6 +170,12 @@ func main() {
 	// Reuses the shared authQueries; the pool backs UpdateMember's transaction. Its
 	// Handler self-registers /api/v1/members* after NewServer.
 	memberSvc := members.NewService(pool, authQueries)
+
+	// Payroll: the pay-run / payslip engine (owner/admin only). Reads each employee's
+	// employee_payroll profile, runs the simplified PAYE/NI engine against the seeded
+	// rate tables, and stores payslips per monthly pay run. Self-registers
+	// /api/v1/payroll* after NewServer.
+	payrollSvc := payroll.NewService(pool, dbpayroll.New(pool), authQueries)
 
 	// Organisation: read/update the caller's own company details (the Company
 	// Details settings screen). Read by any active member; edit by owner/admin.
@@ -484,6 +492,7 @@ func main() {
 	projects.NewHandler(projectSvc).RegisterRoutes(server.Router(), tokenMaker)
 	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
+	payroll.NewHandler(payrollSvc).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	// HMRC fraud-prevention vendor identity (static half of the Gov-* headers; the

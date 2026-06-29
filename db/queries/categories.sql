@@ -107,3 +107,72 @@ SELECT EXISTS (
 -- -----------------------------------------------------------------------------
 -- name: GetVatRate :one
 SELECT * FROM vat_rates WHERE id = $1;
+
+
+-- -----------------------------------------------------------------------------
+-- GENERAL-LEDGER RESOLVER SUPPORT
+-- The ledger.Accounts resolver (internal/ledger) turns an account_role into a real
+-- categories row. These back that: look up a control nominal, and find-or-create a
+-- per-user sub-account of an is_user_subdivided parent (e.g. 908 Dividend → 908-1).
+-- -----------------------------------------------------------------------------
+
+-- name: GetCategoryByNominal :one
+-- One active category by (org, nominal_code) — the natural-key lookup the resolver
+-- uses for fixed-role nominals AND to inspect a picked category's account_type /
+-- is_user_subdivided flag. :one.
+SELECT * FROM categories
+WHERE organisation_id = $1
+  AND nominal_code    = sqlc.arg(nominal_code)
+  AND is_active;
+
+-- name: GetUserSubAccount :one
+-- An existing per-user sub-account of a parent, for this org+user. The first half of
+-- the resolver's idempotent find-or-create (idx_categories_user_subaccount guarantees
+-- at most one). :one.
+SELECT * FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = sqlc.arg(parent_nominal_code)
+  AND user_id             = sqlc.arg(user_id);
+
+-- name: NextSubAccountSuffix :one
+-- The next '-N' suffix for a parent in this org (1 if none yet): MAX(existing N)+1.
+-- So 908's first sub-account is 908-1, the next 908-2, … Keyed only by org+parent, so
+-- it serves BOTH user (908-x) and bank (750-x) sub-accounts. :one.
+SELECT COALESCE(MAX(NULLIF(split_part(nominal_code, '-', 2), '')::int), 0) + 1 AS next_suffix
+FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = sqlc.arg(parent_nominal_code);
+
+-- name: CreateUserSubAccount :one
+-- Create a per-user sub-account row, inheriting the parent's account_type / api_group.
+-- Always system-managed (never a free pick). RETURNING * so the resolver gets its id.
+-- :one.
+INSERT INTO categories (
+    organisation_id, nominal_code, name, account_type, api_group,
+    is_system_managed, parent_nominal_code, user_id
+) VALUES (
+    $1, sqlc.arg(nominal_code), sqlc.arg(name), sqlc.arg(account_type), sqlc.arg(api_group),
+    TRUE, sqlc.arg(parent_nominal_code), sqlc.arg(user_id)
+)
+RETURNING *;
+
+-- name: GetBankSubAccount :one
+-- An existing 750-x sub-account for this org+bank account. The find half of the
+-- resolver's idempotent find-or-create (idx_categories_bank_subaccount guarantees at
+-- most one). :one.
+SELECT * FROM categories
+WHERE organisation_id     = $1
+  AND parent_nominal_code = sqlc.arg(parent_nominal_code)
+  AND bank_account_id     = sqlc.arg(bank_account_id);
+
+-- name: CreateBankSubAccount :one
+-- Create a per-bank-account sub-account row (750-x), inheriting the parent's
+-- account_type / api_group. System-managed. RETURNING * for the resolver. :one.
+INSERT INTO categories (
+    organisation_id, nominal_code, name, account_type, api_group,
+    is_system_managed, parent_nominal_code, bank_account_id
+) VALUES (
+    $1, sqlc.arg(nominal_code), sqlc.arg(name), sqlc.arg(account_type), sqlc.arg(api_group),
+    TRUE, sqlc.arg(parent_nominal_code), sqlc.arg(bank_account_id)
+)
+RETURNING *;

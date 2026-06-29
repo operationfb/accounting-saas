@@ -99,6 +99,42 @@ scoped. Deferred:
 
 - **List filtering & pagination for `GET /api/v1/expenses`.** Today the endpoint returns the full set the caller may see (owner/admin: whole org; others: own) with no filters or paging. Add query-param filtering (date range, status, project) and pagination (limit/offset or cursor), preserving the existing owner/admin-vs-own scoping in `ListExpenses`. Reuse the existing org-scoped sqlc queries `ListExpensesByDateRange` / `ListExpensesByStatus` / `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered variants would need new queries. _Files: `expense_service.go`, `server.go`, `db/queries/query.sql`._
 
+### Payroll pay-run engine (`internal/payroll`)
+
+The pay-run / payslip engine + simplified PAYE/NI calculator shipped (`internal/payroll`,
+`db/payroll`, `db/schema/payroll_schema.sql`, the four global rate tables seeded by
+`db/seeds/payroll_rates_2026_27.sql`). Deliberately scoped; deferred:
+
+- **HMRC RTI / FPS / EPS filing.** A completed run reads as "report unfiled" — there is
+  no Real Time Information submission. Add the FPS/EPS XML + Government Gateway transport
+  (mirrors the VAT MTD integration). `pay_runs.status` only goes `draft → completed`.
+- **Statutory pay calculation.** SSP/SMP/SPP/etc. are stored + editable on the payslip but
+  taken AS ENTERED — not auto-calculated from absence/average-earnings rules.
+- **Pension contributions.** `employee_pension_minor` / `employer_pension_minor` are always
+  0 (auto-enrolment %, qualifying earnings, scheme reference all deferred — ties into the
+  profile's deferred "making contributions" detail).
+- **Student-loan deductions.** The undergraduate/postgraduate flags are snapshotted but
+  `student_loan_minor` is always 0 (plan-type thresholds not implemented).
+- **NI category rates beyond the confirmed set.** Only A is confirmed against reference
+  data; C/J/H/M/Z are seeded with best-known values and B is omitted. Verify every letter
+  against the gov.uk per-category table; the engine REJECTS an unseeded letter rather than
+  guessing. Also: H/M/Z employer 0% ignores the Upper Secondary Threshold (their relief
+  actually stops at the UST — model the UST to be correct above ~£50k).
+- **K-codes (negative free pay)** and the directors' "alternative arrangements" final-month
+  recalculation (treated as ordinary monthly today).
+- **Weekly / other frequencies.** `pay_runs.frequency` is constrained to `monthly`; the
+  period arithmetic in `internal/payroll/periods.go` is monthly-only.
+- **Employee self-service payslip view.** Payroll is owner/admin only; employees can't view
+  their own payslips yet (no per-user read path).
+- **2026/27 rate verification.** Confirm `db/seeds/payroll_rates_2026_27.sql` against gov.uk
+  before production reliance (thresholds were legislated frozen, so they should carry over).
+- ~~**Per-employee N+1 in prepare / get-run / overview.**~~ DONE. `PreparePayRun` now fetches
+  prior YTD in one grouped query (`ListYearToDateByUserUpToPeriod`), computes in-memory, and
+  bulk-inserts all payslips in a single pipelined batch (`CreatePayslipComputed :batchexec`);
+  `buildPayRunDetail` resolves names + YTD via two grouped queries (`ListRunPayslipNames` + the
+  YTD map) instead of per-payslip lookups. On the 264-member dev org: prepare 2m20s→4.5s,
+  get-run 57s→1.4s, overview 29s→1s. _Files: `internal/payroll/service.go`, `db/queries/payroll.sql`._
+
 
 ## Expenses & categories
 

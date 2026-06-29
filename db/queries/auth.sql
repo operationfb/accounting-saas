@@ -345,6 +345,7 @@ UPDATE organisations SET
     vrn                       = $14,
     paye_reference            = $15,
     accounts_office_reference = $16,
+    claims_employment_allowance = $26,
     business_phone            = $17,
     contact_email             = $18,
     contact_phone             = $19,
