@@ -222,6 +222,19 @@ CREATE TABLE bank_transaction_explanations (
     ec_status           VARCHAR(30),                                     -- UK/Non-EC, Reverse Charge, EC VAT MOSS, …
     place_of_supply     CHAR(2),                                         -- for EC VAT MOSS
 
+    -- Foreign-currency settlement (realised FX). gross_value_minor stays in the BANK
+    -- account's currency; these capture the home + invoice-currency views of the same
+    -- portion so an invoice receipt is currency-coherent and can crystallise realised
+    -- FX gain/loss. All NULL on a home-currency receipt (currency == native).
+    --   currency              the bank account's currency at explain time (ISO 4217)
+    --   exchange_rate         home (native) units per 1 unit of `currency` on dated_on; NULL when home
+    --   base_value_minor      gross_value_minor expressed in HOME currency at the receipt-date rate
+    --   settled_invoice_minor the receipt portion expressed in the INVOICE's currency (== gross when same)
+    currency              CHAR(3) REFERENCES currencies(code),
+    exchange_rate         NUMERIC(18,6),
+    base_value_minor      BIGINT,
+    settled_invoice_minor BIGINT,
+
     -- Type-specific links to the settled entities (real FKs): transfer account, user,
     -- invoice and bill below. Links to not-yet-built entities (credit note / HP /
     -- capital asset) are recorded by `type` for now; their FK columns land with that module.

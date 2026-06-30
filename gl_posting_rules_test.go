@@ -30,15 +30,22 @@ import (
 
 // basisVec maps an amount_basis to its (net, vat) component weights. GROSS spans
 // both axes because GROSS = NET + VAT.
+//
+// DEBTOR_RELIEF (invoice receipts) is modelled like GROSS: in the no-FX baseline the bank
+// GROSS received equals the debtor relief, so a DR Bank / CR Debtors pair cancels. The two
+// realised-FX legs (FX_GAIN/FX_LOSS) are the reconciling plug for the rate difference — a
+// home-value residual, not a net/vat component — so they carry zero weight here (their real
+// magnitude balances via the DB Σ=0 trigger + the integration test, which this static check
+// can't quantify).
 func basisVec(basis string) (net, vat int) {
 	switch basis {
-	case "GROSS":
+	case "GROSS", "DEBTOR_RELIEF":
 		return 1, 1
 	case "NET":
 		return 1, 0
 	case "VAT":
 		return 0, 1
-	default:
+	default: // incl. FX_GAIN / FX_LOSS — the realised-FX plug, off the net/vat axes
 		return 0, 0
 	}
 }

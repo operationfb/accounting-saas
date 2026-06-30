@@ -398,9 +398,24 @@ Full plan: `~/.claude/plans/in-order-to-create-binary-manatee.md` (4 phases).
   posts nothing to the GL (that's Phase 2/3). **Realised is shown as `"0.00"`** (per-
   payment realised needs receipt-date rates → deferred with Phase 2). Tested in
   `invoice_service_test.go` (`TestInvoiceFXSummary`).
-- **Phase 2 — realised gain/loss on payment** — NOT STARTED. Wire the (currently
-  unwired) bank `INVOICE_RECEIPT` GL posting + per-leg currency on the poster + the
-  4-leg balanced journal. See plan.
+- **Phase 2 — realised gain/loss on payment — LANDED (2026-06-29).** Settling a foreign
+  invoice with a bank receipt now posts a balanced multi-currency journal that crystallises
+  realised FX. `bank_transaction_explanations` gained `currency` / `exchange_rate` /
+  `base_value_minor` / `settled_invoice_minor` (the bank-, home- and invoice-currency views
+  of the portion, computed at the receipt-date rate). The poster's `ledger.Amount` gained
+  optional per-leg `Currency`/`ExchangeRate` so one entry spans three currencies (bank cash,
+  invoice-ccy debtor relief, home-ccy FX). `INVOICE_RECEIPT` rule extended to 4 legs:
+  DR Bank `GROSS` / CR Debtors `DEBTOR_RELIEF` / CR `FX_REALISED_GAIN` `FX_GAIN` /
+  DR `FX_REALISED_LOSS` `FX_LOSS` — both FX roles → the new **390 "Realized Currency
+  Exchange Gain/Loss"** (single signed account; gain CR / loss DR). Debtor relief uses the
+  invoice's BOOKING rate via the **difference of cumulative apportionments**, so Σ relief =
+  `native_total` exactly and the home receivable closes to 0; `repostInvoiceReceipts`
+  re-posts ALL of an invoice's receipts (ordered) on each mutation so this stays correct
+  under edit/delete/re-point. `resolveInvoice`/`resyncInvoicePaid` now work in invoice-
+  currency space (`settled_invoice_minor`). New pure leaf `internal/fx` (`ConvertVia` +
+  `RealisedGainLoss`). Tested in `gl_poster_receipt_test.go` (realised loss + residual
+  closure) + `internal/fx/fx_test.go`. _Bills realised FX (symmetric CREDITORS path) +
+  cross-rate when org home ≠ GBP remain deferred._
 - **Phase 3 — periodic unrealised revaluation of open foreign debtors** — NOT STARTED.
 - **Phase 4 — foreign-currency bank-balance revaluation** (750-x vs 390) — NOT STARTED.
   Account-scheme decision pending: invoice realised FX uses 218 + a sibling loss

@@ -42,9 +42,17 @@ type Poster interface {
 
 // Amount is one money component in BOTH the transaction currency and the org's base
 // (home) currency. The poster never re-derives these — the source row provides them.
+//
+// Currency / ExchangeRate are optional PER-LEG overrides: on a single entry whose legs
+// live in different currencies (an invoice receipt — bank-ccy cash, invoice-ccy debtor
+// relief, home-ccy realised FX), each leg stamps its own. When unset they fall back to
+// the entry-level ec.TxnCurrency / ec.ExchangeRate, so every existing single-currency
+// caller (INVOICE_SENT, payroll, a same-currency receipt) is unaffected.
 type Amount struct {
-	Txn  int64 // in the entry's transaction currency minor units
-	Base int64 // in the entry's base_currency minor units (the balancing figure)
+	Txn          int64          // in this LEG's transaction currency minor units
+	Base         int64          // in the entry's base_currency minor units (the balancing figure)
+	Currency     string         // optional per-leg txn currency; "" ⇒ ec.TxnCurrency
+	ExchangeRate pgtype.Numeric // optional per-leg rate; !Valid ⇒ ec.ExchangeRate
 }
 
 // EntryContext is everything the poster needs from a source event. `Amounts` is keyed
@@ -88,7 +96,9 @@ func NewPoster(ledgerQ *ledgerdb.Queries, catsQ *categories.Queries, authQ *auth
 
 type builtLine struct {
 	accountID uuid.UUID
-	txn, base int64 // signed (DR +, CR −)
+	txn, base int64          // signed (DR +, CR −)
+	currency  string         // this leg's txn currency (falls back to ec.TxnCurrency)
+	rate      pgtype.Numeric // this leg's exchange rate (falls back to ec.ExchangeRate)
 }
 
 func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error {
@@ -148,7 +158,22 @@ func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) erro
 		if leg.Direction == "CR" {
 			sign = -1
 		}
-		lines = append(lines, builtLine{accountID: accountID, txn: sign * amt.Txn, base: sign * amt.Base})
+		// Per-leg currency/rate override (multi-currency entry) with entry-level fallback.
+		legCurrency := ec.TxnCurrency
+		if amt.Currency != "" {
+			legCurrency = amt.Currency
+		}
+		legRate := ec.ExchangeRate
+		if amt.ExchangeRate.Valid {
+			legRate = amt.ExchangeRate
+		}
+		lines = append(lines, builtLine{
+			accountID: accountID,
+			txn:       sign * amt.Txn,
+			base:      sign * amt.Base,
+			currency:  legCurrency,
+			rate:      legRate,
+		})
 		baseSum += sign * amt.Base
 	}
 
@@ -178,10 +203,10 @@ func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) erro
 			JournalEntryID:  entryID,
 			OrganisationID:  ec.OrganisationID,
 			AccountID:       ln.accountID,
-			Currency:        ec.TxnCurrency,
+			Currency:        ln.currency,
 			AmountMinor:     ln.txn,
 			BaseAmountMinor: ln.base,
-			ExchangeRate:    ec.ExchangeRate,
+			ExchangeRate:    ln.rate,
 		}); err != nil {
 			return kernel.ErrInternal(err)
 		}

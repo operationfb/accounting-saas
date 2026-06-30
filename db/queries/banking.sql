@@ -376,7 +376,8 @@ INSERT INTO bank_transaction_explanations (
     ec_status, place_of_supply,
     transfer_bank_account_id, paid_user_id, paid_invoice_id,
     marked_for_review, cheque_number, receipt_reference,
-    paid_bill_id
+    paid_bill_id,
+    currency, exchange_rate, base_value_minor, settled_invoice_minor
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
     $6,  $7,  $8,
@@ -384,7 +385,8 @@ INSERT INTO bank_transaction_explanations (
     $13, $14,
     $15, $16, $17,
     $18, $19, $20,
-    $21
+    $21,
+    $22, $23, $24, $25
 )
 RETURNING *;
 
@@ -435,7 +437,11 @@ UPDATE bank_transaction_explanations SET
     marked_for_review        = $17,
     cheque_number            = $18,
     receipt_reference        = $19,
-    paid_bill_id             = $20
+    paid_bill_id             = $20,
+    currency                 = $21,
+    exchange_rate            = $22,
+    base_value_minor         = $23,
+    settled_invoice_minor    = $24
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
@@ -496,7 +502,11 @@ ORDER BY e.created_at ASC, e.id ASC;
 -- positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
 -- -----------------------------------------------------------------------------
 -- name: SumInvoiceReceiptsForInvoice :one
-SELECT COALESCE(SUM(gross_value_minor), 0)::bigint AS total_minor
+-- Sums settled_invoice_minor (the portion expressed in the INVOICE's currency) so the
+-- result is directly comparable to the invoice-currency total_value_minor. A home-currency
+-- receipt leaves settled_invoice_minor NULL, so COALESCE falls back to gross_value_minor
+-- (which is then already in the invoice currency = the bank currency = home).
+SELECT COALESCE(SUM(COALESCE(settled_invoice_minor, gross_value_minor)), 0)::bigint AS total_minor
 FROM bank_transaction_explanations
 WHERE paid_invoice_id  = $1
   AND organisation_id  = $2
@@ -520,3 +530,23 @@ WHERE paid_bill_id     = $1
   AND organisation_id  = $2
   AND type             = 'BILL_PAYMENT'
   AND deleted_at IS NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- ListInvoiceReceiptsForInvoice — every live INVOICE_RECEIPT explanation settling
+-- ONE invoice, in deterministic order (created_at, id). Backs the realised-FX
+-- re-post: on any receipt mutation the banking service walks these in order, computes
+-- each receipt's debtor relief as the difference of cumulative apportionments, and
+-- re-posts each one's journal entry. Org-scoped, live only. :many.
+-- -----------------------------------------------------------------------------
+-- name: ListInvoiceReceiptsForInvoice :many
+SELECT e.id, e.dated_on, e.gross_value_minor, e.settled_invoice_minor, e.base_value_minor,
+       e.currency, e.exchange_rate, e.created_by_user_id,
+       bt.bank_account_id AS bank_account_id
+FROM bank_transaction_explanations e
+JOIN bank_transactions bt ON bt.id = e.bank_transaction_id
+WHERE e.paid_invoice_id  = $1
+  AND e.organisation_id  = $2
+  AND e.type             = 'INVOICE_RECEIPT'
+  AND e.deleted_at IS NULL
+ORDER BY e.created_at ASC, e.id ASC;

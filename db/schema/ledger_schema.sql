@@ -95,7 +95,8 @@ CREATE TABLE gl_posting_rules (
                             'PENSION_LIABILITY','STUDENT_LOAN_LIABILITY','NET_PAY_PAYABLE',
                             'OTHER_PAYROLL_DEDUCTIONS',
                             'PAYROLL_DIRECTOR_GROSS_EXPENSE','PAYROLL_DIRECTOR_EMPLOYER_NI_EXPENSE',
-                            'PAYROLL_DIRECTOR_EMPLOYER_PENSION_EXPENSE')),
+                            'PAYROLL_DIRECTOR_EMPLOYER_PENSION_EXPENSE',
+                            'FX_REALISED_GAIN','FX_REALISED_LOSS')),
 
     -- Which money component of the source row this leg takes. The interpreter reads
     -- the ALREADY-COMPUTED values off the source — it never re-does the arithmetic.
@@ -103,6 +104,7 @@ CREATE TABLE gl_posting_rules (
     -- (GROSS_PAY … NET_PAY) read the matching payslip column(s); see PAYROLL_COMPLETED.
     amount_basis         VARCHAR(20) NOT NULL CHECK (amount_basis IN (
                             'GROSS','NET','VAT',
+                            'DEBTOR_RELIEF','FX_GAIN','FX_LOSS',
                             'GROSS_PAY','PAYE','EMPLOYEE_NI','EMPLOYER_NI',
                             'EMPLOYEE_PENSION','EMPLOYER_PENSION','STUDENT_LOAN',
                             'NET_PAY','OTHER_DEDUCTIONS')),

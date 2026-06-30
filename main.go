@@ -497,6 +497,9 @@ func main() {
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
 	// GL: explaining a money-in line as an Invoice Receipt posts Dr Bank / Cr Debtors.
 	bankingSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
+	// Exchange-rate seam: lets an invoice-receipt explanation settle a foreign-currency
+	// invoice (convert the receipt to home + invoice currency, recognise realised FX).
+	bankingSvc.SetRates(fxRateSvc)
 	bankingHandler := banking.NewHandler(bankingSvc)
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 

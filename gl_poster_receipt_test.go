@@ -5,7 +5,8 @@ package main
 // End-to-end test of the GL poster through the INVOICE_RECEIPT event: explaining a
 // money-in bank line as a receipt against a SENT invoice posts Dr Bank / Cr Debtors,
 // so the 681 Debtors control balance falls to the invoice's outstanding due. Deleting
-// the receipt removes the entry; a foreign-currency receipt posts nothing (FX deferred).
+// the receipt removes the entry. A FOREIGN-currency receipt additionally crystallises
+// realised FX (Dr/Cr 390) — the cash's home value vs the booked receivable.
 // =============================================================================
 
 import (
@@ -140,13 +141,31 @@ func TestInvoiceReceiptPostsToLedger_GBP(t *testing.T) {
 	}
 }
 
-func TestInvoiceReceiptForeignCurrencySkipsLedger(t *testing.T) {
+// invoiceDue returns an invoice's due_value_minor (in the invoice's currency).
+func invoiceDue(t *testing.T, ts *testServer, invID string) int64 {
+	t.Helper()
+	var due int64
+	if err := ts.pool.QueryRow(context.Background(),
+		`SELECT due_value_minor FROM invoices WHERE id = $1`, invID).Scan(&due); err != nil {
+		t.Fatalf("invoice due: %v", err)
+	}
+	return due
+}
+
+// TestInvoiceReceiptForeignCurrencyRealisedLoss settles a EUR invoice in full from a EUR
+// bank account at a rate that has moved since the invoice was booked. The receipt posts a
+// balanced 3-leg journal: Dr Bank (EUR), Cr Debtors (EUR, at the booking rate), and the
+// realised FX difference to 390. EUR weakened (0.86 → 0.80), so the home cash received is
+// worth LESS than the booked receivable → a realised LOSS.
+func TestInvoiceReceiptForeignCurrencyRealisedLoss(t *testing.T) {
 	ts := newTestServer(t)
 	ctx := context.Background()
 	authHeader := bearer(t, ts, devUserID, devOrgID)
 	userID, orgID := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 
+	// Invoice €120 booked at 0.86 ⇒ native (home) receivable 10320p; receipt today at 0.80.
 	invID := issueGLInvoice(t, ts, authHeader, "EUR", "0.86")
+	seedRate(t, ts, "EUR", today(), "0.80")
 
 	acc, err := ts.bankingService.CreateBankAccount(ctx, userID, orgID, bankReq("EUR acct", func(r *banking.CreateBankAccountRequest) { r.Currency = "EUR" }))
 	if err != nil {
@@ -157,11 +176,15 @@ func TestInvoiceReceiptForeignCurrencySkipsLedger(t *testing.T) {
 	t.Cleanup(func() {
 		bg := context.Background()
 		ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
+		ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)
 		cleanupBankAccount(t, ts, acc.ID)
 		cleanupInvoice(t, ts, invID)
 	})
+
+	debtorsAfterIssue := glAccountBalance(t, ts, "681") // includes +10320 from this invoice
+	fxBefore := glAccountBalance(t, ts, "390")
 
 	if _, err := ts.bankingService.CreateExplanation(ctx, userID, orgID, acc.ID, txnID, banking.CreateExplanationRequest{
 		Type: "INVOICE_RECEIPT", Amount: "120.00", PaidInvoiceID: &invID,
@@ -169,9 +192,86 @@ func TestInvoiceReceiptForeignCurrencySkipsLedger(t *testing.T) {
 		t.Fatalf("explain EUR invoice receipt: %v", err)
 	}
 
-	// Foreign-currency receipt: realized FX deferred → no GL entry posted for it.
-	if got := glLinesForSource2(t, ts, "INVOICE_RECEIPT", liveReceiptExplID(t, ts)); got != 0 {
-		t.Errorf("foreign-currency receipt should not post a GL entry, got %d lines", got)
+	// 3 legs: Dr Bank 750-x +12000 EUR / +9600 home; Cr Debtors 681 −12000 EUR / −10320 home;
+	// Dr 390 realised loss +720 home. Balances on base: 9600 − 10320 + 720 = 0.
+	lines := glLinesForSource(t, ts, "INVOICE_RECEIPT", liveReceiptExplID(t, ts))
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 receipt lines (bank/debtors/FX), got %d: %v", len(lines), lines)
+	}
+	assertLine(t, lines, "681", "EUR", -12000, -10320) // Cr Debtors at the booking rate
+	assertLine(t, lines, "390", "GBP", 720, 720)        // Dr realised FX loss (home)
+	bank, ok := bankSubLine(lines)
+	if !ok {
+		t.Fatalf("expected a 750-x bank line, got %v", lines)
+	}
+	if bank.amount != 12000 || bank.base != 9600 || bank.currency != "EUR" {
+		t.Errorf("bank line = %+v, want +12000 EUR / +9600 home", bank)
+	}
+
+	var base int64
+	for _, l := range lines {
+		base += l.base
+	}
+	if base != 0 {
+		t.Errorf("receipt entry must balance on base, got Σ = %d", base)
+	}
+
+	// Debtors relieved by the full BOOKED receivable (10320), and the invoice is fully paid.
+	if delta := debtorsAfterIssue - glAccountBalance(t, ts, "681"); delta != 10320 {
+		t.Errorf("Debtors should drop by the booked 10320 on full receipt, dropped %d", delta)
+	}
+	if got := glAccountBalance(t, ts, "390") - fxBefore; got != 720 {
+		t.Errorf("realised FX (390) should be +720 loss, got %d", got)
+	}
+	if due := invoiceDue(t, ts, invID); due != 0 {
+		t.Errorf("invoice should be fully paid (due 0), got %d", due)
+	}
+}
+
+// TestInvoiceReceiptForeignCurrencyResidualClosesToZero pays a EUR invoice in TWO partial
+// receipts. The cumulative debtor relief must sum to the booked native total EXACTLY (the
+// rounding crumb absorbed by the residual), so the home receivable closes to zero.
+func TestInvoiceReceiptForeignCurrencyResidualClosesToZero(t *testing.T) {
+	ts := newTestServer(t)
+	ctx := context.Background()
+	authHeader := bearer(t, ts, devUserID, devOrgID)
+	userID, orgID := mustUUID(t, devUserID), mustUUID(t, devOrgID)
+
+	invID := issueGLInvoice(t, ts, authHeader, "EUR", "0.86") // native receivable 10320p
+	seedRate(t, ts, "EUR", today(), "0.80")
+
+	acc, err := ts.bankingService.CreateBankAccount(ctx, userID, orgID, bankReq("EUR acct", func(r *banking.CreateBankAccountRequest) { r.Currency = "EUR" }))
+	if err != nil {
+		t.Fatalf("create EUR bank account: %v", err)
+	}
+	txnID := newBankTxn(t, ts, acc.ID, 12000) // €120 money in, split into two receipts
+
+	t.Cleanup(func() {
+		bg := context.Background()
+		ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
+		ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
+		ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
+		ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)
+		cleanupBankAccount(t, ts, acc.ID)
+		cleanupInvoice(t, ts, invID)
+	})
+
+	debtorsAfterIssue := glAccountBalance(t, ts, "681")
+
+	for _, amt := range []string{"50.00", "70.00"} {
+		if _, err := ts.bankingService.CreateExplanation(ctx, userID, orgID, acc.ID, txnID, banking.CreateExplanationRequest{
+			Type: "INVOICE_RECEIPT", Amount: amt, PaidInvoiceID: &invID,
+		}); err != nil {
+			t.Fatalf("explain receipt %s: %v", amt, err)
+		}
+	}
+
+	// The two reliefs (4300 + 6020) sum to the booked 10320 exactly → Debtors closes.
+	if delta := debtorsAfterIssue - glAccountBalance(t, ts, "681"); delta != 10320 {
+		t.Errorf("cumulative debtor relief must equal the booked 10320, dropped %d", delta)
+	}
+	if due := invoiceDue(t, ts, invID); due != 0 {
+		t.Errorf("invoice should be fully paid (due 0), got %d", due)
 	}
 }
 

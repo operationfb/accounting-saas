@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	banking "github.com/operationfb/accounting-saas/db/banking"
@@ -69,8 +70,21 @@ type Service struct {
 	billQueries    *billsdb.Queries
 	vatQueries     *vatdb.Queries
 	// poster writes the GL journal entry for an INVOICE_RECEIPT explanation (Dr Bank /
-	// Cr Debtors). Nil-guarded: with no poster wired, the GL is simply not posted.
+	// Cr Debtors + realised FX). Nil-guarded: with no poster wired, the GL is not posted.
 	poster ledger.Poster
+	// rates is the read seam over the exchange-rate service, used to convert a foreign
+	// receipt to its home + invoice-currency values at the receipt date. Nil-guarded:
+	// with no rates wired, only same-(home-)currency receipts are coherent; a foreign
+	// receipt that needs a rate returns a clean validation error.
+	rates RateLookup
+}
+
+// RateLookup is the read seam over the exchange-rate service (mirrors the invoices
+// package's seam). Given a currency and a date it returns the stored rate on/before that
+// date (HOME units per 1 unit of the currency). Banking depends only on this interface,
+// never on the fxrates HTTP layer.
+type RateLookup interface {
+	RateOnOrBefore(ctx context.Context, currency string, on time.Time) (decimal.Decimal, bool, error)
 }
 
 // NewService is the constructor, called once in main.go (and the test harness).
@@ -81,6 +95,10 @@ func NewService(pool *pgxpool.Pool, queries *banking.Queries, authQueries auth.Q
 // SetPoster wires the general-ledger poster after construction (mirrors
 // invoices.SetPoster). Nil leaves GL posting off.
 func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
+
+// SetRates wires the exchange-rate read seam after construction (mirrors
+// invoices.SetRates). Nil leaves only same-currency receipts coherent.
+func (s *Service) SetRates(r RateLookup) { s.rates = r }
 
 // assertNotFiled refuses the operation (409 conflict) when any of the given dates
 // falls inside a FILED VAT period — an explanation that is part of a submitted VAT

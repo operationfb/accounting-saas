@@ -55,6 +55,12 @@ const (
 	RoleTransferDestBank    = "TRANSFER_DEST_BANK"
 	RoleSuspense            = "SUSPENSE"
 
+	// Realised FX on invoice receipts. Both map to the single signed 390 "Realized
+	// Currency Exchange Gain/Loss" account via gl_account_roles; they resolve like any
+	// other fixed control role (no resolver special-case).
+	RoleFXRealisedGain = "FX_REALISED_GAIN"
+	RoleFXRealisedLoss = "FX_REALISED_LOSS"
+
 	// Payroll accrual (PAYROLL_COMPLETED). All resolve via gl_account_roles like the
 	// other fixed control roles; NET_PAY_PAYABLE → 902 then user-subdivides per payslip.
 	RolePayrollGrossExpense           = "PAYROLL_GROSS_EXPENSE"
@@ -127,6 +133,7 @@ func (a *Accounts) Resolve(ctx context.Context, role string, in ResolveInput) (u
 
 	case RoleDebtors, RoleCreditors, RoleVATControl, RoleSalesDefault,
 		RoleOpeningEquity, RoleSuspense, RoleUserAccount,
+		RoleFXRealisedGain, RoleFXRealisedLoss,
 		RolePayrollGrossExpense, RolePayrollEmployerNIExpense, RolePayrollEmployerPensionExpense,
 		RolePayrollDirectorGrossExpense, RolePayrollDirectorEmployerNIExpense, RolePayrollDirectorEmployerPensionExpense,
 		RolePAYENILiability, RolePensionLiability, RoleStudentLoanLiability,

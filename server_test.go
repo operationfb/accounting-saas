@@ -254,6 +254,7 @@ func newTestServer(t *testing.T) *testServer {
 	categoryQueries := dbcategories.New(pool)
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
 	bankingSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
+	bankingSvc.SetRates(fxRateSvc) // settle foreign-currency invoice receipts (realised FX)
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 

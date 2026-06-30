@@ -112,7 +112,10 @@ FROM (VALUES
   ('255','Use of Residence',                TRUE,  'OUTSIDE_SCOPE'),
   ('256','Vehicle Running Costs',           TRUE,  'STANDARD'),
   ('257','Wages and Salaries',              TRUE,  'OUTSIDE_SCOPE'),
-  ('258','Amortisation of Intangibles',     FALSE, 'OUTSIDE_SCOPE')
+  ('258','Amortisation of Intangibles',     FALSE, 'OUTSIDE_SCOPE'),
+  -- Single SIGNED realised-FX account (gain CR / loss DR → one net P&L line). Used by the
+  -- INVOICE_RECEIPT FX legs (and the future Phase 4 bank-balance revaluation).
+  ('390','Realized Currency Exchange Gain/Loss', FALSE, 'OUTSIDE_SCOPE')
 ) AS v(code, name, allow, vat)
 ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
 

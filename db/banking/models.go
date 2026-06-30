@@ -74,15 +74,19 @@ type BankTransactionExplanation struct {
 	// This explanation's portion of the transaction, signed minor units (pence). Σ of a transaction's live explanations = its amount_minor when fully explained.
 	GrossValueMinor int64 `json:"gross_value_minor"`
 	// CoA account (categories) this posts to. NULL for entity-link types (Transfer / Invoice Receipt / Bill Payment / …), whose account comes from the linked entity.
-	CategoryID            pgtype.UUID `json:"category_id"`
-	SalesTaxStatus        string      `json:"sales_tax_status"`
-	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
-	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
-	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
-	EcStatus              pgtype.Text `json:"ec_status"`
-	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
-	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
-	PaidUserID            pgtype.UUID `json:"paid_user_id"`
+	CategoryID            pgtype.UUID    `json:"category_id"`
+	SalesTaxStatus        string         `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID    `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64          `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool           `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text    `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text    `json:"place_of_supply"`
+	Currency              pgtype.Text    `json:"currency"`
+	ExchangeRate          pgtype.Numeric `json:"exchange_rate"`
+	BaseValueMinor        pgtype.Int8    `json:"base_value_minor"`
+	SettledInvoiceMinor   pgtype.Int8    `json:"settled_invoice_minor"`
+	TransferBankAccountID pgtype.UUID    `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID    `json:"paid_user_id"`
 	// Invoice Receipt only: the sales invoice this receipt settles (NULL for every other type). The explain service keeps invoices.paid_value_minor = Σ(live INVOICE_RECEIPT explanations for the invoice) in the same transaction as the explanation write.
 	PaidInvoiceID pgtype.UUID `json:"paid_invoice_id"`
 	// Bill Payment only: the accounts-payable bill this payment settles (NULL for every other type). The explain service keeps bills.paid_value_minor = Σ(live BILL_PAYMENT explanations for the bill) in the same transaction as the explanation write.

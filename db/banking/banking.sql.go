@@ -267,7 +267,8 @@ INSERT INTO bank_transaction_explanations (
     ec_status, place_of_supply,
     transfer_bank_account_id, paid_user_id, paid_invoice_id,
     marked_for_review, cheque_number, receipt_reference,
-    paid_bill_id
+    paid_bill_id,
+    currency, exchange_rate, base_value_minor, settled_invoice_minor
 ) VALUES (
     $1,  $2,  $3,  $4,  $5,
     $6,  $7,  $8,
@@ -275,33 +276,38 @@ INSERT INTO bank_transaction_explanations (
     $13, $14,
     $15, $16, $17,
     $18, $19, $20,
-    $21
+    $21,
+    $22, $23, $24, $25
 )
-RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, currency, exchange_rate, base_value_minor, settled_invoice_minor, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
 `
 
 type CreateExplanationParams struct {
-	OrganisationID        uuid.UUID   `json:"organisation_id"`
-	BankTransactionID     uuid.UUID   `json:"bank_transaction_id"`
-	CreatedByUserID       pgtype.UUID `json:"created_by_user_id"`
-	DatedOn               pgtype.Date `json:"dated_on"`
-	Description           pgtype.Text `json:"description"`
-	Type                  string      `json:"type"`
-	GrossValueMinor       int64       `json:"gross_value_minor"`
-	CategoryID            pgtype.UUID `json:"category_id"`
-	SalesTaxStatus        string      `json:"sales_tax_status"`
-	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
-	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
-	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
-	EcStatus              pgtype.Text `json:"ec_status"`
-	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
-	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
-	PaidUserID            pgtype.UUID `json:"paid_user_id"`
-	PaidInvoiceID         pgtype.UUID `json:"paid_invoice_id"`
-	MarkedForReview       bool        `json:"marked_for_review"`
-	ChequeNumber          pgtype.Text `json:"cheque_number"`
-	ReceiptReference      pgtype.Text `json:"receipt_reference"`
-	PaidBillID            pgtype.UUID `json:"paid_bill_id"`
+	OrganisationID        uuid.UUID      `json:"organisation_id"`
+	BankTransactionID     uuid.UUID      `json:"bank_transaction_id"`
+	CreatedByUserID       pgtype.UUID    `json:"created_by_user_id"`
+	DatedOn               pgtype.Date    `json:"dated_on"`
+	Description           pgtype.Text    `json:"description"`
+	Type                  string         `json:"type"`
+	GrossValueMinor       int64          `json:"gross_value_minor"`
+	CategoryID            pgtype.UUID    `json:"category_id"`
+	SalesTaxStatus        string         `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID    `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64          `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool           `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text    `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text    `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID    `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID    `json:"paid_user_id"`
+	PaidInvoiceID         pgtype.UUID    `json:"paid_invoice_id"`
+	MarkedForReview       bool           `json:"marked_for_review"`
+	ChequeNumber          pgtype.Text    `json:"cheque_number"`
+	ReceiptReference      pgtype.Text    `json:"receipt_reference"`
+	PaidBillID            pgtype.UUID    `json:"paid_bill_id"`
+	Currency              pgtype.Text    `json:"currency"`
+	ExchangeRate          pgtype.Numeric `json:"exchange_rate"`
+	BaseValueMinor        pgtype.Int8    `json:"base_value_minor"`
+	SettledInvoiceMinor   pgtype.Int8    `json:"settled_invoice_minor"`
 }
 
 // =============================================================================
@@ -339,6 +345,10 @@ func (q *Queries) CreateExplanation(ctx context.Context, arg CreateExplanationPa
 		arg.ChequeNumber,
 		arg.ReceiptReference,
 		arg.PaidBillID,
+		arg.Currency,
+		arg.ExchangeRate,
+		arg.BaseValueMinor,
+		arg.SettledInvoiceMinor,
 	)
 	var i BankTransactionExplanation
 	err := row.Scan(
@@ -357,6 +367,10 @@ func (q *Queries) CreateExplanation(ctx context.Context, arg CreateExplanationPa
 		&i.IsManualSalesTax,
 		&i.EcStatus,
 		&i.PlaceOfSupply,
+		&i.Currency,
+		&i.ExchangeRate,
+		&i.BaseValueMinor,
+		&i.SettledInvoiceMinor,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
 		&i.PaidInvoiceID,
@@ -548,7 +562,7 @@ func (q *Queries) GetBankTransactionByExternalID(ctx context.Context, arg GetBan
 }
 
 const getExplanation = `-- name: GetExplanation :one
-SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, currency, exchange_rate, base_value_minor, settled_invoice_minor, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
@@ -581,6 +595,10 @@ func (q *Queries) GetExplanation(ctx context.Context, arg GetExplanationParams) 
 		&i.IsManualSalesTax,
 		&i.EcStatus,
 		&i.PlaceOfSupply,
+		&i.Currency,
+		&i.ExchangeRate,
+		&i.BaseValueMinor,
+		&i.SettledInvoiceMinor,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
 		&i.PaidInvoiceID,
@@ -870,7 +888,7 @@ func (q *Queries) ListBankTransactions(ctx context.Context, arg ListBankTransact
 }
 
 const listExplanationsForTransaction = `-- name: ListExplanationsForTransaction :many
-SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
+SELECT id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, currency, exchange_rate, base_value_minor, settled_invoice_minor, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at FROM bank_transaction_explanations
 WHERE bank_transaction_id = $1
   AND organisation_id     = $2
   AND deleted_at IS NULL
@@ -911,6 +929,10 @@ func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListEx
 			&i.IsManualSalesTax,
 			&i.EcStatus,
 			&i.PlaceOfSupply,
+			&i.Currency,
+			&i.ExchangeRate,
+			&i.BaseValueMinor,
+			&i.SettledInvoiceMinor,
 			&i.TransferBankAccountID,
 			&i.PaidUserID,
 			&i.PaidInvoiceID,
@@ -934,7 +956,7 @@ func (q *Queries) ListExplanationsForTransaction(ctx context.Context, arg ListEx
 
 const listExplanationsForTransactionDetailed = `-- name: ListExplanationsForTransactionDetailed :many
 SELECT
-    e.id, e.organisation_id, e.bank_transaction_id, e.created_by_user_id, e.dated_on, e.description, e.type, e.gross_value_minor, e.category_id, e.sales_tax_status, e.sales_tax_rate_id, e.sales_tax_value_minor, e.is_manual_sales_tax, e.ec_status, e.place_of_supply, e.transfer_bank_account_id, e.paid_user_id, e.paid_invoice_id, e.paid_bill_id, e.marked_for_review, e.cheque_number, e.receipt_reference, e.deleted_at, e.created_at, e.updated_at,
+    e.id, e.organisation_id, e.bank_transaction_id, e.created_by_user_id, e.dated_on, e.description, e.type, e.gross_value_minor, e.category_id, e.sales_tax_status, e.sales_tax_rate_id, e.sales_tax_value_minor, e.is_manual_sales_tax, e.ec_status, e.place_of_supply, e.currency, e.exchange_rate, e.base_value_minor, e.settled_invoice_minor, e.transfer_bank_account_id, e.paid_user_id, e.paid_invoice_id, e.paid_bill_id, e.marked_for_review, e.cheque_number, e.receipt_reference, e.deleted_at, e.created_at, e.updated_at,
     c.name         AS category_name,
     c.nominal_code AS category_nominal_code,
     ta.name        AS transfer_account_name,
@@ -978,6 +1000,10 @@ type ListExplanationsForTransactionDetailedRow struct {
 	IsManualSalesTax      bool               `json:"is_manual_sales_tax"`
 	EcStatus              pgtype.Text        `json:"ec_status"`
 	PlaceOfSupply         pgtype.Text        `json:"place_of_supply"`
+	Currency              pgtype.Text        `json:"currency"`
+	ExchangeRate          pgtype.Numeric     `json:"exchange_rate"`
+	BaseValueMinor        pgtype.Int8        `json:"base_value_minor"`
+	SettledInvoiceMinor   pgtype.Int8        `json:"settled_invoice_minor"`
 	TransferBankAccountID pgtype.UUID        `json:"transfer_bank_account_id"`
 	PaidUserID            pgtype.UUID        `json:"paid_user_id"`
 	PaidInvoiceID         pgtype.UUID        `json:"paid_invoice_id"`
@@ -1031,6 +1057,10 @@ func (q *Queries) ListExplanationsForTransactionDetailed(ctx context.Context, ar
 			&i.IsManualSalesTax,
 			&i.EcStatus,
 			&i.PlaceOfSupply,
+			&i.Currency,
+			&i.ExchangeRate,
+			&i.BaseValueMinor,
+			&i.SettledInvoiceMinor,
 			&i.TransferBankAccountID,
 			&i.PaidUserID,
 			&i.PaidInvoiceID,
@@ -1050,6 +1080,73 @@ func (q *Queries) ListExplanationsForTransactionDetailed(ctx context.Context, ar
 			&i.VatRateBps,
 			&i.InvoiceReference,
 			&i.BillReference,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInvoiceReceiptsForInvoice = `-- name: ListInvoiceReceiptsForInvoice :many
+SELECT e.id, e.dated_on, e.gross_value_minor, e.settled_invoice_minor, e.base_value_minor,
+       e.currency, e.exchange_rate, e.created_by_user_id,
+       bt.bank_account_id AS bank_account_id
+FROM bank_transaction_explanations e
+JOIN bank_transactions bt ON bt.id = e.bank_transaction_id
+WHERE e.paid_invoice_id  = $1
+  AND e.organisation_id  = $2
+  AND e.type             = 'INVOICE_RECEIPT'
+  AND e.deleted_at IS NULL
+ORDER BY e.created_at ASC, e.id ASC
+`
+
+type ListInvoiceReceiptsForInvoiceParams struct {
+	PaidInvoiceID  pgtype.UUID `json:"paid_invoice_id"`
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+}
+
+type ListInvoiceReceiptsForInvoiceRow struct {
+	ID                  uuid.UUID      `json:"id"`
+	DatedOn             pgtype.Date    `json:"dated_on"`
+	GrossValueMinor     int64          `json:"gross_value_minor"`
+	SettledInvoiceMinor pgtype.Int8    `json:"settled_invoice_minor"`
+	BaseValueMinor      pgtype.Int8    `json:"base_value_minor"`
+	Currency            pgtype.Text    `json:"currency"`
+	ExchangeRate        pgtype.Numeric `json:"exchange_rate"`
+	CreatedByUserID     pgtype.UUID    `json:"created_by_user_id"`
+	BankAccountID       uuid.UUID      `json:"bank_account_id"`
+}
+
+// -----------------------------------------------------------------------------
+// ListInvoiceReceiptsForInvoice — every live INVOICE_RECEIPT explanation settling
+// ONE invoice, in deterministic order (created_at, id). Backs the realised-FX
+// re-post: on any receipt mutation the banking service walks these in order, computes
+// each receipt's debtor relief as the difference of cumulative apportionments, and
+// re-posts each one's journal entry. Org-scoped, live only. :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListInvoiceReceiptsForInvoice(ctx context.Context, arg ListInvoiceReceiptsForInvoiceParams) ([]ListInvoiceReceiptsForInvoiceRow, error) {
+	rows, err := q.db.Query(ctx, listInvoiceReceiptsForInvoice, arg.PaidInvoiceID, arg.OrganisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListInvoiceReceiptsForInvoiceRow
+	for rows.Next() {
+		var i ListInvoiceReceiptsForInvoiceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DatedOn,
+			&i.GrossValueMinor,
+			&i.SettledInvoiceMinor,
+			&i.BaseValueMinor,
+			&i.Currency,
+			&i.ExchangeRate,
+			&i.CreatedByUserID,
+			&i.BankAccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -1164,7 +1261,7 @@ func (q *Queries) SumBillPaymentsForBill(ctx context.Context, arg SumBillPayment
 }
 
 const sumInvoiceReceiptsForInvoice = `-- name: SumInvoiceReceiptsForInvoice :one
-SELECT COALESCE(SUM(gross_value_minor), 0)::bigint AS total_minor
+SELECT COALESCE(SUM(COALESCE(settled_invoice_minor, gross_value_minor)), 0)::bigint AS total_minor
 FROM bank_transaction_explanations
 WHERE paid_invoice_id  = $1
   AND organisation_id  = $2
@@ -1185,6 +1282,10 @@ type SumInvoiceReceiptsForInvoiceParams struct {
 // the figure is drift-free across split/edit/re-point/delete. gross_value_minor is
 // positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
 // -----------------------------------------------------------------------------
+// Sums settled_invoice_minor (the portion expressed in the INVOICE's currency) so the
+// result is directly comparable to the invoice-currency total_value_minor. A home-currency
+// receipt leaves settled_invoice_minor NULL, so COALESCE falls back to gross_value_minor
+// (which is then already in the invoice currency = the bank currency = home).
 func (q *Queries) SumInvoiceReceiptsForInvoice(ctx context.Context, arg SumInvoiceReceiptsForInvoiceParams) (int64, error) {
 	row := q.db.QueryRow(ctx, sumInvoiceReceiptsForInvoice, arg.PaidInvoiceID, arg.OrganisationID)
 	var total_minor int64
@@ -1398,34 +1499,42 @@ UPDATE bank_transaction_explanations SET
     marked_for_review        = $17,
     cheque_number            = $18,
     receipt_reference        = $19,
-    paid_bill_id             = $20
+    paid_bill_id             = $20,
+    currency                 = $21,
+    exchange_rate            = $22,
+    base_value_minor         = $23,
+    settled_invoice_minor    = $24
 WHERE id              = $1
   AND organisation_id = $2
   AND deleted_at IS NULL
-RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
+RETURNING id, organisation_id, bank_transaction_id, created_by_user_id, dated_on, description, type, gross_value_minor, category_id, sales_tax_status, sales_tax_rate_id, sales_tax_value_minor, is_manual_sales_tax, ec_status, place_of_supply, currency, exchange_rate, base_value_minor, settled_invoice_minor, transfer_bank_account_id, paid_user_id, paid_invoice_id, paid_bill_id, marked_for_review, cheque_number, receipt_reference, deleted_at, created_at, updated_at
 `
 
 type UpdateExplanationParams struct {
-	ID                    uuid.UUID   `json:"id"`
-	OrganisationID        uuid.UUID   `json:"organisation_id"`
-	DatedOn               pgtype.Date `json:"dated_on"`
-	Description           pgtype.Text `json:"description"`
-	Type                  string      `json:"type"`
-	GrossValueMinor       int64       `json:"gross_value_minor"`
-	CategoryID            pgtype.UUID `json:"category_id"`
-	SalesTaxStatus        string      `json:"sales_tax_status"`
-	SalesTaxRateID        pgtype.UUID `json:"sales_tax_rate_id"`
-	SalesTaxValueMinor    int64       `json:"sales_tax_value_minor"`
-	IsManualSalesTax      bool        `json:"is_manual_sales_tax"`
-	EcStatus              pgtype.Text `json:"ec_status"`
-	PlaceOfSupply         pgtype.Text `json:"place_of_supply"`
-	TransferBankAccountID pgtype.UUID `json:"transfer_bank_account_id"`
-	PaidUserID            pgtype.UUID `json:"paid_user_id"`
-	PaidInvoiceID         pgtype.UUID `json:"paid_invoice_id"`
-	MarkedForReview       bool        `json:"marked_for_review"`
-	ChequeNumber          pgtype.Text `json:"cheque_number"`
-	ReceiptReference      pgtype.Text `json:"receipt_reference"`
-	PaidBillID            pgtype.UUID `json:"paid_bill_id"`
+	ID                    uuid.UUID      `json:"id"`
+	OrganisationID        uuid.UUID      `json:"organisation_id"`
+	DatedOn               pgtype.Date    `json:"dated_on"`
+	Description           pgtype.Text    `json:"description"`
+	Type                  string         `json:"type"`
+	GrossValueMinor       int64          `json:"gross_value_minor"`
+	CategoryID            pgtype.UUID    `json:"category_id"`
+	SalesTaxStatus        string         `json:"sales_tax_status"`
+	SalesTaxRateID        pgtype.UUID    `json:"sales_tax_rate_id"`
+	SalesTaxValueMinor    int64          `json:"sales_tax_value_minor"`
+	IsManualSalesTax      bool           `json:"is_manual_sales_tax"`
+	EcStatus              pgtype.Text    `json:"ec_status"`
+	PlaceOfSupply         pgtype.Text    `json:"place_of_supply"`
+	TransferBankAccountID pgtype.UUID    `json:"transfer_bank_account_id"`
+	PaidUserID            pgtype.UUID    `json:"paid_user_id"`
+	PaidInvoiceID         pgtype.UUID    `json:"paid_invoice_id"`
+	MarkedForReview       bool           `json:"marked_for_review"`
+	ChequeNumber          pgtype.Text    `json:"cheque_number"`
+	ReceiptReference      pgtype.Text    `json:"receipt_reference"`
+	PaidBillID            pgtype.UUID    `json:"paid_bill_id"`
+	Currency              pgtype.Text    `json:"currency"`
+	ExchangeRate          pgtype.Numeric `json:"exchange_rate"`
+	BaseValueMinor        pgtype.Int8    `json:"base_value_minor"`
+	SettledInvoiceMinor   pgtype.Int8    `json:"settled_invoice_minor"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1455,6 +1564,10 @@ func (q *Queries) UpdateExplanation(ctx context.Context, arg UpdateExplanationPa
 		arg.ChequeNumber,
 		arg.ReceiptReference,
 		arg.PaidBillID,
+		arg.Currency,
+		arg.ExchangeRate,
+		arg.BaseValueMinor,
+		arg.SettledInvoiceMinor,
 	)
 	var i BankTransactionExplanation
 	err := row.Scan(
@@ -1473,6 +1586,10 @@ func (q *Queries) UpdateExplanation(ctx context.Context, arg UpdateExplanationPa
 		&i.IsManualSalesTax,
 		&i.EcStatus,
 		&i.PlaceOfSupply,
+		&i.Currency,
+		&i.ExchangeRate,
+		&i.BaseValueMinor,
+		&i.SettledInvoiceMinor,
 		&i.TransferBankAccountID,
 		&i.PaidUserID,
 		&i.PaidInvoiceID,

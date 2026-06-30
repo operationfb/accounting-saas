@@ -68,9 +68,15 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   ('OTHER_MONEY_OUT',         3, 'BANK',                 'GROSS', 'CR', 3),
 
   -- ========================== BANK EXPLANATIONS — MONEY IN ===========================
-  -- Invoice receipt: cash in, receivable down (no VAT — booked when the invoice was sent).
-  ('INVOICE_RECEIPT',         1, 'BANK',                 'GROSS', 'DR', 1),
-  ('INVOICE_RECEIPT',         2, 'DEBTORS',              'GROSS', 'CR', 2),
+  -- Invoice receipt: cash in (BANK, bank-ccy), receivable down (DEBTORS, invoice-ccy at
+  -- the booking rate), and the realised FX gain/loss between them (home-ccy). DEBTOR_RELIEF
+  -- is the debtor relief at the ORIGINAL booking rate (≠ GROSS once the rate has moved);
+  -- FX_GAIN/FX_LOSS are GROSS-base − relief, sign-split so the poster drops the zero leg.
+  -- A home-currency receipt collapses to legs 1+2 (relief == gross, FX legs zero).
+  ('INVOICE_RECEIPT',         1, 'BANK',                 'GROSS',         'DR', 1),
+  ('INVOICE_RECEIPT',         2, 'DEBTORS',              'DEBTOR_RELIEF', 'CR', 2),
+  ('INVOICE_RECEIPT',         3, 'FX_REALISED_GAIN',     'FX_GAIN',       'CR', 3),
+  ('INVOICE_RECEIPT',         4, 'FX_REALISED_LOSS',     'FX_LOSS',       'DR', 4),
 
   -- Sales: cash in, income recognised (net) + output VAT.
   ('SALES',                   1, 'BANK',                 'GROSS', 'DR', 1),

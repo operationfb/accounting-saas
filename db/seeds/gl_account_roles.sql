@@ -24,6 +24,12 @@ INSERT INTO gl_account_roles (role, nominal_code) VALUES
   ('SUSPENSE',       '999'),   -- Suspense Account
   ('USER_ACCOUNT',   '907'),   -- Director's Loan Account (per-director; is_user_subdivided)
   ('BANK',           '750'),   -- Bank Account parent; expands per bank account (750-x)
+  -- Realised FX on invoice receipts. Single SIGNED account (390 "Realized Currency
+  -- Exchange Gain/Loss"): gains CR it, losses DR it — one net P&L line. Two roles (one per
+  -- leg) both point at 390 so the poster's zero-leg drop keeps a same-currency receipt at
+  -- 2 legs; split to separate gain/loss nominals later by repointing one role.
+  ('FX_REALISED_GAIN', '390'),
+  ('FX_REALISED_LOSS', '390'),
   -- Payroll accrual (PAYROLL_COMPLETED). Nominals are FreeAgent's ACTUAL payroll codes
   -- (confirmed against the live sandbox chart by gl_posting_rules_freeagent_test.go).
   -- The three employer-cost expense legs split by director status: STAFF → 401/402/403,

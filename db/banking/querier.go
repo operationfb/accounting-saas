@@ -144,6 +144,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListExplanationsForTransactionDetailed(ctx context.Context, arg ListExplanationsForTransactionDetailedParams) ([]ListExplanationsForTransactionDetailedRow, error)
 	// -----------------------------------------------------------------------------
+	// ListInvoiceReceiptsForInvoice — every live INVOICE_RECEIPT explanation settling
+	// ONE invoice, in deterministic order (created_at, id). Backs the realised-FX
+	// re-post: on any receipt mutation the banking service walks these in order, computes
+	// each receipt's debtor relief as the difference of cumulative apportionments, and
+	// re-posts each one's journal entry. Org-scoped, live only. :many.
+	// -----------------------------------------------------------------------------
+	ListInvoiceReceiptsForInvoice(ctx context.Context, arg ListInvoiceReceiptsForInvoiceParams) ([]ListInvoiceReceiptsForInvoiceRow, error)
+	// -----------------------------------------------------------------------------
 	// SoftDeleteBankAccount  (the "delete")
 	// Marks the account deleted (financial records are never hard-removed; its
 	// transactions stay for audit). :exec. Idempotent — deleting an already-deleted
@@ -180,6 +188,10 @@ type Querier interface {
 	// the figure is drift-free across split/edit/re-point/delete. gross_value_minor is
 	// positive for a money-in receipt, so the SUM is the amount received. Org-scoped. :one.
 	// -----------------------------------------------------------------------------
+	// Sums settled_invoice_minor (the portion expressed in the INVOICE's currency) so the
+	// result is directly comparable to the invoice-currency total_value_minor. A home-currency
+	// receipt leaves settled_invoice_minor NULL, so COALESCE falls back to gross_value_minor
+	// (which is then already in the invoice currency = the bank currency = home).
 	SumInvoiceReceiptsForInvoice(ctx context.Context, arg SumInvoiceReceiptsForInvoiceParams) (int64, error)
 	// -----------------------------------------------------------------------------
 	// UnsetPrimaryBankAccounts  (clear the org's current primary)
