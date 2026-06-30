@@ -309,6 +309,66 @@ func newTestServer(t *testing.T) *testServer {
 	}
 }
 
+// --- GL append-only teardown -------------------------------------------------
+// gl_journal_entries / gl_journal_lines carry append-only guard triggers
+// (trg_gl_*_no_delete / no_update, see db/schema/ledger_schema.sql) that block any
+// DELETE — so a plain pool.Exec(... DELETE FROM gl_journal_*) in test cleanup now
+// fails. These helpers bypass the guard with session_replication_role = replica, the
+// standard Postgres maintenance idiom, available because the tests connect as the
+// superuser. The bypass is set on a SINGLE dedicated pooled connection (it's a session
+// GUC) and reset before that connection returns to the pool, so it can't leak to
+// other queries. Best-effort (logs, never fails the test) — matching the original
+// teardown intent; the guard's correctness is asserted directly in
+// gl_poster_lock_test.go's TestGLAppendOnlyGuard.
+//
+// NOTE: replica mode also suppresses the FK system triggers that implement
+// ON DELETE CASCADE, so purgeGLEntries deletes the dependent lines explicitly before
+// the headers rather than relying on the cascade.
+func withGLBypass(ctx context.Context, t *testing.T, pool *pgxpool.Pool, fn func(*pgxpool.Conn)) {
+	t.Helper()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Logf("gl teardown: acquire conn: %v", err)
+		return
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET session_replication_role = replica`); err != nil {
+		t.Logf("gl teardown: enable bypass: %v", err)
+		return
+	}
+	// Always reset so the pooled connection goes back clean.
+	defer func() { _, _ = conn.Exec(ctx, `SET session_replication_role = DEFAULT`) }()
+	fn(conn)
+}
+
+// purgeGLEntries deletes gl_journal_entries matching the WHERE fragment (and their
+// lines), bypassing the append-only guard. `where` is a trusted test-internal
+// predicate (NOT user input); its placeholders index into args (reused across both
+// statements, which Postgres allows).
+func purgeGLEntries(ctx context.Context, t *testing.T, pool *pgxpool.Pool, where string, args ...any) {
+	t.Helper()
+	withGLBypass(ctx, t, pool, func(conn *pgxpool.Conn) {
+		if _, err := conn.Exec(ctx,
+			`DELETE FROM gl_journal_lines WHERE journal_entry_id IN (SELECT id FROM gl_journal_entries WHERE `+where+`)`, args...); err != nil {
+			t.Logf("gl teardown: purge lines: %v", err)
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM gl_journal_entries WHERE `+where, args...); err != nil {
+			t.Logf("gl teardown: purge entries: %v", err)
+		}
+	})
+}
+
+// purgeGLLines deletes gl_journal_lines matching the WHERE fragment, bypassing the
+// guard. For cleanups that target lines directly (e.g. by account_id).
+func purgeGLLines(ctx context.Context, t *testing.T, pool *pgxpool.Pool, where string, args ...any) {
+	t.Helper()
+	withGLBypass(ctx, t, pool, func(conn *pgxpool.Conn) {
+		if _, err := conn.Exec(ctx, `DELETE FROM gl_journal_lines WHERE `+where, args...); err != nil {
+			t.Logf("gl teardown: purge lines: %v", err)
+		}
+	})
+}
+
 func randomCategoryUUID(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 

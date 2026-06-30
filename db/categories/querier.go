@@ -108,6 +108,11 @@ type Querier interface {
 	// So 908's first sub-account is 908-1, the next 908-2, … Keyed only by org+parent, so
 	// it serves BOTH user (908-x) and bank (750-x) sub-accounts. :one.
 	NextSubAccountSuffix(ctx context.Context, arg NextSubAccountSuffixParams) (int32, error)
+	// Seed an organisation's chart of accounts from chart_template: copy the COUNTRY-specific
+	// template if any rows exist for the org's country, else the GLOBAL fallback (country_code
+	// NULL). Idempotent (ON CONFLICT). Called on org creation (the future signup) and the
+	// backfill. Sub-accounts (750-x/902-x) are NOT templated — the resolver creates them lazily.
+	ProvisionCategoriesForOrg(ctx context.Context, arg ProvisionCategoriesForOrgParams) error
 }
 
 var _ Querier = (*Queries)(nil)

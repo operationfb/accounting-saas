@@ -49,18 +49,10 @@ LIMIT 1;
 
 -- -----------------------------------------------------------------------------
 -- JOURNAL ENTRIES + LINES (the poster's write path)
--- The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
--- lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
--- enforced by the deferred constraint trigger (trg_gl_entry_balanced).
+-- APPEND-ONLY: the poster never deletes or updates an entry. A re-post / undo posts a
+-- REVERSING entry (CreateReversalEntry, negated lines) so the prior entry stays as
+-- history. Σ base_amount_minor = 0 is enforced by the deferred constraint trigger.
 -- -----------------------------------------------------------------------------
-
--- name: DeleteJournalEntryForSource :exec
--- Remove the live entry for a source event (its lines cascade). Idempotent replace.
-DELETE FROM gl_journal_entries
-WHERE organisation_id = $1
-  AND source_type     = sqlc.arg(source_type)
-  AND source_id       = sqlc.arg(source_id)
-  AND NOT is_reversal;
 
 -- name: CreateJournalEntry :one
 INSERT INTO gl_journal_entries (
@@ -107,14 +99,17 @@ WHERE journal_entry_id = $1
 ORDER BY id;
 
 -- name: GetJournalEntryForSource :one
--- The live entry for a source event (for tests / mutation checks).
-SELECT id, organisation_id, entry_date, base_currency, narrative,
-       source_type, source_id, is_reversal, reverses_entry_id, created_by_user_id, created_at
-FROM gl_journal_entries
-WHERE organisation_id = $1
-  AND source_type     = sqlc.arg(source_type)
-  AND source_id       = sqlc.arg(source_id)
-  AND NOT is_reversal;
+-- The EFFECTIVE entry for a source event: the one non-reversal entry NOT yet reversed
+-- (no reversal points at it). With reverse-then-post this is ≤1 row — the current live
+-- entry. Used by the poster's reversal path + tests.
+SELECT e.id, e.organisation_id, e.entry_date, e.base_currency, e.narrative,
+       e.source_type, e.source_id, e.is_reversal, e.reverses_entry_id, e.created_by_user_id, e.created_at
+FROM gl_journal_entries e
+WHERE e.organisation_id = $1
+  AND e.source_type     = sqlc.arg(source_type)
+  AND e.source_id       = sqlc.arg(source_id)
+  AND NOT e.is_reversal
+  AND NOT EXISTS (SELECT 1 FROM gl_journal_entries r WHERE r.reverses_entry_id = e.id);
 
 
 -- -----------------------------------------------------------------------------
@@ -163,3 +158,11 @@ WHERE l.organisation_id = $1
   AND (sqlc.narg(from_date)::date IS NULL OR e.entry_date >= sqlc.narg(from_date))
   AND e.entry_date <= sqlc.arg(to_date)
 ORDER BY e.entry_date, e.created_at;
+
+-- name: LockSource :exec
+-- Transaction-scoped advisory lock on a source identity, taken at the top of every
+-- poster mutation so two transactions can never double-post the SAME source (the
+-- append-only ledger has no source uniqueness index). Blocks only same-key callers;
+-- different sources proceed in parallel. Auto-released at commit/rollback. A hash
+-- collision merely over-serialises two unrelated sources — it never under-serialises.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(source_key)::text, 0));

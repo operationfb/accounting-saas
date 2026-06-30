@@ -634,12 +634,12 @@ func (s *Service) ChangeStatus(
 					return err
 				}
 			case existing.Status == StatusSent:
-				if err := s.poster.RemoveEntry(ctx, tx, authOrgID, ledgerSourceInvoice, updated.ID); err != nil {
+				// Reopen / write-off / refund is an UNDO: REVERSE the receivable (and any
+				// unrealised FX revaluation) entry — append-only, never deleted.
+				if err := s.poster.ReverseEntry(ctx, tx, authOrgID, ledgerSourceInvoice, updated.ID, updated.DatedOn, "Invoice reopened", authUserID); err != nil {
 					return err
 				}
-				// Reopen / write-off / refund is an UNDO, not a settlement: drop any unrealised
-				// FX revaluation entry too, so a no-longer-SENT invoice carries no FX history.
-				if err := s.poster.RemoveEntry(ctx, tx, authOrgID, ledgerSourceInvoiceRevaluation, updated.ID); err != nil {
+				if err := s.poster.ReverseEntry(ctx, tx, authOrgID, ledgerSourceInvoiceRevaluation, updated.ID, updated.DatedOn, "Invoice reopened", authUserID); err != nil {
 					return err
 				}
 			}

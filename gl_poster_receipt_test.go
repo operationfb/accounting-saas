@@ -91,7 +91,7 @@ func TestInvoiceReceiptPostsToLedger_GBP(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
+		purgeGLEntries(bg, t, ts.pool, `organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
 		ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)
@@ -128,13 +128,17 @@ func TestInvoiceReceiptPostsToLedger_GBP(t *testing.T) {
 		t.Errorf("Debtors should drop by 12000 on full receipt, dropped %d", delta)
 	}
 
-	// Deleting the receipt removes its entry and restores Debtors.
+	// Deleting the receipt REVERSES its entry (append-only — not deleted) and restores
+	// Debtors. The original lines remain, a reversal exists, and the source nets to zero.
 	explID := liveReceiptExplID(t, ts)
 	if _, err := ts.bankingService.DeleteExplanation(ctx, userID, orgID, acc.ID, txnID, explID); err != nil {
 		t.Fatalf("delete receipt: %v", err)
 	}
-	if got := glLinesForSource2(t, ts, "INVOICE_RECEIPT", explID); got != 0 {
-		t.Errorf("expected receipt entry removed after delete, got %d lines", got)
+	if net := glSourceNetBase(t, ts, "INVOICE_RECEIPT", explID); net != 0 {
+		t.Errorf("receipt source net base should be 0 after delete (original + reversal), got %d", net)
+	}
+	if reversals := glReversalCount(t, ts, "INVOICE_RECEIPT", explID); reversals != 1 {
+		t.Errorf("expected 1 reversal entry after deleting the receipt, got %d", reversals)
 	}
 	if delta := debtorsAfterIssue - glAccountBalance(t, ts, "681"); delta != 0 {
 		t.Errorf("Debtors should be restored after deleting the receipt, delta %d", delta)
@@ -175,7 +179,7 @@ func TestInvoiceReceiptForeignCurrencyRealisedLoss(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
+		purgeGLEntries(bg, t, ts.pool, `organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
 		ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)
@@ -199,7 +203,7 @@ func TestInvoiceReceiptForeignCurrencyRealisedLoss(t *testing.T) {
 		t.Fatalf("expected 3 receipt lines (bank/debtors/FX), got %d: %v", len(lines), lines)
 	}
 	assertLine(t, lines, "681", "EUR", -12000, -10320) // Cr Debtors at the booking rate
-	assertLine(t, lines, "390", "GBP", 720, 720)        // Dr realised FX loss (home)
+	assertLine(t, lines, "390", "GBP", 720, 720)       // Dr realised FX loss (home)
 	bank, ok := bankSubLine(lines)
 	if !ok {
 		t.Fatalf("expected a 750-x bank line, got %v", lines)
@@ -248,7 +252,7 @@ func TestInvoiceReceiptForeignCurrencyResidualClosesToZero(t *testing.T) {
 
 	t.Cleanup(func() {
 		bg := context.Background()
-		ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
+		purgeGLEntries(bg, t, ts.pool, `organisation_id=$1 AND (source_id=$2 OR source_type='INVOICE_RECEIPT')`, devOrgID, invID)
 		ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
 		ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)

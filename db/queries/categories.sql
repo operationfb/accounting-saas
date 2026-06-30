@@ -193,3 +193,23 @@ INSERT INTO categories (
     TRUE, sqlc.arg(parent_nominal_code), sqlc.arg(bank_account_id)
 )
 RETURNING *;
+
+
+-- name: ProvisionCategoriesForOrg :exec
+-- Seed an organisation's chart of accounts from chart_template: copy the COUNTRY-specific
+-- template if any rows exist for the org's country, else the GLOBAL fallback (country_code
+-- NULL). Idempotent (ON CONFLICT). Called on org creation (the future signup) and the
+-- backfill. Sub-accounts (750-x/902-x) are NOT templated — the resolver creates them lazily.
+INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group,
+                        tax_reporting_name, allowable_for_tax, default_vat,
+                        is_capital_asset, is_system_managed, is_user_subdivided)
+SELECT $1, t.nominal_code, t.name, t.account_type, t.api_group,
+       t.tax_reporting_name, t.allowable_for_tax, t.default_vat,
+       t.is_capital_asset, t.is_system_managed, t.is_user_subdivided
+FROM chart_template t
+WHERE t.country_code IS NOT DISTINCT FROM (
+        -- the org's country template if it exists, else the global fallback (NULL)
+        SELECT CASE WHEN EXISTS (SELECT 1 FROM chart_template ct WHERE ct.country_code = sqlc.arg(org_country))
+                    THEN sqlc.arg(org_country)::char(2) ELSE NULL::char(2) END
+      )
+ON CONFLICT (organisation_id, nominal_code) DO NOTHING;

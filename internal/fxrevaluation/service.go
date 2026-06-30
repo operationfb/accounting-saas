@@ -204,8 +204,9 @@ func (s *Service) revalueOpen(ctx context.Context, tx pgx.Tx, in openInput, asOf
 	u := homeAtToday - homeAtBooking
 
 	if u == 0 {
-		// No unrealised swing on the open portion → clear any prior live entry.
-		return s.poster.RemoveEntry(ctx, tx, in.orgID, sourceInvoiceRevaluation, in.id)
+		// No unrealised swing on the open portion → reverse any prior live revaluation
+		// entry (append-only, never deleted).
+		return s.poster.ReverseEntry(ctx, tx, in.orgID, sourceInvoiceRevaluation, in.id, pgtype.Date{Time: asOf, Valid: true}, "FX revaluation cleared", uuid.Nil)
 	}
 
 	// Sign-split: the poster drops the zero leg, so exactly two legs fire. All home-ccy.

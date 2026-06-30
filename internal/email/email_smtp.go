@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 )
@@ -25,7 +26,8 @@ type Config struct {
 	Port     string // e.g. "587" (STARTTLS) or "1025" (Mailpit)
 	Username string // empty → connect without auth (e.g. local Mailpit)
 	Password string
-	From     string // From header + envelope sender, e.g. "no-reply@example.com"
+	From     string // envelope sender + From-header address, e.g. "no-reply@example.com"
+	FromName string // optional display name shown in the From header, e.g. "Kontala"
 }
 
 type smtpSender struct {
@@ -45,10 +47,23 @@ func (s *smtpSender) Send(_ context.Context, to, subject, body string) error {
 		auth = smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
 	}
 
-	if err := smtp.SendMail(addr, auth, s.cfg.From, []string{to}, buildMessage(s.cfg.From, to, subject, body)); err != nil {
+	// Envelope sender stays the bare address (s.cfg.From); only the From HEADER
+	// carries the optional display name, e.g. "Kontala <hello@kontala.com>".
+	if err := smtp.SendMail(addr, auth, s.cfg.From, []string{to}, buildMessage(fromHeader(s.cfg.From, s.cfg.FromName), to, subject, body)); err != nil {
 		return fmt.Errorf("smtp send to %s: %w", to, err)
 	}
 	return nil
+}
+
+// fromHeader builds the From-header value. With a display name it returns the
+// RFC-5322 "Name <addr>" form (mail.Address handles any needed quoting/encoding);
+// without one it returns the bare address unchanged.
+func fromHeader(from, name string) string {
+	if strings.TrimSpace(name) == "" {
+		return from
+	}
+	addr := mail.Address{Name: name, Address: from}
+	return addr.String()
 }
 
 // buildMessage assembles a minimal plain-text email (headers + body) with the

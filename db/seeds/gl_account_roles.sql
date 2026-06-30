@@ -56,27 +56,8 @@ INSERT INTO gl_account_roles (role, nominal_code) VALUES
 -- per-country overrides are inserted per deployment, not seeded here.
 ON CONFLICT (role, organisation_id, country_code, company_type) DO NOTHING;
 
--- FreeAgent's payroll P&L expense accounts — our base CoA seed pre-dates these, so add
--- them where missing. account_type PAYROLL_EXPENSE; not offered in the explain picker
--- (api_group NULL). 401/402/403 = staff, 407/408/409 = director variants.
-INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group, is_system_managed)
-SELECT '00000000-0000-0000-0000-000000000001', v.code, v.name, 'PAYROLL_EXPENSE', NULL, FALSE
-FROM (VALUES
-  ('401','Salaries'),
-  ('402','Employer NICs'),
-  ('403','Staff Pensions'),
-  ('407','Directors'' Salaries'),
-  ('408','Directors'' Employer NICs'),
-  ('409','Directors'' Staff Pensions')
-) AS v(code, name)
-ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
-
--- Mark the per-user (per-director) accounts FreeAgent splits one row per director.
--- The WHOLE USER_ACCOUNT 900–910 set subdivides (Capital, Net Salary, Employer NI,
--- Expense Payment, DLA, Dividend, Capital Introduced). Per-org data; applies to every
--- org's chart on the shared dev DB. (For provisioning NEW orgs this flag should live
--- in db/seeds/categories.sql; see the design doc / BACKLOG.)
-UPDATE categories
-SET    is_user_subdivided = TRUE
-WHERE  account_type = 'USER_ACCOUNT'
-  AND  nominal_code BETWEEN '900' AND '910';
+-- NOTE: the payroll P&L accounts (401–409) and the per-director is_user_subdivided
+-- flag on 900–910 are now part of the consolidated default chart (db/seeds/chart_template.sql),
+-- provisioned per org by ProvisionCategoriesForOrg — they used to be patched into the
+-- dev-org categories here, but that fragmentation is gone. This file is now PURELY the
+-- role → nominal map.

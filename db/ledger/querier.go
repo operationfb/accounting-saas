@@ -11,6 +11,12 @@ import (
 )
 
 type Querier interface {
+	// -----------------------------------------------------------------------------
+	// JOURNAL ENTRIES + LINES (the poster's write path)
+	// APPEND-ONLY: the poster never deletes or updates an entry. A re-post / undo posts a
+	// REVERSING entry (CreateReversalEntry, negated lines) so the prior entry stays as
+	// history. Σ base_amount_minor = 0 is enforced by the deferred constraint trigger.
+	// -----------------------------------------------------------------------------
 	CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error)
 	CreateJournalLine(ctx context.Context, arg CreateJournalLineParams) error
 	// Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
@@ -18,14 +24,6 @@ type Querier interface {
 	// idempotency unique index excludes reversals, so this never collides with the live
 	// (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
 	CreateReversalEntry(ctx context.Context, arg CreateReversalEntryParams) (uuid.UUID, error)
-	// -----------------------------------------------------------------------------
-	// JOURNAL ENTRIES + LINES (the poster's write path)
-	// The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
-	// lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
-	// enforced by the deferred constraint trigger (trg_gl_entry_balanced).
-	// -----------------------------------------------------------------------------
-	// Remove the live entry for a source event (its lines cascade). Idempotent replace.
-	DeleteJournalEntryForSource(ctx context.Context, arg DeleteJournalEntryForSourceParams) error
 	// The nominal_code a FIXED control role resolves to, picking the MOST SPECIFIC scope
 	// that matches the caller: org-specific → country-specific → company_type-specific →
 	// global default. organisation_id / country_code IS NULL = a broader (global/country)
@@ -39,7 +37,9 @@ type Querier interface {
 	// report reads top-to-bottom in time. Backs the Account Transactions report (the
 	// trial-balance drill-down).
 	GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error)
-	// The live entry for a source event (for tests / mutation checks).
+	// The EFFECTIVE entry for a source event: the one non-reversal entry NOT yet reversed
+	// (no reversal points at it). With reverse-then-post this is ≤1 row — the current live
+	// entry. Used by the poster's reversal path + tests.
 	GetJournalEntryForSource(ctx context.Context, arg GetJournalEntryForSourceParams) (GlJournalEntry, error)
 	// -----------------------------------------------------------------------------
 	// REPORTING (read models over the posted ledger)
@@ -69,6 +69,12 @@ type Querier interface {
 	// exists, else the 'ALL' default. This is the lookup the interpreter will use to
 	// build a journal entry. Ordered by leg_no so the legs come back in posting order.
 	ListPostingRulesForEvent(ctx context.Context, arg ListPostingRulesForEventParams) ([]ListPostingRulesForEventRow, error)
+	// Transaction-scoped advisory lock on a source identity, taken at the top of every
+	// poster mutation so two transactions can never double-post the SAME source (the
+	// append-only ledger has no source uniqueness index). Blocks only same-key callers;
+	// different sources proceed in parallel. Auto-released at commit/rollback. A hash
+	// collision merely over-serialises two unrelated sources — it never under-serialises.
+	LockSource(ctx context.Context, sourceKey string) error
 }
 
 var _ Querier = (*Queries)(nil)

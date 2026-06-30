@@ -35,14 +35,14 @@ import (
 // Poster writes a balanced journal entry for an economic event. Source services hold
 // one (nil-guarded) and call PostEntry inside their own transaction.
 type Poster interface {
+	// PostEntry writes the journal entry for an event. If a prior (effective) entry
+	// exists for the same source it is REVERSED first (append-only — never deleted),
+	// then the fresh entry is posted.
 	PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error
-	// RemoveEntry deletes the live journal entry for a source event (its lines
-	// cascade). Used when an event is undone — e.g. an invoice reopened out of SENT.
-	RemoveEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error
-	// ReverseEntry posts an explicit REVERSING entry (is_reversal = TRUE) that mirrors the
-	// live entry's lines with negated amounts, leaving BOTH as an audit trail (vs RemoveEntry's
-	// silent delete). Used to crystallise an unrealised FX revaluation on settlement. A no-op
-	// when there is no live entry to reverse.
+	// ReverseEntry posts a REVERSING entry (is_reversal = TRUE) that mirrors the effective
+	// entry's lines with negated amounts, leaving BOTH as an audit trail. Used to UNDO an
+	// event (invoice reopen, receipt delete) or crystallise an FX revaluation. No-op when
+	// there is no effective entry to reverse.
 	ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error
 }
 
@@ -109,16 +109,21 @@ type builtLine struct {
 
 func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error {
 	lq := p.ledger.WithTx(tx)
+
+	// Serialise concurrent posters for this SAME source (the append-only ledger has no
+	// source uniqueness index). Held until the caller's tx ends; different sources don't block.
+	if err := p.lockSource(ctx, lq, ec.OrganisationID, ec.SourceType, ec.SourceID); err != nil {
+		return err
+	}
+
 	resolver := NewAccounts(p.cats.WithTx(tx), lq, p.auth.WithTx(tx))
 
-	// Replace any prior entry for this source event (lines cascade).
+	// Append-only: supersede any prior entry for this source by REVERSING it (never a
+	// delete), then post the fresh entry below. The reversal is dated at the new entry's
+	// date, so a prior period is never retroactively mutated.
 	if ec.SourceID != uuid.Nil {
-		if err := lq.DeleteJournalEntryForSource(ctx, ledgerdb.DeleteJournalEntryForSourceParams{
-			OrganisationID: ec.OrganisationID,
-			SourceType:     ec.SourceType,
-			SourceID:       pgUUID(ec.SourceID),
-		}); err != nil {
-			return kernel.ErrInternal(err)
+		if err := p.reverseLive(ctx, lq, ec.OrganisationID, ec.SourceType, ec.SourceID, ec.EntryDate, "Superseded (re-posted)", ec.CreatedBy); err != nil {
+			return err
 		}
 	}
 
@@ -220,27 +225,37 @@ func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) erro
 	return nil
 }
 
-func (p *poster) RemoveEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error {
-	if sourceID == uuid.Nil {
-		return nil
-	}
-	if err := p.ledger.WithTx(tx).DeleteJournalEntryForSource(ctx, ledgerdb.DeleteJournalEntryForSourceParams{
-		OrganisationID: orgID,
-		SourceType:     sourceType,
-		SourceID:       pgUUID(sourceID),
-	}); err != nil {
-		return kernel.ErrInternal(err)
-	}
-	return nil
-}
-
 func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error {
 	if sourceID == uuid.Nil {
 		return nil
 	}
 	lq := p.ledger.WithTx(tx)
+	if err := p.lockSource(ctx, lq, orgID, sourceType, sourceID); err != nil {
+		return err
+	}
+	return p.reverseLive(ctx, lq, orgID, sourceType, sourceID, asOf, narrative, createdBy)
+}
 
-	// The live (non-reversal) entry for this source; nothing to reverse if absent.
+// lockSource takes a transaction-scoped advisory lock on a source identity so two
+// transactions can never double-post the same source. Skips the no-source (MANUAL)
+// case. Held until the caller's tx ends. Each poster call locks exactly its own source
+// — a given business flow posts its sources in a deterministic order, so concurrent
+// identical flows lock in the same order (no deadlock, just serialisation).
+func (p *poster) lockSource(ctx context.Context, lq *ledgerdb.Queries, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error {
+	if sourceID == uuid.Nil {
+		return nil
+	}
+	if err := lq.LockSource(ctx, fmt.Sprintf("gl:%s:%s:%s", orgID, sourceType, sourceID)); err != nil {
+		return kernel.ErrInternal(err)
+	}
+	return nil
+}
+
+// reverseLive posts a reversing entry for the EFFECTIVE (not-yet-reversed) entry of a
+// source — negated lines, is_reversal = TRUE, pointing at the original — leaving both as
+// an audit trail. No-op when there's nothing live to reverse. Shared by ReverseEntry
+// (undo) and PostEntry (supersede-before-repost). The poster never deletes.
+func (p *poster) reverseLive(ctx context.Context, lq *ledgerdb.Queries, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error {
 	live, err := lq.GetJournalEntryForSource(ctx, ledgerdb.GetJournalEntryForSourceParams{
 		OrganisationID: orgID,
 		SourceType:     sourceType,
@@ -248,7 +263,7 @@ func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, s
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return nil // nothing effective to reverse
 		}
 		return kernel.ErrInternal(err)
 	}
@@ -261,8 +276,6 @@ func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, s
 		return nil
 	}
 
-	// Header: is_reversal = TRUE, pointing at the entry it reverses (audit trail). The
-	// idempotency unique index excludes reversals, so it never collides with `live`.
 	revID, err := lq.CreateReversalEntry(ctx, ledgerdb.CreateReversalEntryParams{
 		OrganisationID:  orgID,
 		EntryDate:       asOf,
@@ -277,8 +290,7 @@ func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, s
 		return kernel.ErrInternal(err)
 	}
 
-	// Mirror each line with negated amounts (the entry still sums to zero, so the balance
-	// trigger is satisfied).
+	// Mirror each line with negated amounts (the reversal still sums to zero).
 	for _, ln := range lines {
 		if err := lq.CreateJournalLine(ctx, ledgerdb.CreateJournalLineParams{
 			JournalEntryID:  revID,

@@ -653,3 +653,33 @@ func (q *Queries) NextSubAccountSuffix(ctx context.Context, arg NextSubAccountSu
 	err := row.Scan(&next_suffix)
 	return next_suffix, err
 }
+
+const provisionCategoriesForOrg = `-- name: ProvisionCategoriesForOrg :exec
+INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group,
+                        tax_reporting_name, allowable_for_tax, default_vat,
+                        is_capital_asset, is_system_managed, is_user_subdivided)
+SELECT $1, t.nominal_code, t.name, t.account_type, t.api_group,
+       t.tax_reporting_name, t.allowable_for_tax, t.default_vat,
+       t.is_capital_asset, t.is_system_managed, t.is_user_subdivided
+FROM chart_template t
+WHERE t.country_code IS NOT DISTINCT FROM (
+        -- the org's country template if it exists, else the global fallback (NULL)
+        SELECT CASE WHEN EXISTS (SELECT 1 FROM chart_template ct WHERE ct.country_code = $2)
+                    THEN $2::char(2) ELSE NULL::char(2) END
+      )
+ON CONFLICT (organisation_id, nominal_code) DO NOTHING
+`
+
+type ProvisionCategoriesForOrgParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	OrgCountry     pgtype.Text `json:"org_country"`
+}
+
+// Seed an organisation's chart of accounts from chart_template: copy the COUNTRY-specific
+// template if any rows exist for the org's country, else the GLOBAL fallback (country_code
+// NULL). Idempotent (ON CONFLICT). Called on org creation (the future signup) and the
+// backfill. Sub-accounts (750-x/902-x) are NOT templated — the resolver creates them lazily.
+func (q *Queries) ProvisionCategoriesForOrg(ctx context.Context, arg ProvisionCategoriesForOrgParams) error {
+	_, err := q.db.Exec(ctx, provisionCategoriesForOrg, arg.OrganisationID, arg.OrgCountry)
+	return err
+}

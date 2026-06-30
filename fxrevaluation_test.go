@@ -111,7 +111,7 @@ func reversalCount(t *testing.T, ts *testServer, invID string) int {
 func cleanupReval(t *testing.T, ts *testServer, invID, currency, day string) {
 	t.Cleanup(func() {
 		bg := context.Background()
-		_, _ = ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND source_type='INVOICE_REVALUATION' AND source_id=$2`, devOrgID, invID)
+		purgeGLEntries(bg, t, ts.pool, `organisation_id=$1 AND source_type='INVOICE_REVALUATION' AND source_id=$2`, devOrgID, invID)
 		_, _ = ts.pool.Exec(bg, `DELETE FROM exchange_rates WHERE currency=$1 AND rate_date=$2`, currency, day)
 	})
 }
@@ -199,7 +199,7 @@ func TestUnrealisedRevaluation_FullSettlementReverses(t *testing.T) {
 	txnID := newBankTxn(t, ts, acc.ID, 12000) // €120.00 in
 	t.Cleanup(func() {
 		bg := context.Background()
-		_, _ = ts.pool.Exec(bg, `DELETE FROM gl_journal_entries WHERE organisation_id=$1 AND source_type IN ('INVOICE_RECEIPT')`, devOrgID)
+		purgeGLEntries(bg, t, ts.pool, `organisation_id=$1 AND source_type IN ('INVOICE_RECEIPT')`, devOrgID)
 		_, _ = ts.pool.Exec(bg, `DELETE FROM categories WHERE organisation_id=$1 AND bank_account_id=$2`, devOrgID, acc.ID)
 		_, _ = ts.pool.Exec(bg, `DELETE FROM bank_transaction_explanations WHERE bank_transaction_id=$1`, txnID)
 		_, _ = ts.pool.Exec(bg, `DELETE FROM bank_transactions WHERE bank_account_id=$1`, acc.ID)

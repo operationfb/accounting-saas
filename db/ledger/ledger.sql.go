@@ -13,6 +13,7 @@ import (
 )
 
 const createJournalEntry = `-- name: CreateJournalEntry :one
+
 INSERT INTO gl_journal_entries (
     organisation_id, entry_date, base_currency, narrative,
     source_type, source_id, created_by_user_id
@@ -33,6 +34,12 @@ type CreateJournalEntryParams struct {
 	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
 }
 
+// -----------------------------------------------------------------------------
+// JOURNAL ENTRIES + LINES (the poster's write path)
+// APPEND-ONLY: the poster never deletes or updates an entry. A re-post / undo posts a
+// REVERSING entry (CreateReversalEntry, negated lines) so the prior entry stays as
+// history. Σ base_amount_minor = 0 is enforced by the deferred constraint trigger.
+// -----------------------------------------------------------------------------
 func (q *Queries) CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, createJournalEntry,
 		arg.OrganisationID,
@@ -131,33 +138,6 @@ func (q *Queries) CreateReversalEntry(ctx context.Context, arg CreateReversalEnt
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
-}
-
-const deleteJournalEntryForSource = `-- name: DeleteJournalEntryForSource :exec
-
-DELETE FROM gl_journal_entries
-WHERE organisation_id = $1
-  AND source_type     = $2
-  AND source_id       = $3
-  AND NOT is_reversal
-`
-
-type DeleteJournalEntryForSourceParams struct {
-	OrganisationID uuid.UUID   `json:"organisation_id"`
-	SourceType     string      `json:"source_type"`
-	SourceID       pgtype.UUID `json:"source_id"`
-}
-
-// -----------------------------------------------------------------------------
-// JOURNAL ENTRIES + LINES (the poster's write path)
-// The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,
-// lines cascade) then writes a fresh entry + its lines. Σ base_amount_minor = 0 is
-// enforced by the deferred constraint trigger (trg_gl_entry_balanced).
-// -----------------------------------------------------------------------------
-// Remove the live entry for a source event (its lines cascade). Idempotent replace.
-func (q *Queries) DeleteJournalEntryForSource(ctx context.Context, arg DeleteJournalEntryForSourceParams) error {
-	_, err := q.db.Exec(ctx, deleteJournalEntryForSource, arg.OrganisationID, arg.SourceType, arg.SourceID)
-	return err
 }
 
 const getAccountRoleNominal = `-- name: GetAccountRoleNominal :one
@@ -270,13 +250,14 @@ func (q *Queries) GetAccountTransactions(ctx context.Context, arg GetAccountTran
 }
 
 const getJournalEntryForSource = `-- name: GetJournalEntryForSource :one
-SELECT id, organisation_id, entry_date, base_currency, narrative,
-       source_type, source_id, is_reversal, reverses_entry_id, created_by_user_id, created_at
-FROM gl_journal_entries
-WHERE organisation_id = $1
-  AND source_type     = $2
-  AND source_id       = $3
-  AND NOT is_reversal
+SELECT e.id, e.organisation_id, e.entry_date, e.base_currency, e.narrative,
+       e.source_type, e.source_id, e.is_reversal, e.reverses_entry_id, e.created_by_user_id, e.created_at
+FROM gl_journal_entries e
+WHERE e.organisation_id = $1
+  AND e.source_type     = $2
+  AND e.source_id       = $3
+  AND NOT e.is_reversal
+  AND NOT EXISTS (SELECT 1 FROM gl_journal_entries r WHERE r.reverses_entry_id = e.id)
 `
 
 type GetJournalEntryForSourceParams struct {
@@ -285,7 +266,9 @@ type GetJournalEntryForSourceParams struct {
 	SourceID       pgtype.UUID `json:"source_id"`
 }
 
-// The live entry for a source event (for tests / mutation checks).
+// The EFFECTIVE entry for a source event: the one non-reversal entry NOT yet reversed
+// (no reversal points at it). With reverse-then-post this is ≤1 row — the current live
+// entry. Used by the poster's reversal path + tests.
 func (q *Queries) GetJournalEntryForSource(ctx context.Context, arg GetJournalEntryForSourceParams) (GlJournalEntry, error) {
 	row := q.db.QueryRow(ctx, getJournalEntryForSource, arg.OrganisationID, arg.SourceType, arg.SourceID)
 	var i GlJournalEntry
@@ -535,4 +518,18 @@ func (q *Queries) ListPostingRulesForEvent(ctx context.Context, arg ListPostingR
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockSource = `-- name: LockSource :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+// Transaction-scoped advisory lock on a source identity, taken at the top of every
+// poster mutation so two transactions can never double-post the SAME source (the
+// append-only ledger has no source uniqueness index). Blocks only same-key callers;
+// different sources proceed in parallel. Auto-released at commit/rollback. A hash
+// collision merely over-serialises two unrelated sources — it never under-serialises.
+func (q *Queries) LockSource(ctx context.Context, sourceKey string) error {
+	_, err := q.db.Exec(ctx, lockSource, sourceKey)
+	return err
 }

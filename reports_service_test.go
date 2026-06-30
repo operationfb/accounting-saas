@@ -49,7 +49,7 @@ func seedCategory(t *testing.T, ts *testServer, orgID, nominalCode, name, accoun
 	}
 	t.Cleanup(func() {
 		// Lines reference this category; remove them first, then the row.
-		_, _ = ts.pool.Exec(ctx, `DELETE FROM gl_journal_lines WHERE account_id = $1`, id)
+		purgeGLLines(ctx, t, ts.pool, `account_id = $1`, id)
 		_, _ = ts.pool.Exec(ctx, `DELETE FROM categories WHERE id = $1`, id)
 	})
 	return id
@@ -94,8 +94,9 @@ func postEntry(t *testing.T, ts *testServer, orgID string, entryDate time.Time, 
 		t.Fatalf("postEntry: insert entry: %v", err)
 	}
 	t.Cleanup(func() {
-		// Lines cascade on the entry delete; remove the entry (LIFO before org delete).
-		_, _ = ts.pool.Exec(ctx, `DELETE FROM gl_journal_entries WHERE id = $1`, entryID)
+		// Remove the entry and its lines (the guard bypass disables cascade, so
+		// purgeGLEntries clears the lines explicitly). LIFO before the org delete.
+		purgeGLEntries(ctx, t, ts.pool, `id = $1`, entryID)
 	})
 
 	for _, l := range lines {
@@ -380,7 +381,7 @@ func postSourcedEntry(t *testing.T, ts *testServer, orgID string, entryDate time
 		t.Fatalf("postSourcedEntry: insert entry: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = ts.pool.Exec(ctx, `DELETE FROM gl_journal_entries WHERE id = $1`, entryID)
+		purgeGLEntries(ctx, t, ts.pool, `id = $1`, entryID)
 	})
 
 	for _, l := range lines {

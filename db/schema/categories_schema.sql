@@ -322,3 +322,44 @@ FROM expenses e
 JOIN categories ec ON ec.id = e.category_id            -- the shared Chart of Accounts
 LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims
 WHERE e.deleted_at IS NULL;                             -- soft delete filter always applied
+
+
+-- -----------------------------------------------------------------------------
+-- chart_template
+-- The DEFAULT chart of accounts a new organisation is provisioned with — the single,
+-- consolidated source for the standard chart (was fragmented across the dev-org
+-- categories seed + the payroll/FX inserts in gl_account_roles.sql). GLOBAL reference
+-- data, like transaction_types / vat_rates.
+--
+-- COUNTRY-SCOPED with a GLOBAL FALLBACK: country_code NULL = the fallback template used
+-- when an org's country has no specific template (mirrors gl_account_roles' per-country
+-- resolution). Provisioning (ProvisionCategoriesForOrg) copies the matching rows into
+-- the org's categories. Sub-accounts (750-x / 902-x) are NOT templated — the ledger
+-- resolver still creates them lazily.
+-- -----------------------------------------------------------------------------
+CREATE TABLE chart_template (
+    country_code        CHAR(2),                                     -- NULL = global fallback; else ISO country
+    nominal_code        VARCHAR(20)  NOT NULL,
+    name                VARCHAR(150) NOT NULL,
+    account_type        VARCHAR(20)  NOT NULL CHECK (account_type IN (
+                            'INCOME','OTHER_INCOME','COST_OF_SALES','ADMIN_EXPENSE',
+                            'PAYROLL_EXPENSE','CAPITAL_ASSET','CURRENT_ASSET','BANK',
+                            'LIABILITY','TAX_LIABILITY','USER_ACCOUNT','EQUITY','SYSTEM')),
+    api_group           VARCHAR(30)  CHECK (api_group IN (
+                            'income_categories','cost_of_sales_categories',
+                            'admin_expenses_categories','general_categories')),
+    tax_reporting_name  VARCHAR(150),
+    allowable_for_tax   BOOLEAN,
+    default_vat         VARCHAR(20)  CHECK (default_vat IN (
+                            'STANDARD','REDUCED','ZERO','EXEMPT','OUTSIDE_SCOPE')),
+    is_capital_asset    BOOLEAN NOT NULL DEFAULT FALSE,
+    is_system_managed   BOOLEAN NOT NULL DEFAULT FALSE,
+    is_user_subdivided  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- One row per (country, nominal). NULLS NOT DISTINCT (PG15+) so the global-fallback
+    -- (NULL country) rows are unique by nominal + the idempotent seed's ON CONFLICT behaves.
+    CONSTRAINT uq_chart_template UNIQUE NULLS NOT DISTINCT (country_code, nominal_code)
+);
+
+COMMENT ON TABLE chart_template IS 'Default chart of accounts new organisations are provisioned with (ProvisionCategoriesForOrg). GLOBAL reference; country_code NULL = the global fallback template, else a country-specific override. Consolidates what was the fragmented dev-org categories + gl_account_roles category seeds.';

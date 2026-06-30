@@ -51,11 +51,13 @@ func glLinesForSource(t *testing.T, ts *testServer, sourceType, sourceID string)
 	return out
 }
 
-// cleanupGLForInvoice removes the journal entry (lines cascade) — the source link is a
-// soft reference, so deleting the invoice doesn't cascade to the GL.
+// cleanupGLForInvoice removes the journal entry and its lines — the source link is a
+// soft reference, so deleting the invoice doesn't cascade to the GL. The gl_journal_*
+// tables are append-only (guard triggers block DELETE), so this goes through the
+// bypass helper rather than a plain Exec.
 func cleanupGLForInvoice(t *testing.T, ts *testServer, invoiceID string) {
-	_, _ = ts.pool.Exec(context.Background(),
-		`DELETE FROM gl_journal_entries WHERE organisation_id = $1 AND source_type = 'INVOICE' AND source_id = $2`,
+	purgeGLEntries(context.Background(), t, ts.pool,
+		`organisation_id = $1 AND source_type = 'INVOICE' AND source_id = $2`,
 		devOrgID, invoiceID)
 }
 
@@ -145,7 +147,7 @@ func TestInvoiceSentPostsBalancedEntry_EUR(t *testing.T) {
 	}
 }
 
-func TestInvoiceReopenRemovesEntry(t *testing.T) {
+func TestInvoiceReopenReversesEntry(t *testing.T) {
 	ts := newTestServer(t)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
 	invID := issueInvoice(t, ts, "GBP", "")
@@ -156,9 +158,45 @@ func TestInvoiceReopenRemovesEntry(t *testing.T) {
 	if rec := statusInvoiceReq(t, ts, invID, authHeader, "reopen"); rec.Code != http.StatusOK {
 		t.Fatalf("reopen: status %d body %s", rec.Code, rec.Body.String())
 	}
-	if got := glLinesForSource(t, ts, "INVOICE", invID); len(got) != 0 {
-		t.Errorf("expected the entry removed after reopen, got %d lines", len(got))
+	// Append-only: the original entry is NOT deleted — it's reversed. So its lines remain,
+	// a reversal entry now exists, and the source's net base sums to zero.
+	if got := glLinesForSource(t, ts, "INVOICE", invID); len(got) == 0 {
+		t.Error("the original entry should remain (reversed, not deleted)")
 	}
+	if net := glSourceNetBase(t, ts, "INVOICE", invID); net != 0 {
+		t.Errorf("source net base should be 0 after reopen (original + reversal), got %d", net)
+	}
+	if reversals := glReversalCount(t, ts, "INVOICE", invID); reversals != 1 {
+		t.Errorf("expected exactly 1 reversal entry after reopen, got %d", reversals)
+	}
+}
+
+// glSourceNetBase sums base_amount_minor over ALL of a source's entries (originals +
+// reversals) — 0 when an entry has been reversed/superseded.
+func glSourceNetBase(t *testing.T, ts *testServer, sourceType, sourceID string) int64 {
+	t.Helper()
+	var net int64
+	if err := ts.pool.QueryRow(context.Background(),
+		`SELECT COALESCE(SUM(l.base_amount_minor), 0)
+		   FROM gl_journal_lines l JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+		  WHERE e.organisation_id = $1 AND e.source_type = $2 AND e.source_id = $3`,
+		devOrgID, sourceType, sourceID).Scan(&net); err != nil {
+		t.Fatalf("source net base: %v", err)
+	}
+	return net
+}
+
+// glReversalCount counts the reversal entries for a source.
+func glReversalCount(t *testing.T, ts *testServer, sourceType, sourceID string) int {
+	t.Helper()
+	var n int
+	if err := ts.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM gl_journal_entries
+		  WHERE organisation_id = $1 AND source_type = $2 AND source_id = $3 AND is_reversal`,
+		devOrgID, sourceType, sourceID).Scan(&n); err != nil {
+		t.Fatalf("reversal count: %v", err)
+	}
+	return n
 }
 
 // TestGLBalanceTriggerRejectsUnbalanced confirms the DB constraint trigger fires at

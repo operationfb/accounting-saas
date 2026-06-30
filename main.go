@@ -282,6 +282,7 @@ func main() {
 			Username: os.Getenv("SMTP_USERNAME"),
 			Password: os.Getenv("SMTP_PASSWORD"),
 			From:     envOr("EMAIL_FROM", "no-reply@localhost"),
+			FromName: envOr("EMAIL_FROM_NAME", "Kontala"),
 		})
 		log.Printf("email: sending via SMTP host %s", smtpHost)
 	} else {

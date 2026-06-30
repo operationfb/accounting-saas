@@ -276,9 +276,9 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 			}
 			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, params.PaidInvoiceID)
 		case existing.Type == typeInvoiceReceipt:
-			// Type changed away from receipt: drop this entry, then re-post the old invoice's
+			// Type changed away from receipt: reverse this entry, then re-post the old invoice's
 			// remaining receipts so their cumulative relief closes correctly without it.
-			if err := s.removeReceiptGL(ctx, tx, authOrgID, explUUID); err != nil {
+			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.DatedOn); err != nil {
 				return err
 			}
 			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
@@ -331,7 +331,7 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 		// GL: remove this receipt's journal entry (lines cascade), then re-post the invoice's
 		// remaining receipts so their cumulative debtor relief closes correctly without it.
 		if existing.Type == typeInvoiceReceipt {
-			if err := s.removeReceiptGL(ctx, tx, authOrgID, explUUID); err != nil {
+			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.DatedOn); err != nil {
 				return err
 			}
 			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
@@ -474,12 +474,13 @@ func (s *Service) repostInvoiceReceipts(ctx context.Context, tx pgx.Tx, orgID uu
 	return nil
 }
 
-// removeReceiptGL deletes the receipt's journal entry (lines cascade). Nil-guarded.
-func (s *Service) removeReceiptGL(ctx context.Context, tx pgx.Tx, orgID, explID uuid.UUID) error {
+// removeReceiptGL backs out the receipt's journal entry by REVERSING it (append-only —
+// never deleted), dated at the receipt's own date. Nil-guarded.
+func (s *Service) removeReceiptGL(ctx context.Context, tx pgx.Tx, authUserID, orgID, explID uuid.UUID, asOf pgtype.Date) error {
 	if s.poster == nil {
 		return nil
 	}
-	return s.poster.RemoveEntry(ctx, tx, orgID, typeInvoiceReceipt, explID)
+	return s.poster.ReverseEntry(ctx, tx, orgID, typeInvoiceReceipt, explID, asOf, "Invoice receipt reversed", authUserID)
 }
 
 // =============================================================================

@@ -220,12 +220,14 @@ CREATE TABLE gl_journal_entries (
 
 -- Backs the org-scoped entry list + the source lookup.
 CREATE INDEX idx_gl_journal_entries_org ON gl_journal_entries (organisation_id, entry_date);
--- Idempotency: at most ONE live (non-reversal) entry per concrete source event, so a
--- re-post is a replace (the poster DELETEs then INSERTs). MANUAL journals are exempt
--- (no source) and reversals are exempt (an audit trail, many allowed).
-CREATE UNIQUE INDEX idx_gl_journal_entries_source
-    ON gl_journal_entries (organisation_id, source_type, source_id)
-    WHERE NOT is_reversal AND source_type <> 'MANUAL';
+-- APPEND-ONLY ledger: an entry is never deleted or updated. A re-post / undo posts a
+-- REVERSING entry (is_reversal, reverses_entry_id) instead, so a source accumulates a
+-- chain (E1, R1→E1, E2, …) as history. The "effective" entry is the one non-reversal
+-- entry NOT yet reversed — derived from the reversal links, not enforced by a unique
+-- index (which can't reference other rows). So there is NO source uniqueness index; the
+-- reverse-then-post sequence keeps re-posts net-correct. This index backs the source lookup.
+CREATE INDEX idx_gl_journal_entries_source
+    ON gl_journal_entries (organisation_id, source_type, source_id);
 
 
 -- -----------------------------------------------------------------------------
@@ -295,6 +297,42 @@ CREATE CONSTRAINT TRIGGER trg_gl_entry_balanced
     AFTER INSERT OR UPDATE OR DELETE ON gl_journal_lines
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION gl_assert_entry_balanced();
+
+
+-- =============================================================================
+-- TRIGGER — append-only guard: GL journal rows are INSERT-only
+-- The ledger is immutable history: a correction is a REVERSING entry (is_reversal
+-- = TRUE) plus a fresh post, never an in-place UPDATE or a DELETE. The poster never
+-- issues either (the generated querier has no Update*/Delete*), so this guard costs
+-- the app nothing — it's a hard backstop against ad-hoc/manual SQL (psql, a stray
+-- query, a future bug). A trigger (not REVOKE) is used deliberately: the app/tests
+-- connect as the postgres SUPERUSER, which bypasses GRANTs but NOT triggers.
+--
+-- Maintenance bypass: legitimate teardown (e.g. test cleanup) sets
+-- `SET session_replication_role = replica` for its session, which disables these
+-- user triggers — the standard Postgres idiom, available because that connection is
+-- superuser. INSERT is intentionally untouched (no INSERT trigger).
+-- =============================================================================
+CREATE OR REPLACE FUNCTION gl_forbid_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'gl ledger is append-only: % on % is not permitted (post a reversing entry instead)',
+        TG_OP, TG_TABLE_NAME
+        USING ERRCODE = 'restrict_violation';
+END;
+$$ LANGUAGE plpgsql;
+
+-- Both journal tables, both mutating ops. The line-level guard also covers the
+-- ON DELETE CASCADE from entries → lines (an entry delete is blocked at the entry
+-- before any cascade runs, but the line guard is belt-and-braces for direct hits).
+CREATE TRIGGER trg_gl_entries_no_update BEFORE UPDATE ON gl_journal_entries
+    FOR EACH ROW EXECUTE FUNCTION gl_forbid_mutation();
+CREATE TRIGGER trg_gl_entries_no_delete BEFORE DELETE ON gl_journal_entries
+    FOR EACH ROW EXECUTE FUNCTION gl_forbid_mutation();
+CREATE TRIGGER trg_gl_lines_no_update   BEFORE UPDATE ON gl_journal_lines
+    FOR EACH ROW EXECUTE FUNCTION gl_forbid_mutation();
+CREATE TRIGGER trg_gl_lines_no_delete   BEFORE DELETE ON gl_journal_lines
+    FOR EACH ROW EXECUTE FUNCTION gl_forbid_mutation();
 
 
 -- =============================================================================
