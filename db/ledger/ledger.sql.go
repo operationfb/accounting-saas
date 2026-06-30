@@ -91,6 +91,48 @@ func (q *Queries) CreateJournalLine(ctx context.Context, arg CreateJournalLinePa
 	return err
 }
 
+const createReversalEntry = `-- name: CreateReversalEntry :one
+INSERT INTO gl_journal_entries (
+    organisation_id, entry_date, base_currency, narrative,
+    source_type, source_id, created_by_user_id, is_reversal, reverses_entry_id
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, TRUE, $8
+)
+RETURNING id
+`
+
+type CreateReversalEntryParams struct {
+	OrganisationID  uuid.UUID   `json:"organisation_id"`
+	EntryDate       pgtype.Date `json:"entry_date"`
+	BaseCurrency    string      `json:"base_currency"`
+	Narrative       pgtype.Text `json:"narrative"`
+	SourceType      string      `json:"source_type"`
+	SourceID        pgtype.UUID `json:"source_id"`
+	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+	ReversesEntryID pgtype.UUID `json:"reverses_entry_id"`
+}
+
+// Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
+// crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
+// idempotency unique index excludes reversals, so this never collides with the live
+// (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+func (q *Queries) CreateReversalEntry(ctx context.Context, arg CreateReversalEntryParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, createReversalEntry,
+		arg.OrganisationID,
+		arg.EntryDate,
+		arg.BaseCurrency,
+		arg.Narrative,
+		arg.SourceType,
+		arg.SourceID,
+		arg.CreatedByUserID,
+		arg.ReversesEntryID,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const deleteJournalEntryForSource = `-- name: DeleteJournalEntryForSource :exec
 
 DELETE FROM gl_journal_entries

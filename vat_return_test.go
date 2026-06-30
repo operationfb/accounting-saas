@@ -51,10 +51,13 @@ func decodeVatReturn(t *testing.T, body []byte) vat.VatReturnResponse {
 func vatSeedExpenseCategory(t *testing.T, ts *testServer, orgID string) string {
 	t.Helper()
 	id := uuid.NewString()
+	// A throwaway spending account in the shared Chart of Accounts so a fresh test
+	// org can file expenses against it (account_type is NOT NULL on categories).
 	if _, err := ts.pool.Exec(context.Background(),
-		`INSERT INTO expense_categories (id, organisation_id, nominal_code, name) VALUES ($1, $2, $3, 'Sundries')`,
+		`INSERT INTO categories (id, organisation_id, nominal_code, name, account_type)
+		 VALUES ($1, $2, $3, 'Sundries', 'ADMIN_EXPENSE')`,
 		id, orgID, "VR-"+id[:8]); err != nil {
-		t.Fatalf("seed expense_category: %v", err)
+		t.Fatalf("seed category: %v", err)
 	}
 	return id
 }
@@ -181,7 +184,7 @@ func TestHandleGetVatReturn(t *testing.T) {
 		_, _ = ts.pool.Exec(ctx, `DELETE FROM invoices WHERE organisation_id = $1`, orgID)
 		_, _ = ts.pool.Exec(ctx, `DELETE FROM expenses WHERE organisation_id = $1`, orgID)
 		_, _ = ts.pool.Exec(ctx, `DELETE FROM contacts WHERE organisation_id = $1`, orgID)
-		_, _ = ts.pool.Exec(ctx, `DELETE FROM expense_categories WHERE organisation_id = $1`, orgID)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM categories WHERE organisation_id = $1`, orgID)
 	})
 
 	catID := vatSeedExpenseCategory(t, ts, orgID)
@@ -459,7 +462,7 @@ func TestFiledReturnShowsSnapshotNotLiveRecompute(t *testing.T) {
 		c := context.Background()
 		_, _ = ts.pool.Exec(c, `DELETE FROM vat_returns WHERE organisation_id=$1`, orgID)
 		_, _ = ts.pool.Exec(c, `DELETE FROM expenses WHERE organisation_id=$1`, orgID)
-		_, _ = ts.pool.Exec(c, `DELETE FROM expense_categories WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM categories WHERE organisation_id=$1`, orgID)
 	})
 
 	catID := vatSeedExpenseCategory(t, ts, orgID)

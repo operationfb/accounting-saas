@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Per-org Chart of Accounts (FreeAgent nominal codes). The accounts an explanation posts to. Separate from expense_categories (different code scheme) until a later unification.
+// Per-org Chart of Accounts (FreeAgent nominal codes). The single category table for the whole app — expenses, bills, banking, invoices, payroll and the GL all post against it.
 type Category struct {
 	ID             uuid.UUID   `json:"id"`
 	OrganisationID uuid.UUID   `json:"organisation_id"`

@@ -1087,45 +1087,6 @@ func (q *Queries) GetExpenseAttachment(ctx context.Context, arg GetExpenseAttach
 	return i, err
 }
 
-const getExpenseCategoryByNominalCode = `-- name: GetExpenseCategoryByNominalCode :one
-SELECT id, organisation_id, nominal_code, name, description, category_group, is_mileage, is_capital_asset, is_stock_purchase, is_active, created_at, updated_at FROM expense_categories
-WHERE organisation_id = $1
-  AND nominal_code    = $2
-  AND is_active = TRUE
-`
-
-type GetExpenseCategoryByNominalCodeParams struct {
-	OrganisationID uuid.UUID `json:"organisation_id"`
-	NominalCode    string    `json:"nominal_code"`
-}
-
-// -----------------------------------------------------------------------------
-// GetExpenseCategoryByNominalCode
-// Fetch one active category by its nominal code within an organisation. Smart
-// Upload uses this to resolve the org's placeholder category ('6021' Sundries)
-// for a skeleton expense, since category UUIDs are generated per-org and so
-// can't be hardcoded. Org-scoped — categories are per-tenant reference data.
-// -----------------------------------------------------------------------------
-func (q *Queries) GetExpenseCategoryByNominalCode(ctx context.Context, arg GetExpenseCategoryByNominalCodeParams) (ExpenseCategory, error) {
-	row := q.db.QueryRow(ctx, getExpenseCategoryByNominalCode, arg.OrganisationID, arg.NominalCode)
-	var i ExpenseCategory
-	err := row.Scan(
-		&i.ID,
-		&i.OrganisationID,
-		&i.NominalCode,
-		&i.Name,
-		&i.Description,
-		&i.CategoryGroup,
-		&i.IsMileage,
-		&i.IsCapitalAsset,
-		&i.IsStockPurchase,
-		&i.IsActive,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const getExpenseMileage = `-- name: GetExpenseMileage :one
 SELECT id, expense_id, miles, journey_description, journey_from, journey_to, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, have_vat_receipt, created_at, updated_at FROM expense_mileage
 WHERE expense_id = $1
@@ -1190,7 +1151,7 @@ func (q *Queries) GetExpenseRecurrence(ctx context.Context, expenseID uuid.UUID)
 const getExpenseWithDetails = `-- name: GetExpenseWithDetails :one
 
 
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE id              = $1
   AND organisation_id = $2
 `
@@ -1246,7 +1207,6 @@ func (q *Queries) GetExpenseWithDetails(ctx context.Context, arg GetExpenseWithD
 		&i.PaidAt,
 		&i.CategoryNominalCode,
 		&i.CategoryName,
-		&i.CategoryIsMileage,
 		&i.CategoryIsCapitalAsset,
 		&i.Miles,
 		&i.VehicleType,
@@ -1314,6 +1274,8 @@ func (q *Queries) GetPrimaryAttachmentForPush(ctx context.Context, arg GetPrimar
 
 const getSuggestedCategory = `-- name: GetSuggestedCategory :one
 
+
+
 SELECT category_id
 FROM supplier_category_map
 WHERE organisation_id = $1
@@ -1326,6 +1288,14 @@ type GetSuggestedCategoryParams struct {
 	SupplierName   string    `json:"supplier_name"`
 }
 
+// =============================================================================
+// SECTION 6: EXPENSE CATEGORIES (reference data)
+// =============================================================================
+// Expense categories now come from the shared Chart of Accounts (categories).
+// The picker query is ListSpendingCategories and the Smart-Upload placeholder
+// lookup is GetCategoryByNominal — both in db/queries/categories.sql. The old
+// per-module ListExpenseCategories / GetExpenseCategoryByNominalCode (over the
+// dropped expense_categories table) were removed in the 2026-06-30 unification.
 // =============================================================================
 // SECTION 6b: SUPPLIER → CATEGORY DICTIONARY (auto-categorisation)
 //
@@ -1473,57 +1443,6 @@ func (q *Queries) ListExpenseAttachments(ctx context.Context, expenseID uuid.UUI
 			&i.OcrExtractedData,
 			&i.OcrProcessedAt,
 			&i.UploadedByUserID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listExpenseCategories = `-- name: ListExpenseCategories :many
-
-SELECT id, organisation_id, nominal_code, name, description, category_group, is_mileage, is_capital_asset, is_stock_purchase, is_active, created_at, updated_at FROM expense_categories
-WHERE organisation_id = $1
-  AND is_active = TRUE
-ORDER BY category_group, nominal_code
-`
-
-// =============================================================================
-// SECTION 6: EXPENSE CATEGORIES (reference data)
-// =============================================================================
-// -----------------------------------------------------------------------------
-// ListExpenseCategories
-// All ACTIVE categories for an organisation, for the expense category picker.
-// Scoped by organisation_id — categories are per-tenant reference data.
-// Ordered by category_group then nominal_code so the UI can render stable
-// sections (Admin expenses / Assets and stock / Cost of Sales).
-// -----------------------------------------------------------------------------
-func (q *Queries) ListExpenseCategories(ctx context.Context, organisationID uuid.UUID) ([]ExpenseCategory, error) {
-	rows, err := q.db.Query(ctx, listExpenseCategories, organisationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ExpenseCategory
-	for rows.Next() {
-		var i ExpenseCategory
-		if err := rows.Scan(
-			&i.ID,
-			&i.OrganisationID,
-			&i.NominalCode,
-			&i.Name,
-			&i.Description,
-			&i.CategoryGroup,
-			&i.IsMileage,
-			&i.IsCapitalAsset,
-			&i.IsStockPurchase,
-			&i.IsActive,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1947,7 +1866,7 @@ func (q *Queries) ListExpensesByUser(ctx context.Context, arg ListExpensesByUser
 }
 
 const listExpensesFull = `-- name: ListExpensesFull :many
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE organisation_id = $1
 ORDER BY dated_on DESC, created_at DESC
 `
@@ -2005,7 +1924,6 @@ func (q *Queries) ListExpensesFull(ctx context.Context, organisationID uuid.UUID
 			&i.PaidAt,
 			&i.CategoryNominalCode,
 			&i.CategoryName,
-			&i.CategoryIsMileage,
 			&i.CategoryIsCapitalAsset,
 			&i.Miles,
 			&i.VehicleType,
@@ -2036,7 +1954,7 @@ func (q *Queries) ListExpensesFull(ctx context.Context, organisationID uuid.UUID
 }
 
 const listExpensesFullByIDs = `-- name: ListExpensesFullByIDs :many
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE organisation_id = $1
   AND id = ANY($2::uuid[])
 ORDER BY dated_on DESC, created_at DESC
@@ -2099,7 +2017,6 @@ func (q *Queries) ListExpensesFullByIDs(ctx context.Context, arg ListExpensesFul
 			&i.PaidAt,
 			&i.CategoryNominalCode,
 			&i.CategoryName,
-			&i.CategoryIsMileage,
 			&i.CategoryIsCapitalAsset,
 			&i.Miles,
 			&i.VehicleType,
@@ -2130,7 +2047,7 @@ func (q *Queries) ListExpensesFullByIDs(ctx context.Context, arg ListExpensesFul
 }
 
 const listExpensesFullByUser = `-- name: ListExpensesFullByUser :many
-SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_mileage, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
+SELECT id, organisation_id, user_id, created_by_user_id, dated_on, description, receipt_reference, invoice_number, supplier_name, supplier_vat_number, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_quantity, capital_asset_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, category_nominal_code, category_name, category_is_capital_asset, miles, vehicle_type, engine_type, engine_size, reclaim_mileage, initial_rate_ppm, reduced_rate_ppm, rebill_rate_ppm, reimbursement_minor, created_at, updated_at, category_id, vat_rate_id, needs_review, ocr_confidence, ocr_processed_at, rejection_note FROM v_expenses_full
 WHERE organisation_id = $1
   AND user_id         = $2
 ORDER BY dated_on DESC, created_at DESC
@@ -2191,7 +2108,6 @@ func (q *Queries) ListExpensesFullByUser(ctx context.Context, arg ListExpensesFu
 			&i.PaidAt,
 			&i.CategoryNominalCode,
 			&i.CategoryName,
-			&i.CategoryIsMileage,
 			&i.CategoryIsCapitalAsset,
 			&i.Miles,
 			&i.VehicleType,
@@ -2850,7 +2766,7 @@ SELECT
     COALESCE(SUM(e.native_gross_value_minor), 0)  AS total_gross_minor,
     COALESCE(SUM(e.native_vat_value_minor), 0)    AS total_vat_minor
 FROM expenses e
-JOIN expense_categories ec ON ec.id = e.category_id
+JOIN categories ec ON ec.id = e.category_id   -- the shared Chart of Accounts
 WHERE e.organisation_id = $1
   AND e.dated_on BETWEEN $2 AND $3
   AND e.deleted_at IS NULL

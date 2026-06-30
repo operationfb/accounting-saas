@@ -30,6 +30,12 @@ INSERT INTO gl_account_roles (role, nominal_code) VALUES
   -- 2 legs; split to separate gain/loss nominals later by repointing one role.
   ('FX_REALISED_GAIN', '390'),
   ('FX_REALISED_LOSS', '390'),
+  -- Unrealised FX on the periodic revaluation of open foreign debtors. Single SIGNED
+  -- account (391 "Unrealized Currency Exchange Gain/Loss"): gains CR it, losses DR it.
+  -- Separate nominal from realised (390) so the two never double-count — the receipt
+  -- crystallises realised in 390, the open-portion accrual lives in 391 until settled.
+  ('FX_UNREALISED_GAIN', '391'),
+  ('FX_UNREALISED_LOSS', '391'),
   -- Payroll accrual (PAYROLL_COMPLETED). Nominals are FreeAgent's ACTUAL payroll codes
   -- (confirmed against the live sandbox chart by gl_posting_rules_freeagent_test.go).
   -- The three employer-cost expense legs split by director status: STAFF → 401/402/403,

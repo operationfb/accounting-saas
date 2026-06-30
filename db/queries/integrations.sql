@@ -146,8 +146,8 @@ SELECT
     e.ec_status         AS ec_status,
     e.status            AS status
 FROM expenses e
-JOIN users u              ON u.id = e.user_id
-JOIN expense_categories c ON c.id = e.category_id
+JOIN users u      ON u.id = e.user_id
+JOIN categories c ON c.id = e.category_id   -- the shared Chart of Accounts (FreeAgent nominal codes)
 WHERE e.id              = @expense_id
   AND e.organisation_id = @organisation_id
   AND e.deleted_at IS NULL;

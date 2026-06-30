@@ -251,7 +251,7 @@ SELECT
     e.vat_status,
     e.ec_status
 FROM expenses e
-JOIN expense_categories ec ON ec.id = e.category_id
+JOIN categories ec ON ec.id = e.category_id   -- the shared Chart of Accounts
 WHERE e.organisation_id = $1
   AND e.dated_on BETWEEN $2 AND $3
   AND e.deleted_at IS NULL

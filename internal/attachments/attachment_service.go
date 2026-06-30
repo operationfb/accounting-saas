@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
+	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
@@ -49,11 +50,12 @@ import (
 )
 
 // PlaceholderCategoryNominal is the nominal code of the catch-all category a
-// Smart Upload skeleton is filed under until the user picks a real one. '280'
-// is "Sundries" in the seeded chart of accounts (FreeAgent's nominal code) — a
-// normal, VAT-able admin category, the least-wrong default for an as-yet-
-// unclassified receipt.
-const PlaceholderCategoryNominal = "280"
+// Smart Upload skeleton is filed under until the user picks a real one. '251'
+// is "Sundry Expenses" in the shared Chart of Accounts (categories; ADMIN_EXPENSE,
+// STANDARD-rated) — a normal, VAT-able admin category, the least-wrong default for
+// an as-yet-unclassified receipt. (Was '280' Sundries on the old expense_categories
+// table, dropped in the 2026-06-30 CoA unification.)
+const PlaceholderCategoryNominal = "251"
 
 // PlaceholderDescription is the stand-in description on a Smart Upload skeleton
 // until OCR (or the user) supplies a real one. OcrService replaces it — and only
@@ -92,8 +94,12 @@ type Service struct {
 	pool        *pgxpool.Pool
 	queries     *expensesdb.Queries
 	authQueries auth.Querier
-	storage     storage.Storage
-	ocr         OcrEnqueuer // nil when OCR isn't configured
+	// categoryQueries resolves the Smart-Upload placeholder category from the shared
+	// Chart of Accounts (GetCategoryByNominal). Expenses were unified onto the CoA
+	// (2026-06-30); the old expense_categories lookup is gone.
+	categoryQueries categoriesdb.Querier
+	storage         storage.Storage
+	ocr             OcrEnqueuer // nil when OCR isn't configured
 
 	maxBytes int64
 	urlTTL   time.Duration
@@ -104,7 +110,7 @@ type Service struct {
 // GCS configured (GCS_BUCKET unset); in that case the upload/download paths
 // return a clear internal error rather than panicking. ocr may be nil when
 // Document AI isn't configured; Smart Upload then creates drafts without OCR.
-func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, store storage.Storage, ocr OcrEnqueuer, maxBytes int64, urlTTL time.Duration) *Service {
+func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, categoryQueries categoriesdb.Querier, store storage.Storage, ocr OcrEnqueuer, maxBytes int64, urlTTL time.Duration) *Service {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxUploadBytes
 	}
@@ -112,13 +118,14 @@ func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries aut
 		urlTTL = defaultSignedURLTTL
 	}
 	return &Service{
-		pool:        pool,
-		queries:     queries,
-		authQueries: authQueries,
-		storage:     store,
-		ocr:         ocr,
-		maxBytes:    maxBytes,
-		urlTTL:      urlTTL,
+		pool:            pool,
+		queries:         queries,
+		authQueries:     authQueries,
+		categoryQueries: categoryQueries,
+		storage:         store,
+		ocr:             ocr,
+		maxBytes:        maxBytes,
+		urlTTL:          urlTTL,
 	}
 }
 
@@ -320,8 +327,9 @@ func (s *Service) CaptureFromReceipt(
 		return nil, err
 	}
 
-	// Resolve the org's placeholder category ('Sundries') for the skeleton.
-	cat, err := s.queries.GetExpenseCategoryByNominalCode(ctx, expensesdb.GetExpenseCategoryByNominalCodeParams{
+	// Resolve the org's placeholder category ('251' Sundry Expenses) from the shared
+	// Chart of Accounts for the skeleton.
+	cat, err := s.categoryQueries.GetCategoryByNominal(ctx, categoriesdb.GetCategoryByNominalParams{
 		OrganisationID: orgID,
 		NominalCode:    PlaceholderCategoryNominal,
 	})

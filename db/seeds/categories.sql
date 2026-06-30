@@ -115,7 +115,10 @@ FROM (VALUES
   ('258','Amortisation of Intangibles',     FALSE, 'OUTSIDE_SCOPE'),
   -- Single SIGNED realised-FX account (gain CR / loss DR → one net P&L line). Used by the
   -- INVOICE_RECEIPT FX legs (and the future Phase 4 bank-balance revaluation).
-  ('390','Realized Currency Exchange Gain/Loss', FALSE, 'OUTSIDE_SCOPE')
+  ('390','Realized Currency Exchange Gain/Loss', FALSE, 'OUTSIDE_SCOPE'),
+  -- Single SIGNED unrealised-FX account (gain CR / loss DR). Used by the periodic
+  -- INVOICE_REVALUATION journal that retranslates open foreign debtors to today's rate.
+  ('391','Unrealized Currency Exchange Gain/Loss', FALSE, 'OUTSIDE_SCOPE')
 ) AS v(code, name, allow, vat)
 ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
 
@@ -132,8 +135,11 @@ ON CONFLICT (organisation_id, nominal_code) DO NOTHING;
 
 -- 6. CAPITAL ASSETS (general_categories; is_capital_asset) ---------------------
 --    Parent additions / disposal accounts (per-asset sub-accounts are not seeded).
-INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group, is_capital_asset)
-SELECT '00000000-0000-0000-0000-000000000001', v.code, v.name, 'CAPITAL_ASSET', 'general_categories', TRUE
+--    default_vat STANDARD: capital purchases are standard-rated, so the expense /
+--    bill form pre-selects 20% when one of these is picked (the picker shares the
+--    spending-account list — see ListSpendingCategories).
+INSERT INTO categories (organisation_id, nominal_code, name, account_type, api_group, is_capital_asset, default_vat)
+SELECT '00000000-0000-0000-0000-000000000001', v.code, v.name, 'CAPITAL_ASSET', 'general_categories', TRUE, 'STANDARD'
 FROM (VALUES
   ('602','Capital Asset Additions'),
   ('604','Capital Asset Disposal')

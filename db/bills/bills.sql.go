@@ -204,6 +204,8 @@ func (q *Queries) CreateBill(ctx context.Context, arg CreateBillParams) (Bill, e
 
 const createBillAttachment = `-- name: CreateBillAttachment :one
 
+
+
 INSERT INTO bill_attachments (
     bill_id,
     organisation_id,
@@ -246,6 +248,9 @@ type CreateBillAttachmentParams struct {
 	ContentHash      pgtype.Text `json:"content_hash"`
 }
 
+// The bill "Spending Category" picker is now ListSpendingCategories in
+// db/queries/categories.sql — one shared spending-account query for both bills
+// and expenses (the old ListBillCategories lived here; identical SQL).
 // =============================================================================
 // BILL ATTACHMENTS
 // Clone of the expense_attachments query set, scoped to bills. The bytes live in
@@ -479,65 +484,6 @@ func (q *Queries) ListBillAttachments(ctx context.Context, billID uuid.UUID) ([]
 			&i.UploadedByUserID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listBillCategories = `-- name: ListBillCategories :many
-SELECT id, nominal_code, name, account_type, api_group, default_vat
-FROM categories
-WHERE organisation_id = $1
-  AND is_active
-  AND is_system_managed = FALSE
-  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
-ORDER BY account_type, nominal_code
-`
-
-type ListBillCategoriesRow struct {
-	ID          uuid.UUID   `json:"id"`
-	NominalCode string      `json:"nominal_code"`
-	Name        string      `json:"name"`
-	AccountType string      `json:"account_type"`
-	ApiGroup    pgtype.Text `json:"api_group"`
-	DefaultVat  pgtype.Text `json:"default_vat"`
-}
-
-// -----------------------------------------------------------------------------
-// ListBillCategories
-// The "Spending Category" picker. The bill's category_id is a CoA (categories)
-// account, but a bill may only post to a SPENDING account — so we return just the
-// subset the expense form offers: cost of sales, admin expenses and capital
-// assets. Income / balance-sheet / system-managed accounts are excluded. Selects
-// default_vat so the service can resolve the form's "Auto" VAT rate from the
-// chosen category. Org-scoped, active rows only.
-// (The exact account_type set is intended to match what the expense form lists;
-//
-//	revisit if/when expense_categories and categories are unified — see BACKLOG.)
-//
-// -----------------------------------------------------------------------------
-func (q *Queries) ListBillCategories(ctx context.Context, organisationID uuid.UUID) ([]ListBillCategoriesRow, error) {
-	rows, err := q.db.Query(ctx, listBillCategories, organisationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListBillCategoriesRow
-	for rows.Next() {
-		var i ListBillCategoriesRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.NominalCode,
-			&i.Name,
-			&i.AccountType,
-			&i.ApiGroup,
-			&i.DefaultVat,
 		); err != nil {
 			return nil, err
 		}

@@ -637,6 +637,11 @@ func (s *Service) ChangeStatus(
 				if err := s.poster.RemoveEntry(ctx, tx, authOrgID, ledgerSourceInvoice, updated.ID); err != nil {
 					return err
 				}
+				// Reopen / write-off / refund is an UNDO, not a settlement: drop any unrealised
+				// FX revaluation entry too, so a no-longer-SENT invoice carries no FX history.
+				if err := s.poster.RemoveEntry(ctx, tx, authOrgID, ledgerSourceInvoiceRevaluation, updated.ID); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -740,8 +745,9 @@ func (s *Service) currencyExp(ctx context.Context, q *invoicesdb.Queries, code s
 
 // GL event/source codes for the invoice receivable.
 const (
-	ledgerEventInvoiceSent = "INVOICE_SENT" // gl_posting_rules.event_code
-	ledgerSourceInvoice    = "INVOICE"      // gl_journal_entries.source_type
+	ledgerEventInvoiceSent         = "INVOICE_SENT"        // gl_posting_rules.event_code
+	ledgerSourceInvoice            = "INVOICE"             // gl_journal_entries.source_type
+	ledgerSourceInvoiceRevaluation = "INVOICE_REVALUATION" // the unrealised-FX revaluation entry (Phase 3)
 )
 
 // postInvoiceSent posts the issued invoice to the general ledger (Dr Debtors / Cr Sales

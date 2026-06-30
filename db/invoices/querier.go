@@ -106,6 +106,11 @@ type Querier interface {
 	// by idx_invoices_org_contact.
 	// -----------------------------------------------------------------------------
 	ListInvoicesByContact(ctx context.Context, arg ListInvoicesByContactParams) ([]Invoice, error)
+	// Every org's OPEN foreign-currency invoices (SENT, still owing, currency != the org's
+	// home currency), with the org context the GL poster needs (home currency, company type,
+	// country). Backs the periodic unrealised FX revaluation (internal/fxrevaluation): one
+	// cross-org pass, each invoice revalued in its own transaction. Oldest first within an org.
+	ListOpenForeignInvoicesAllOrgs(ctx context.Context) ([]ListOpenForeignInvoicesAllOrgsRow, error)
 	// -----------------------------------------------------------------------------
 	// ListOutstandingInvoices
 	// The org's SENT invoices that are NOT fully paid yet (due_value_minor > 0, i.e.

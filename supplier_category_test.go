@@ -44,7 +44,7 @@ func categoryUUID(t *testing.T, ts *testServer, orgID, nominal string) string {
 	t.Helper()
 	var id string
 	if err := ts.pool.QueryRow(context.Background(),
-		`SELECT id::text FROM expense_categories WHERE organisation_id = $1 AND nominal_code = $2`,
+		`SELECT id::text FROM categories WHERE organisation_id = $1 AND nominal_code = $2`,
 		orgID, nominal).Scan(&id); err != nil {
 		t.Fatalf("categoryUUID(%s): %v", nominal, err)
 	}
@@ -108,9 +108,9 @@ func TestSupplierCategoryLearnTrigger(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.pool.Close()
 
-	travel := categoryUUID(t, ts, devOrgID, "365")   // Travel
-	sundries := categoryUUID(t, ts, devOrgID, "280") // Sundries (also the Smart Upload placeholder)
-	office := categoryUUID(t, ts, devOrgID, "250")   // Office Costs
+	travel := categoryUUID(t, ts, devOrgID, "254")   // Travel and Subsistence
+	sundries := categoryUUID(t, ts, devOrgID, "251") // Sundry Expenses (also the Smart Upload placeholder)
+	office := categoryUUID(t, ts, devOrgID, "250")   // Professional Body Subscriptions
 
 	t.Run("a confirmed expense teaches supplier→category", func(t *testing.T) {
 		cleanupMapKeys(t, ts, devOrgID, "tesco stores")
@@ -234,9 +234,9 @@ func TestSupplierCategoryAutoCategorise(t *testing.T) {
 	defer ts.pool.Close()
 
 	devOrg := mustUUID(t, devOrgID)
-	travel := categoryUUID(t, ts, devOrgID, "365")
+	travel := categoryUUID(t, ts, devOrgID, "254")
 	office := categoryUUID(t, ts, devOrgID, "250")
-	placeholder := categoryUUID(t, ts, devOrgID, attachments.PlaceholderCategoryNominal) // 280 Sundries
+	placeholder := categoryUUID(t, ts, devOrgID, attachments.PlaceholderCategoryNominal) // 251 Sundry Expenses
 
 	// seedMapping puts a remembered mapping in place directly, so the consume test
 	// doesn't depend on the trigger having run.

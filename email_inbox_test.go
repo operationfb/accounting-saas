@@ -156,20 +156,20 @@ func soleDraftClaimant(t *testing.T, ts *testServer, orgID string) (userID, crea
 func ownerEmailFor(userID string) string  { return "owner-" + userID + "@test.local" }
 func memberEmailFor(userID string) string { return "member-" + userID + "@test.local" }
 
-// seedSundries inserts the '280' Sundries placeholder category that
-// CaptureFromReceipt files a skeleton draft under (280 = FreeAgent's nominal code
-// for Sundries; matches attachments.PlaceholderCategoryNominal). Ephemeral orgs (unlike the
+// seedSundries inserts the '251' Sundry Expenses placeholder category (in the
+// shared Chart of Accounts) that CaptureFromReceipt files a skeleton draft under
+// (251 matches attachments.PlaceholderCategoryNominal). Ephemeral orgs (unlike the
 // seeded dev org) have no categories, so capture tests must seed this one.
 func seedSundries(t *testing.T, ts *testServer, orgID string) {
 	t.Helper()
 	if _, err := ts.pool.Exec(context.Background(),
-		`INSERT INTO expense_categories (organisation_id, nominal_code, name, category_group)
-		 VALUES ($1, '280', 'Sundries', 'ADMIN')`, orgID); err != nil {
+		`INSERT INTO categories (organisation_id, nominal_code, name, account_type)
+		 VALUES ($1, '251', 'Sundry Expenses', 'ADMIN_EXPENSE')`, orgID); err != nil {
 		t.Fatalf("seedSundries: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = ts.pool.Exec(context.Background(),
-			`DELETE FROM expense_categories WHERE organisation_id = $1`, orgID)
+			`DELETE FROM categories WHERE organisation_id = $1`, orgID)
 	})
 }
 

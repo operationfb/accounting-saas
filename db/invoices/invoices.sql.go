@@ -488,6 +488,73 @@ func (q *Queries) ListInvoicesByContact(ctx context.Context, arg ListInvoicesByC
 	return items, nil
 }
 
+const listOpenForeignInvoicesAllOrgs = `-- name: ListOpenForeignInvoicesAllOrgs :many
+SELECT i.id, i.organisation_id, i.created_by_user_id, i.contact_id, i.dated_on, i.due_on, i.reference, i.currency, i.exchange_rate, i.native_net_value_minor, i.native_sales_tax_value_minor, i.native_total_value_minor, i.status, i.net_value_minor, i.sales_tax_value_minor, i.total_value_minor, i.paid_value_minor, i.due_value_minor, i.deleted_at, i.created_at, i.updated_at, o.native_currency, o.company_type, o.country_code
+FROM invoices i
+JOIN organisations o ON o.id = i.organisation_id
+WHERE i.status          = 'SENT'
+  AND i.due_value_minor > 0
+  AND i.deleted_at IS NULL
+  AND i.currency       <> o.native_currency
+ORDER BY i.organisation_id, i.dated_on, i.created_at
+`
+
+type ListOpenForeignInvoicesAllOrgsRow struct {
+	Invoice        Invoice     `json:"invoice"`
+	NativeCurrency string      `json:"native_currency"`
+	CompanyType    pgtype.Text `json:"company_type"`
+	CountryCode    string      `json:"country_code"`
+}
+
+// Every org's OPEN foreign-currency invoices (SENT, still owing, currency != the org's
+// home currency), with the org context the GL poster needs (home currency, company type,
+// country). Backs the periodic unrealised FX revaluation (internal/fxrevaluation): one
+// cross-org pass, each invoice revalued in its own transaction. Oldest first within an org.
+func (q *Queries) ListOpenForeignInvoicesAllOrgs(ctx context.Context) ([]ListOpenForeignInvoicesAllOrgsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenForeignInvoicesAllOrgs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenForeignInvoicesAllOrgsRow
+	for rows.Next() {
+		var i ListOpenForeignInvoicesAllOrgsRow
+		if err := rows.Scan(
+			&i.Invoice.ID,
+			&i.Invoice.OrganisationID,
+			&i.Invoice.CreatedByUserID,
+			&i.Invoice.ContactID,
+			&i.Invoice.DatedOn,
+			&i.Invoice.DueOn,
+			&i.Invoice.Reference,
+			&i.Invoice.Currency,
+			&i.Invoice.ExchangeRate,
+			&i.Invoice.NativeNetValueMinor,
+			&i.Invoice.NativeSalesTaxValueMinor,
+			&i.Invoice.NativeTotalValueMinor,
+			&i.Invoice.Status,
+			&i.Invoice.NetValueMinor,
+			&i.Invoice.SalesTaxValueMinor,
+			&i.Invoice.TotalValueMinor,
+			&i.Invoice.PaidValueMinor,
+			&i.Invoice.DueValueMinor,
+			&i.Invoice.DeletedAt,
+			&i.Invoice.CreatedAt,
+			&i.Invoice.UpdatedAt,
+			&i.NativeCurrency,
+			&i.CompanyType,
+			&i.CountryCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOutstandingInvoices = `-- name: ListOutstandingInvoices :many
 SELECT id, organisation_id, created_by_user_id, contact_id, dated_on, due_on, reference, currency, exchange_rate, native_net_value_minor, native_sales_tax_value_minor, native_total_value_minor, status, net_value_minor, sales_tax_value_minor, total_value_minor, paid_value_minor, due_value_minor, deleted_at, created_at, updated_at FROM invoices
 WHERE organisation_id   = $1

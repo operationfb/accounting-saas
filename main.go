@@ -54,6 +54,7 @@ import (
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	"github.com/operationfb/accounting-saas/internal/fxrates"
+	fxrevaluation "github.com/operationfb/accounting-saas/internal/fxrevaluation"
 	htmlrender "github.com/operationfb/accounting-saas/internal/htmlrender"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
@@ -145,11 +146,17 @@ func main() {
 	// -------------------------------------------------------------------------
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
+	// categoryQueries reads the shared Chart of Accounts (categories). It is shared
+	// across domains — the expense + bill category pickers (ListSpendingCategories),
+	// the Smart-Upload placeholder lookup, the banking explain reference data, and the
+	// GL resolver all use it. Built here so the expenses/attachments services below
+	// (constructed before the banking block) can take it.
+	categoryQueries := dbcategories.New(pool)
 	// vatQueries is shared across domains: it backs the VAT screens AND the filed-period
 	// lock (the read-only IsDateInFiledPeriod check that expenses/invoices/bills/banking
 	// each call before mutating a record dated in an already-submitted VAT return).
 	vatQueries := dbvat.New(pool)
-	service := expenses.NewService(pool, queries, authQueries, vatQueries)
+	service := expenses.NewService(pool, queries, authQueries, categoryQueries, vatQueries)
 
 	// Contacts + Projects each have their own sqlc package + internal service and
 	// self-register routes after NewServer (per-domain pattern). They share
@@ -176,6 +183,18 @@ func main() {
 		fxProvider = fxrates.NewFrankfurterProvider(url) // url == "" → default host
 	}
 	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), currencyQueries, fxProvider, "GBP", "ecb")
+
+	// Unrealised-FX revaluation (Phase 3): retranslates open foreign invoices to today's
+	// stored rate, posting the swing to 391 so the Trial Balance reflects today's value.
+	// Driven by the daily FX-rate refresh (chained below) and by the banking receipt flow
+	// (injected into bankingSvc) to keep 391 in step with payments.
+	fxRevalSvc := fxrevaluation.NewService(
+		pool,
+		dbinvoices.New(pool),
+		authQueries,
+		ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries),
+		fxRateSvc,
+	)
 
 	// Invoices: sales documents an org issues to its contacts. Like projects it
 	// needs the contacts querier to validate an invoice's contact belongs to the
@@ -350,7 +369,7 @@ func main() {
 	}
 
 	// 0, 0 → use the service defaults (20 MiB max file, 15-minute download URLs).
-	attachmentService := attachments.NewService(pool, queries, authQueries, attachmentStorage, ocrTrigger, 0, 0)
+	attachmentService := attachments.NewService(pool, queries, authQueries, categoryQueries, attachmentStorage, ocrTrigger, 0, 0)
 
 	// -------------------------------------------------------------------------
 	// Email-to-expense (Mailgun inbound webhook).
@@ -486,12 +505,16 @@ func main() {
 	fxRateHandler := fxrates.NewHandler(fxRateSvc)
 	fxRateHandler.RegisterRoutes(server.Router(), tokenMaker)
 	fxRateHandler.RegisterInternalRoutes(server.Router(), workflowServiceAccount)
+	// Chain the unrealised-FX revaluation onto EVERY rate refresh (the daily endpoint AND
+	// the startup fetch below), so the 391 accruals never drift from the stored rate. Set on
+	// the SERVICE (not the handler) before the startup refresh runs.
+	fxRateSvc.SetRevaluer(fxRevalSvc)
 	go fxRateSvc.RefreshTodayBestEffort(context.Background())
 
 	// Banking: the org's own bank accounts + the explain/reconcile flow. Its service
 	// takes the categories query set (the explain reference lookups + VAT). Registers
-	// its own routes on the shared engine (the per-domain pattern).
-	categoryQueries := dbcategories.New(pool)
+	// its own routes on the shared engine (the per-domain pattern). categoryQueries was
+	// built earlier (shared with expenses/attachments/bills).
 	// dbinvoices.New(pool) is the cross-domain dependency for the Invoice Receipt
 	// explanation: validate the target invoice + keep its paid_value_minor in sync.
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
@@ -500,6 +523,9 @@ func main() {
 	// Exchange-rate seam: lets an invoice-receipt explanation settle a foreign-currency
 	// invoice (convert the receipt to home + invoice currency, recognise realised FX).
 	bankingSvc.SetRates(fxRateSvc)
+	// Unrealised-FX seam: a receipt re-revalues (partial) or crystallises (full settlement)
+	// the invoice's 391 entry in the same transaction, so the Trial Balance stays correct.
+	bankingSvc.SetInvoiceRevaluer(fxRevalSvc)
 	bankingHandler := banking.NewHandler(bankingSvc)
 	bankingHandler.RegisterRoutes(server.Router(), tokenMaker)
 

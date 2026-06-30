@@ -17,10 +17,18 @@ version: "2"
 sql:
   - engine: "postgresql"
 
-    # Path to the DDL schema file — the CREATE TABLE statements.
-    # sqlc parses this to know column names and types so it can generate
-    # correctly typed Go structs and function parameters.
-    schema: "db/schema/schema.sql"
+    # Schema DDL — the CREATE TABLE/VIEW statements. sqlc parses these to know
+    # column names and types so it can generate correctly typed Go structs.
+    # Loads THREE files in dependency order: the expenses tables + reference data
+    # (schema.sql), then auth_schema.sql + categories_schema.sql — the latter is
+    # needed because the expenses→categories FK AND the v_expenses_full view
+    # (which query.sql reads) both live in categories_schema.sql (see the
+    # 2026-06-30 unification). categories_schema.sql depends on auth_schema.sql
+    # (organisations FK), which depends on schema.sql (set_updated_at + expenses).
+    schema:
+      - "db/schema/schema.sql"
+      - "db/schema/auth_schema.sql"
+      - "db/schema/categories_schema.sql"
 
     # Path to the query file — the annotated SQL queries.
     # Pinned to query.sql (not the whole db/queries directory) so the auth
@@ -59,6 +67,11 @@ sql:
         # pgtype.Text, pgtype.UUID, pgtype.Int4 etc. are more ergonomic and
         # work natively with pgx without conversion.
         emit_pointers_for_null_types: false
+
+        # Keep the auth + categories tables (loaded only so categories_schema.sql's
+        # view/FK resolve) OUT of db/expenses — emit only the structs query.sql
+        # actually references (the expenses domain + the v_expenses_full row).
+        omit_unused_structs: true
 
         # Override how specific PostgreSQL types map to Go types.
         # Without overrides, sqlc uses pgtype.* for most things. These
@@ -336,20 +349,21 @@ sql:
   # `integrations` at db/integrations — the state for pushing data OUT to
   # third-party accounting systems (FreeAgent first).
   #
-  # Loads schema.sql + auth_schema.sql + integrations_schema.sql in dependency
-  # order: integrations_schema.sql references set_updated_at() + the expenses
-  # table (schema.sql) and the organisations table (auth_schema.sql). The
-  # GetExpenseForPush query additionally reads users + expense_categories, so
-  # those must be in the catalog too — they come from the loaded schema files.
-  # omit_unused_structs keeps the other domains' structs out — only
-  # OrganisationIntegration + IntegrationExpensePush (and the GetExpenseForPush
-  # row) are emitted.
+  # Loads schema.sql + auth_schema.sql + categories_schema.sql +
+  # integrations_schema.sql in dependency order: integrations_schema.sql
+  # references set_updated_at() + the expenses table (schema.sql) and the
+  # organisations table (auth_schema.sql). The GetExpenseForPush query
+  # additionally reads users + the categories CoA (for the nominal_code), so
+  # categories_schema.sql must be in the catalog too. omit_unused_structs keeps
+  # the other domains' structs out — only OrganisationIntegration +
+  # IntegrationExpensePush (and the GetExpenseForPush row) are emitted.
   # ===========================================================================
   - engine: "postgresql"
 
     schema:
       - "db/schema/schema.sql"
       - "db/schema/auth_schema.sql"
+      - "db/schema/categories_schema.sql"
       - "db/schema/integrations_schema.sql"
 
     queries: "db/queries/integrations.sql"
@@ -470,8 +484,8 @@ sql:
   # db/queries/vat.sql (VAT is inherently a cross-domain report, so its reads are
   # centralised here rather than scattered across each domain's query file).
   #
-  # Loads every schema the queries touch, in dependency order: schema.sql (expenses,
-  # expense_categories), auth_schema.sql (organisations/users), contacts_schema.sql,
+  # Loads every schema the queries touch, in dependency order: schema.sql (expenses),
+  # auth_schema.sql (organisations/users), contacts_schema.sql,
   # categories_schema.sql (categories + transaction_types), projects_schema.sql
   # (bills → projects FK), invoices_schema.sql, bills_schema.sql, banking_schema.sql
   # (bank_transaction_explanations). omit_unused_structs keeps the other domains'

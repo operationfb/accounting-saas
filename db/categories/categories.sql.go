@@ -541,6 +541,59 @@ func (q *Queries) ListCategoriesForType(ctx context.Context, arg ListCategoriesF
 	return items, nil
 }
 
+const listSpendingCategories = `-- name: ListSpendingCategories :many
+SELECT id, nominal_code, name, account_type, api_group, default_vat
+FROM categories
+WHERE organisation_id = $1
+  AND is_active
+  AND is_system_managed = FALSE
+  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
+ORDER BY account_type, nominal_code
+`
+
+type ListSpendingCategoriesRow struct {
+	ID          uuid.UUID   `json:"id"`
+	NominalCode string      `json:"nominal_code"`
+	Name        string      `json:"name"`
+	AccountType string      `json:"account_type"`
+	ApiGroup    pgtype.Text `json:"api_group"`
+	DefaultVat  pgtype.Text `json:"default_vat"`
+}
+
+// -----------------------------------------------------------------------------
+// ListSpendingCategories — the SPENDING subset of the org's CoA: the picker
+// shared by the bill form and the expense form. A bill/expense may only post to a
+// spending account, so income / balance-sheet / system-managed accounts are
+// excluded. Selects default_vat so the SPA can pre-select a sensible VAT rate when
+// a category is chosen. Org-scoped, active rows only. :many.
+// -----------------------------------------------------------------------------
+func (q *Queries) ListSpendingCategories(ctx context.Context, organisationID uuid.UUID) ([]ListSpendingCategoriesRow, error) {
+	rows, err := q.db.Query(ctx, listSpendingCategories, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSpendingCategoriesRow
+	for rows.Next() {
+		var i ListSpendingCategoriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.NominalCode,
+			&i.Name,
+			&i.AccountType,
+			&i.ApiGroup,
+			&i.DefaultVat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTransactionTypes = `-- name: ListTransactionTypes :many
 SELECT code, name, direction, entity_link, display_order, is_active, created_at FROM transaction_types
 WHERE is_active

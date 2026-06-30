@@ -78,6 +78,17 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   ('INVOICE_RECEIPT',         3, 'FX_REALISED_GAIN',     'FX_GAIN',       'CR', 3),
   ('INVOICE_RECEIPT',         4, 'FX_REALISED_LOSS',     'FX_LOSS',       'DR', 4),
 
+  -- Periodic unrealised revaluation of an OPEN foreign debtor (home-ccy only). Brings the
+  -- outstanding receivable to today's rate: a gain raises the debtor (DR 681) against the
+  -- unrealised gain account (CR 391); a loss is the mirror. Sign-split on FX_GAIN/FX_LOSS
+  -- (the service supplies FX_GAIN = max(U,0), FX_LOSS = max(-U,0)) so the poster drops the
+  -- zero pair — exactly two legs fire per run. Separate 391 nominal keeps it from
+  -- double-counting the realised 390 booked on settlement; cleared/reversed when settled.
+  ('INVOICE_REVALUATION',     1, 'DEBTORS',              'FX_GAIN',       'DR', 1),
+  ('INVOICE_REVALUATION',     2, 'FX_UNREALISED_GAIN',   'FX_GAIN',       'CR', 2),
+  ('INVOICE_REVALUATION',     3, 'DEBTORS',              'FX_LOSS',       'CR', 3),
+  ('INVOICE_REVALUATION',     4, 'FX_UNREALISED_LOSS',   'FX_LOSS',       'DR', 4),
+
   -- Sales: cash in, income recognised (net) + output VAT.
   ('SALES',                   1, 'BANK',                 'GROSS', 'DR', 1),
   ('SALES',                   2, 'EXPLANATION_CATEGORY', 'NET',   'CR', 2),

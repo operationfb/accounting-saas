@@ -92,6 +92,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	ListCategoriesForType(ctx context.Context, arg ListCategoriesForTypeParams) ([]ListCategoriesForTypeRow, error)
 	// -----------------------------------------------------------------------------
+	// ListSpendingCategories — the SPENDING subset of the org's CoA: the picker
+	// shared by the bill form and the expense form. A bill/expense may only post to a
+	// spending account, so income / balance-sheet / system-managed accounts are
+	// excluded. Selects default_vat so the SPA can pre-select a sensible VAT rate when
+	// a category is chosen. Org-scoped, active rows only. :many.
+	// -----------------------------------------------------------------------------
+	ListSpendingCategories(ctx context.Context, organisationID uuid.UUID) ([]ListSpendingCategoriesRow, error)
+	// -----------------------------------------------------------------------------
 	// ListTransactionTypes — the 18 explanation types (GLOBAL reference). :many.
 	// Drives the "Type" dropdown, grouped by direction then display order.
 	// -----------------------------------------------------------------------------

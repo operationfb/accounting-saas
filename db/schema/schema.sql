@@ -47,35 +47,15 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- expense_categories
--- Maps to Chart of Accounts nominal codes. Replaces FreeAgent's opaque
--- category URL. The `is_mileage` flag marks the special mileage category
--- that triggers the mileage sub-record requirement.
--- UK-specific: nominal_code follows standard UK CoA conventions.
+-- Expense categories now live in the shared Chart of Accounts (`categories`,
+-- db/schema/categories_schema.sql), the same table bills/banking/invoices/payroll
+-- and the GL post to. The old per-module `expense_categories` table was dropped
+-- (2026-06-30) when expenses were unified onto the CoA: an expense's category_id
+-- references categories(id) (the FK is added in categories_schema.sql, since that
+-- file is applied after this one — see the ALTER TABLE there). The expense form's
+-- picker is the SPENDING subset of the CoA (COST_OF_SALES / ADMIN_EXPENSE /
+-- CAPITAL_ASSET), shared with bills via ListSpendingCategories.
 -- -----------------------------------------------------------------------------
-CREATE TABLE expense_categories (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    organisation_id UUID        NOT NULL,               -- which company owns this category
-    nominal_code    VARCHAR(20) NOT NULL,               -- e.g. '7400' for travel, '8200' for computer equipment
-    name            VARCHAR(100) NOT NULL,              -- human-readable: 'Travel & Subsistence'
-    description     TEXT,
-    -- High-level chart-of-accounts grouping: 'COS' (Cost of Sales),
-    -- 'ADMIN' (Admin expenses), 'ASSETS' (Assets and stock / capital purchases).
-    -- Nullable — not every category is grouped. Used to section categories in
-    -- reports and the expense category picker.
-    category_group  VARCHAR(30),
-    is_mileage      BOOLEAN     NOT NULL DEFAULT FALSE, -- TRUE for the special Mileage category
-    is_capital_asset BOOLEAN    NOT NULL DEFAULT FALSE, -- TRUE triggers depreciation schedule requirement
-    is_stock_purchase BOOLEAN   NOT NULL DEFAULT FALSE, -- TRUE requires stock_item_id
-    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    CONSTRAINT uq_category_nominal_code UNIQUE (organisation_id, nominal_code)
-);
-
--- Index: most queries filter by organisation
-CREATE INDEX idx_expense_categories_org ON expense_categories (organisation_id) WHERE is_active = TRUE;
 
 
 -- -----------------------------------------------------------------------------
@@ -171,7 +151,7 @@ CREATE TABLE expenses (
     -- -------------------------------------------------------------------------
     -- Core expense fields
     -- -------------------------------------------------------------------------
-    category_id             UUID        NOT NULL REFERENCES expense_categories(id),
+    category_id             UUID        NOT NULL,               -- FK to categories(id), the shared CoA — added in categories_schema.sql (created after this file)
     dated_on                DATE        NOT NULL,               -- date on the receipt/invoice
     description             TEXT        NOT NULL,               -- free-text description, required
     receipt_reference       VARCHAR(100),                       -- optional ref number from the receipt
@@ -500,7 +480,7 @@ CREATE TABLE supplier_category_map (
     id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     organisation_id UUID         NOT NULL,                       -- tenant scope
     supplier_key    VARCHAR(200) NOT NULL,                       -- normalised supplier: lower(btrim(supplier_name))
-    category_id     UUID         NOT NULL REFERENCES expense_categories(id),
+    category_id     UUID         NOT NULL,                       -- FK to categories(id) — added in categories_schema.sql (created after this file)
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
 
@@ -613,85 +593,12 @@ CREATE TRIGGER trg_expenses_learn_supplier
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- v_expenses_full
--- A convenience view joining expenses with their mileage sub-record and
--- category. Use this in your Go service layer for the "get expense" endpoint
--- so you don't repeat the JOIN logic everywhere.
--- Note: this is a plain view, not materialised — it's always fresh.
+-- v_expenses_full — DEFINED IN categories_schema.sql (not here).
+-- The view JOINs the shared Chart of Accounts (categories), which is created in
+-- categories_schema.sql — applied AFTER this file. Postgres needs the joined
+-- table to exist when the view is created, so the view's DDL was moved there
+-- (alongside the expenses→categories FK, which has the same ordering need).
 -- -----------------------------------------------------------------------------
-CREATE VIEW v_expenses_full AS
-SELECT
-    e.id,
-    e.organisation_id,
-    e.user_id,
-    e.created_by_user_id,
-    e.dated_on,
-    e.description,
-    e.receipt_reference,
-    e.invoice_number,
-    e.supplier_name,
-    e.supplier_vat_number,
-    e.currency,
-    e.native_currency,
-    e.exchange_rate,
-    e.gross_value_minor,
-    e.native_gross_value_minor,
-    e.vat_rate_bps,
-    e.vat_value_minor,
-    e.native_vat_value_minor,
-    e.manual_vat_amount_minor,
-    e.vat_status,
-    e.ec_status,
-    e.project_id,
-    e.rebill_type,
-    e.rebill_factor,
-    e.rebilled_invoice_id,
-    e.stock_item_id,
-    e.stock_quantity,
-    e.capital_asset_id,
-    e.status,
-    e.submitted_at,
-    e.approved_at,
-    e.approved_by_user_id,
-    e.paid_at,
-    -- Category fields
-    ec.nominal_code         AS category_nominal_code,
-    ec.name                 AS category_name,
-    ec.is_mileage           AS category_is_mileage,
-    ec.is_capital_asset     AS category_is_capital_asset,
-    -- Mileage fields (NULL if not a mileage claim)
-    em.miles,
-    em.vehicle_type,
-    em.engine_type,
-    em.engine_size,
-    em.reclaim_mileage,
-    em.initial_rate_ppm,
-    em.reduced_rate_ppm,
-    em.rebill_rate_ppm,
-    em.reimbursement_minor,
-    -- Timestamps
-    e.created_at,
-    e.updated_at,
-    -- Raw FKs (the rest of the view exposes names) — used to pre-fill the edit form.
-    e.category_id,
-    e.vat_rate_id,
-    -- Capture / OCR fields. needs_review drives the Smart Upload review inbox;
-    -- ocr_confidence/ocr_processed_at let the detail screen flag low-confidence
-    -- captures. Appended LAST so CREATE OR REPLACE VIEW stays valid (Postgres only
-    -- permits adding columns to the end of an existing view's column list).
-    e.needs_review,
-    e.ocr_confidence,
-    e.ocr_processed_at,
-    -- Rejection reason for a REJECTED expense. Appended LAST (after the OCR
-    -- fields) for the same reason they were: CREATE OR REPLACE VIEW only permits
-    -- adding columns to the END of an existing view's column list.
-    -- approved_by_user_id is already exposed above; together they give the
-    -- detail screen the full "who/why" of an approval or rejection.
-    e.rejection_note
-FROM expenses e
-JOIN expense_categories ec ON ec.id = e.category_id
-LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims
-WHERE e.deleted_at IS NULL;                             -- soft delete filter always applied
 
 
 -- =============================================================================
@@ -703,7 +610,6 @@ COMMENT ON TABLE expense_mileage        IS 'Mileage-specific fields. One-to-one 
 COMMENT ON TABLE expense_attachments    IS 'Receipt/invoice files attached to an expense. Multiple per expense supported.';
 COMMENT ON TABLE expense_recurrence     IS 'Recurrence schedule for repeating expenses (e.g. monthly subscriptions).';
 COMMENT ON TABLE expense_audit_log      IS 'Immutable audit trail of all expense changes. Never delete rows from this table.';
-COMMENT ON TABLE expense_categories     IS 'Chart of Accounts categories available for expenses. Maps to nominal codes.';
 COMMENT ON TABLE supplier_category_map  IS 'Learned supplier→category dictionary for auto-categorisation. Derived data: populated by the learn_supplier_category() trigger from CONFIRMED expenses only (needs_review = FALSE). Safe to rebuild from expenses.';
 COMMENT ON COLUMN supplier_category_map.supplier_key IS 'Supplier name normalised to lower(btrim(...)) so case/whitespace variants collapse. Apply the same normalisation when looking up.';
 COMMENT ON TABLE vat_rates              IS 'Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.';

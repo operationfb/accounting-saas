@@ -77,6 +77,17 @@ type Service struct {
 	// with no rates wired, only same-(home-)currency receipts are coherent; a foreign
 	// receipt that needs a rate returns a clean validation error.
 	rates RateLookup
+	// invoiceRevaluer keeps an invoice's UNREALISED FX revaluation (391) in step in the
+	// same transaction as a receipt: a partial receipt re-revalues the reduced due, a full
+	// settlement crystallises (explicit reversal). Nil-guarded (internal/fxrevaluation).
+	invoiceRevaluer InvoiceRevaluer
+}
+
+// InvoiceRevaluer is the consumer-side seam over the unrealised-FX revaluation
+// (internal/fxrevaluation). Called inside the receipt transaction so 391/681 are never
+// stale after a payment. Banking depends only on this interface.
+type InvoiceRevaluer interface {
+	OnInvoiceReceiptChanged(ctx context.Context, tx pgx.Tx, orgID, invoiceID uuid.UUID, asOf time.Time, createdBy uuid.UUID) error
 }
 
 // RateLookup is the read seam over the exchange-rate service (mirrors the invoices
@@ -99,6 +110,10 @@ func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
 // SetRates wires the exchange-rate read seam after construction (mirrors
 // invoices.SetRates). Nil leaves only same-currency receipts coherent.
 func (s *Service) SetRates(r RateLookup) { s.rates = r }
+
+// SetInvoiceRevaluer wires the unrealised-FX revaluation hook after construction. Nil
+// leaves the revaluation untouched by receipts (the daily job still runs separately).
+func (s *Service) SetInvoiceRevaluer(r InvoiceRevaluer) { s.invoiceRevaluer = r }
 
 // assertNotFiled refuses the operation (409 conflict) when any of the given dates
 // falls inside a FILED VAT period — an explanation that is part of a submitted VAT

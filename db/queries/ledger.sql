@@ -72,6 +72,20 @@ INSERT INTO gl_journal_entries (
 )
 RETURNING id;
 
+-- name: CreateReversalEntry :one
+-- Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
+-- crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
+-- idempotency unique index excludes reversals, so this never collides with the live
+-- (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+INSERT INTO gl_journal_entries (
+    organisation_id, entry_date, base_currency, narrative,
+    source_type, source_id, created_by_user_id, is_reversal, reverses_entry_id
+) VALUES (
+    $1, sqlc.arg(entry_date), sqlc.arg(base_currency), sqlc.arg(narrative),
+    sqlc.arg(source_type), sqlc.arg(source_id), sqlc.arg(created_by_user_id), TRUE, sqlc.arg(reverses_entry_id)
+)
+RETURNING id;
+
 -- name: CreateJournalLine :exec
 INSERT INTO gl_journal_lines (
     journal_entry_id, organisation_id, account_id,

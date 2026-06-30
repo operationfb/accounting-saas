@@ -466,7 +466,7 @@ func TestExpenseApproveFiledPeriodLock(t *testing.T) {
 		c := context.Background()
 		_, _ = ts.pool.Exec(c, `DELETE FROM vat_returns WHERE organisation_id=$1`, orgID)
 		_, _ = ts.pool.Exec(c, `DELETE FROM expenses WHERE organisation_id=$1`, orgID)
-		_, _ = ts.pool.Exec(c, `DELETE FROM expense_categories WHERE organisation_id=$1`, orgID)
+		_, _ = ts.pool.Exec(c, `DELETE FROM categories WHERE organisation_id=$1`, orgID)
 	})
 
 	catID := vatSeedExpenseCategory(t, ts, orgID)

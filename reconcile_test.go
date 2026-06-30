@@ -160,9 +160,11 @@ func TestListCategoriesForType(t *testing.T) {
 
 	t.Run("Payment offers every expense category + the payable taxes", func(t *testing.T) {
 		rows := list("PAYMENT", "limited")
-		// 4 cost-of-sales + 59 admin-expenses + 4 tax accounts = 67.
-		if len(rows) != 67 {
-			t.Errorf("PAYMENT/limited: got %d categories, want 67", len(rows))
+		// 4 cost-of-sales + 61 admin-expenses + 4 tax accounts = 69. The 61 admin includes
+		// the 390/391 Currency Exchange Gain/Loss accounts (realised/unrealised FX, added
+		// 2026-06-29/06-30), both api_group admin_expenses_categories so PAYMENT offers them.
+		if len(rows) != 69 {
+			t.Errorf("PAYMENT/limited: got %d categories, want 69", len(rows))
 		}
 		if _, ok := label(rows, "254"); !ok { // Travel and Subsistence (admin)
 			t.Error("PAYMENT should offer 254 Travel and Subsistence")

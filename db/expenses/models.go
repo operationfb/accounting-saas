@@ -9,15 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// ISO 4217 currency codes, names, symbols and minor units. Global reference data, not org-scoped (like vat_rates). The code is the natural PK and the FK target for every currency / native_currency column.
-type Currency struct {
-	Code      string             `json:"code"`
-	Name      string             `json:"name"`
-	Symbol    pgtype.Text        `json:"symbol"`
-	MinorUnit int16              `json:"minor_unit"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-}
-
 // Core expense claims/receipts. One row per expense event.
 type Expense struct {
 	ID               uuid.UUID      `json:"id"`
@@ -93,35 +84,6 @@ type ExpenseAttachment struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
-// Immutable audit trail of all expense changes. Never delete rows from this table.
-type ExpenseAuditLog struct {
-	// BIGSERIAL not UUID — sequential ordering matters for audit logs.
-	ID             int64              `json:"id"`
-	ExpenseID      uuid.UUID          `json:"expense_id"`
-	OrganisationID uuid.UUID          `json:"organisation_id"`
-	ChangedBy      uuid.UUID          `json:"changed_by"`
-	Action         string             `json:"action"`
-	OldData        []byte             `json:"old_data"`
-	NewData        []byte             `json:"new_data"`
-	ChangedAt      pgtype.Timestamptz `json:"changed_at"`
-}
-
-// Chart of Accounts categories available for expenses. Maps to nominal codes.
-type ExpenseCategory struct {
-	ID              uuid.UUID          `json:"id"`
-	OrganisationID  uuid.UUID          `json:"organisation_id"`
-	NominalCode     string             `json:"nominal_code"`
-	Name            string             `json:"name"`
-	Description     pgtype.Text        `json:"description"`
-	CategoryGroup   pgtype.Text        `json:"category_group"`
-	IsMileage       bool               `json:"is_mileage"`
-	IsCapitalAsset  bool               `json:"is_capital_asset"`
-	IsStockPurchase bool               `json:"is_stock_purchase"`
-	IsActive        bool               `json:"is_active"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-}
-
 // Mileage-specific fields. One-to-one with expenses where category is mileage.
 type ExpenseMileage struct {
 	ID                 uuid.UUID          `json:"id"`
@@ -154,17 +116,6 @@ type ExpenseRecurrence struct {
 	IsActive       bool               `json:"is_active"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-}
-
-// Learned supplier→category dictionary for auto-categorisation. Derived data: populated by the learn_supplier_category() trigger from CONFIRMED expenses only (needs_review = FALSE). Safe to rebuild from expenses.
-type SupplierCategoryMap struct {
-	ID             uuid.UUID `json:"id"`
-	OrganisationID uuid.UUID `json:"organisation_id"`
-	// Supplier name normalised to lower(btrim(...)) so case/whitespace variants collapse. Apply the same normalisation when looking up.
-	SupplierKey string             `json:"supplier_key"`
-	CategoryID  uuid.UUID          `json:"category_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type VExpensesFull struct {
@@ -203,7 +154,6 @@ type VExpensesFull struct {
 	PaidAt                 pgtype.Timestamptz `json:"paid_at"`
 	CategoryNominalCode    string             `json:"category_nominal_code"`
 	CategoryName           string             `json:"category_name"`
-	CategoryIsMileage      bool               `json:"category_is_mileage"`
 	CategoryIsCapitalAsset bool               `json:"category_is_capital_asset"`
 	Miles                  pgtype.Numeric     `json:"miles"`
 	VehicleType            pgtype.Text        `json:"vehicle_type"`
@@ -222,16 +172,4 @@ type VExpensesFull struct {
 	OcrConfidence          pgtype.Numeric     `json:"ocr_confidence"`
 	OcrProcessedAt         pgtype.Timestamptz `json:"ocr_processed_at"`
 	RejectionNote          pgtype.Text        `json:"rejection_note"`
-}
-
-// Global VAT rate definitions keyed by country_code (not per-organisation), with effective date ranges. Rates stored in basis points.
-type VatRate struct {
-	ID            uuid.UUID          `json:"id"`
-	CountryCode   string             `json:"country_code"`
-	Name          string             `json:"name"`
-	RateBps       int32              `json:"rate_bps"`
-	IsFixedRatio  bool               `json:"is_fixed_ratio"`
-	EffectiveFrom pgtype.Date        `json:"effective_from"`
-	EffectiveTo   pgtype.Date        `json:"effective_to"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }

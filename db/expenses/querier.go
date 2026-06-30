@@ -189,14 +189,6 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	GetExpenseAttachment(ctx context.Context, arg GetExpenseAttachmentParams) (ExpenseAttachment, error)
 	// -----------------------------------------------------------------------------
-	// GetExpenseCategoryByNominalCode
-	// Fetch one active category by its nominal code within an organisation. Smart
-	// Upload uses this to resolve the org's placeholder category ('6021' Sundries)
-	// for a skeleton expense, since category UUIDs are generated per-org and so
-	// can't be hardcoded. Org-scoped — categories are per-tenant reference data.
-	// -----------------------------------------------------------------------------
-	GetExpenseCategoryByNominalCode(ctx context.Context, arg GetExpenseCategoryByNominalCodeParams) (ExpenseCategory, error)
-	// -----------------------------------------------------------------------------
 	// GetExpenseMileage
 	// Fetch the mileage sub-record for a given expense.
 	// Called when rendering the mileage claim detail view.
@@ -226,6 +218,14 @@ type Querier interface {
 	// ordering the UI list uses, collapsed to the single file we push.
 	// -----------------------------------------------------------------------------
 	GetPrimaryAttachmentForPush(ctx context.Context, arg GetPrimaryAttachmentForPushParams) (GetPrimaryAttachmentForPushRow, error)
+	// =============================================================================
+	// SECTION 6: EXPENSE CATEGORIES (reference data)
+	// =============================================================================
+	// Expense categories now come from the shared Chart of Accounts (categories).
+	// The picker query is ListSpendingCategories and the Smart-Upload placeholder
+	// lookup is GetCategoryByNominal — both in db/queries/categories.sql. The old
+	// per-module ListExpenseCategories / GetExpenseCategoryByNominalCode (over the
+	// dropped expense_categories table) were removed in the 2026-06-30 unification.
 	// =============================================================================
 	// SECTION 6b: SUPPLIER → CATEGORY DICTIONARY (auto-categorisation)
 	//
@@ -267,17 +267,6 @@ type Querier interface {
 	// The UI shows attachments in this order.
 	// -----------------------------------------------------------------------------
 	ListExpenseAttachments(ctx context.Context, expenseID uuid.UUID) ([]ExpenseAttachment, error)
-	// =============================================================================
-	// SECTION 6: EXPENSE CATEGORIES (reference data)
-	// =============================================================================
-	// -----------------------------------------------------------------------------
-	// ListExpenseCategories
-	// All ACTIVE categories for an organisation, for the expense category picker.
-	// Scoped by organisation_id — categories are per-tenant reference data.
-	// Ordered by category_group then nominal_code so the UI can render stable
-	// sections (Admin expenses / Assets and stock / Cost of Sales).
-	// -----------------------------------------------------------------------------
-	ListExpenseCategories(ctx context.Context, organisationID uuid.UUID) ([]ExpenseCategory, error)
 	// -----------------------------------------------------------------------------
 	// ListExpenses
 	// Returns all active expenses for an organisation, newest first.

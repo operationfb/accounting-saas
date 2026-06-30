@@ -110,6 +110,20 @@ WHERE organisation_id   = $1
   AND deleted_at IS NULL
 ORDER BY dated_on ASC, created_at ASC;
 
+-- name: ListOpenForeignInvoicesAllOrgs :many
+-- Every org's OPEN foreign-currency invoices (SENT, still owing, currency != the org's
+-- home currency), with the org context the GL poster needs (home currency, company type,
+-- country). Backs the periodic unrealised FX revaluation (internal/fxrevaluation): one
+-- cross-org pass, each invoice revalued in its own transaction. Oldest first within an org.
+SELECT sqlc.embed(i), o.native_currency, o.company_type, o.country_code
+FROM invoices i
+JOIN organisations o ON o.id = i.organisation_id
+WHERE i.status          = 'SENT'
+  AND i.due_value_minor > 0
+  AND i.deleted_at IS NULL
+  AND i.currency       <> o.native_currency
+ORDER BY i.organisation_id, i.dated_on, i.created_at;
+
 
 -- -----------------------------------------------------------------------------
 -- UpdateInvoice  (the "update" — editable header fields only)

@@ -34,6 +34,10 @@ const props = defineProps<{
   editItem?: InvoiceItemRequest | null
   // Currency symbol shown on the unit-price addon (defaults to £).
   currencySymbol?: string
+  // True when the invoice is in a non-home currency. Foreign-currency sales are
+  // usually outside the scope of UK VAT, so a NEW line defaults its VAT picker to
+  // 0% rather than 20% (the user can still pick any rate).
+  foreignCurrency?: boolean
   // True while the parent's PUT is in flight — drives the button spinners.
   saving?: boolean
 }>()
@@ -51,8 +55,12 @@ const form = reactive({
 })
 const errors = reactive<Record<string, string>>({})
 
-// Prefer a 20% rate as the default, else the first available option, else "0".
+// For a foreign-currency invoice default to 0% (out-of-scope VAT). Otherwise
+// prefer a 20% rate, else the first available option, else "0".
 function defaultVat(): string {
+  if (props.foreignCurrency) {
+    return props.vatOptions.find((o) => o.value === '0')?.value ?? '0'
+  }
   return props.vatOptions.find((o) => o.value === '20')?.value ?? props.vatOptions[0]?.value ?? '0'
 }
 

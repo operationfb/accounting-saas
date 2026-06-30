@@ -50,6 +50,7 @@ var rootAllowlist = map[string]bool{
 	"email_inbox_test.go":                true,
 	"events_test.go":                     true,
 	"expense_status_test.go":             true,
+	"fxrevaluation_test.go":              true,
 	"gl_posting_rules_test.go":           true,
 	"gl_posting_rules_freeagent_test.go": true,
 	"gl_resolver_test.go":                true,

@@ -38,6 +38,23 @@ WHERE id              = $1
 
 
 -- -----------------------------------------------------------------------------
+-- ListSpendingCategories — the SPENDING subset of the org's CoA: the picker
+-- shared by the bill form and the expense form. A bill/expense may only post to a
+-- spending account, so income / balance-sheet / system-managed accounts are
+-- excluded. Selects default_vat so the SPA can pre-select a sensible VAT rate when
+-- a category is chosen. Org-scoped, active rows only. :many.
+-- -----------------------------------------------------------------------------
+-- name: ListSpendingCategories :many
+SELECT id, nominal_code, name, account_type, api_group, default_vat
+FROM categories
+WHERE organisation_id = $1
+  AND is_active
+  AND is_system_managed = FALSE
+  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
+ORDER BY account_type, nominal_code;
+
+
+-- -----------------------------------------------------------------------------
 -- ListTransactionTypes — the 18 explanation types (GLOBAL reference). :many.
 -- Drives the "Type" dropdown, grouped by direction then display order.
 -- -----------------------------------------------------------------------------

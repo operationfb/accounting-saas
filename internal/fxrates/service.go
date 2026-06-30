@@ -40,6 +40,17 @@ import (
 // truncated by the DB, so we round explicitly here.
 const rateScale = 6
 
+// Revaluer is the consumer-side seam for chaining the unrealised-FX revaluation onto
+// a rate refresh: once the day's rates are stored, open foreign invoices are revalued
+// against them. internal/fxrevaluation.Service satisfies this; main injects it via
+// SetRevaluer. Defined here (not imported) so fxrates never depends on fxrevaluation
+// (which depends on fxrates). Living on the Service — not the HTTP handler — means
+// EVERY refresh path triggers it: the OIDC daily endpoint AND the startup best-effort
+// fetch, so the posted 391 accrual never drifts from the stored rate.
+type Revaluer interface {
+	RunRevaluation(ctx context.Context, asOf time.Time) error
+}
+
 // Service is the exchange-rate service.
 type Service struct {
 	queries  fxratesdb.Querier
@@ -47,6 +58,7 @@ type Service struct {
 	provider Provider             // nil ⇒ refresh is a no-op (reads still work)
 	home     string               // home/base currency, e.g. "GBP"
 	source   string               // provenance label stored on each row, e.g. "ecb"
+	revaluer Revaluer             // optional; set by main. RefreshRates runs it after the upsert.
 }
 
 // NewService builds the Service. provider may be nil (refresh disabled). home
@@ -63,6 +75,11 @@ func NewService(queries fxratesdb.Querier, currency currenciesdb.Querier, provid
 
 // HomeCurrency returns the configured home/base currency.
 func (s *Service) HomeCurrency() string { return s.home }
+
+// SetRevaluer wires the post-refresh revaluation step (called once in main). When set,
+// RefreshRates runs it after a successful refresh so the unrealised-FX accruals (391)
+// stay in sync with the freshly-stored rates.
+func (s *Service) SetRevaluer(r Revaluer) { s.revaluer = r }
 
 // =============================================================================
 // WRITE — refresh
@@ -105,6 +122,17 @@ func (s *Service) RefreshRates(ctx context.Context, on time.Time) (int, error) {
 			return stored, kernel.ErrInternal(err)
 		}
 		stored++
+	}
+
+	// Chain the unrealised-FX revaluation: the rates are now stored, so retranslate open
+	// foreign invoices against them in the SAME refresh, keeping the 391 accruals in sync
+	// with the stored rate. Runs on EVERY refresh path (daily endpoint + startup fetch).
+	// Best-effort — the rates are already committed (the source of truth) and revaluation
+	// is idempotent cumulative-replace, so a hiccup must not fail the refresh.
+	if s.revaluer != nil {
+		if rerr := s.revaluer.RunRevaluation(ctx, on); rerr != nil {
+			slog.Error("fxrates: revaluation after rate refresh failed", "rate_date", on.Format("2006-01-02"), "err", rerr)
+		}
 	}
 	return stored, nil
 }

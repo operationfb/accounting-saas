@@ -84,6 +84,14 @@ const isDraft = computed(() => invoice.value?.status === 'DRAFT')
 const items = computed<InvoiceItem[]>(() => invoice.value?.items ?? [])
 const currency = computed(() => invoice.value?.currency ?? 'GBP')
 const currencySymbol = computed(() => (currency.value === 'GBP' ? '£' : currency.value))
+// True when the invoice is in a currency OTHER than the org's home currency.
+// Foreign-currency sales are typically outside the scope of UK VAT, so the new
+// line-item modal defaults its VAT picker to 0% in that case (the user can still
+// override). Falls back to false until the org has loaded, so a same-currency
+// invoice keeps the standard 20% default.
+const isForeignCurrency = computed(
+  () => !!org.value && currency.value !== org.value.native_currency,
+)
 
 // VAT picker options for the modal: value is the percentage string the API wants
 // (rate_bps/100, e.g. 2000 → "20"), which round-trips with the line's stored rate.
@@ -584,6 +592,7 @@ function backToList() {
       :vat-options="vatOptions"
       :edit-item="editingItem"
       :currency-symbol="currencySymbol"
+      :foreign-currency="isForeignCurrency"
       :saving="savingItems"
       @save="onItemSave"
     />

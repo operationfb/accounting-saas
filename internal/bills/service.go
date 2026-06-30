@@ -542,7 +542,9 @@ func (s *Service) ListBillCategories(ctx context.Context, authUserID, authOrgID 
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
 	}
-	rows, err := s.queries.ListBillCategories(ctx, authOrgID)
+	// One shared spending-account picker for bills AND expenses (ListSpendingCategories
+	// in the categories domain; was the bills-only ListBillCategories — identical SQL).
+	rows, err := s.categoryQueries.ListSpendingCategories(ctx, authOrgID)
 	if err != nil {
 		return nil, kernel.ErrInternal(err)
 	}

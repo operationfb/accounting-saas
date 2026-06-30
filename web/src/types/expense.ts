@@ -90,16 +90,16 @@ export const CaptureExpenseResponseSchema = z.object({
 })
 
 // GET /api/v1/expense-categories → { "expense_categories": [...] } — the
-// reference data for the entry form's category picker.
+// reference data for the entry form's category picker. These are SPENDING
+// accounts from the shared Chart of Accounts (the same list bills offers).
+// account_type sections the picker; default_vat pre-selects a VAT rate.
 export const ExpenseCategorySchema = z.object({
   id: z.string(),
   nominal_code: z.string(),
   name: z.string(),
-  category_group: z.string().nullish(),
-  description: z.string().nullish(),
-  is_mileage: z.boolean(),
-  is_capital_asset: z.boolean(),
-  is_stock_purchase: z.boolean(),
+  account_type: z.string(),
+  api_group: z.string().nullish(),
+  default_vat: z.string().nullish(), // STANDARD | REDUCED | ZERO | EXEMPT | OUTSIDE_SCOPE
 })
 export type ExpenseCategory = z.infer<typeof ExpenseCategorySchema>
 

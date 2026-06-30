@@ -40,6 +40,7 @@ import (
 	"google.golang.org/api/iterator"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
+	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
@@ -405,7 +406,7 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
 	// 8-byte cap, sharing the configured real storage.
-	tiny := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+	tiny := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool), dbcategories.New(ts.pool),
 		ts.storage, nil, 8, 0)
 
 	data := samplePDF() // comfortably larger than 8 bytes
@@ -508,7 +509,7 @@ func TestAttachment_ConnectionLoss(t *testing.T) {
 			t.Fatalf("open pool: %v", err)
 		}
 		badPool.Close() // every query now fails
-		badSvc := attachments.NewService(badPool, dbexpenses.New(badPool), auth.New(badPool),
+		badSvc := attachments.NewService(badPool, dbexpenses.New(badPool), auth.New(badPool), dbcategories.New(badPool),
 			ts.storage, nil, 0, 0)
 
 		_, err = badSvc.UploadAttachment(
@@ -565,7 +566,7 @@ func TestAttachment_OrphanCleanup(t *testing.T) {
 	t.Cleanup(pool.Close) // Close is idempotent; the spy may already have closed it
 
 	spy := &poolClosingStorage{inner: ts.storage, pool: pool}
-	svc := attachments.NewService(pool, dbexpenses.New(pool), auth.New(pool), spy, nil, 0, 0)
+	svc := attachments.NewService(pool, dbexpenses.New(pool), auth.New(pool), dbcategories.New(pool), spy, nil, 0, 0)
 
 	_, err = svc.UploadAttachment(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),

@@ -208,25 +208,9 @@ SELECT EXISTS (
 ) AS has_bills;
 
 
--- -----------------------------------------------------------------------------
--- ListBillCategories
--- The "Spending Category" picker. The bill's category_id is a CoA (categories)
--- account, but a bill may only post to a SPENDING account — so we return just the
--- subset the expense form offers: cost of sales, admin expenses and capital
--- assets. Income / balance-sheet / system-managed accounts are excluded. Selects
--- default_vat so the service can resolve the form's "Auto" VAT rate from the
--- chosen category. Org-scoped, active rows only.
--- (The exact account_type set is intended to match what the expense form lists;
---  revisit if/when expense_categories and categories are unified — see BACKLOG.)
--- -----------------------------------------------------------------------------
--- name: ListBillCategories :many
-SELECT id, nominal_code, name, account_type, api_group, default_vat
-FROM categories
-WHERE organisation_id = $1
-  AND is_active
-  AND is_system_managed = FALSE
-  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
-ORDER BY account_type, nominal_code;
+-- The bill "Spending Category" picker is now ListSpendingCategories in
+-- db/queries/categories.sql — one shared spending-account query for both bills
+-- and expenses (the old ListBillCategories lived here; identical SQL).
 
 
 -- =============================================================================

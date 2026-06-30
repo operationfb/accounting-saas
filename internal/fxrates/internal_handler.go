@@ -40,11 +40,15 @@ func (h *Handler) InternalRefresh(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// RefreshRates upserts the day's rates and (when a revaluer is wired) chains the
+	// unrealised-FX revaluation against them — so this endpoint and the startup best-effort
+	// fetch keep the 391 accruals in sync the same way.
 	count, err := h.svc.RefreshRates(c.Request.Context(), on)
 	if err != nil {
 		kernel.RespondError(c, err)
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"refreshed":  count,
 		"rate_date":  on.Format("2006-01-02"),

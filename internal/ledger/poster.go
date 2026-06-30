@@ -19,6 +19,7 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -38,6 +39,11 @@ type Poster interface {
 	// RemoveEntry deletes the live journal entry for a source event (its lines
 	// cascade). Used when an event is undone — e.g. an invoice reopened out of SENT.
 	RemoveEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error
+	// ReverseEntry posts an explicit REVERSING entry (is_reversal = TRUE) that mirrors the
+	// live entry's lines with negated amounts, leaving BOTH as an audit trail (vs RemoveEntry's
+	// silent delete). Used to crystallise an unrealised FX revaluation on settlement. A no-op
+	// when there is no live entry to reverse.
+	ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error
 }
 
 // Amount is one money component in BOTH the transaction currency and the org's base
@@ -224,6 +230,71 @@ func (p *poster) RemoveEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, so
 		SourceID:       pgUUID(sourceID),
 	}); err != nil {
 		return kernel.ErrInternal(err)
+	}
+	return nil
+}
+
+func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error {
+	if sourceID == uuid.Nil {
+		return nil
+	}
+	lq := p.ledger.WithTx(tx)
+
+	// The live (non-reversal) entry for this source; nothing to reverse if absent.
+	live, err := lq.GetJournalEntryForSource(ctx, ledgerdb.GetJournalEntryForSourceParams{
+		OrganisationID: orgID,
+		SourceType:     sourceType,
+		SourceID:       pgUUID(sourceID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return kernel.ErrInternal(err)
+	}
+
+	lines, err := lq.ListLinesForEntry(ctx, live.ID)
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+
+	// Header: is_reversal = TRUE, pointing at the entry it reverses (audit trail). The
+	// idempotency unique index excludes reversals, so it never collides with `live`.
+	revID, err := lq.CreateReversalEntry(ctx, ledgerdb.CreateReversalEntryParams{
+		OrganisationID:  orgID,
+		EntryDate:       asOf,
+		BaseCurrency:    live.BaseCurrency,
+		Narrative:       pgText(narrative),
+		SourceType:      sourceType,
+		SourceID:        pgUUID(sourceID),
+		CreatedByUserID: pgUUID(createdBy),
+		ReversesEntryID: pgUUID(live.ID),
+	})
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+
+	// Mirror each line with negated amounts (the entry still sums to zero, so the balance
+	// trigger is satisfied).
+	for _, ln := range lines {
+		if err := lq.CreateJournalLine(ctx, ledgerdb.CreateJournalLineParams{
+			JournalEntryID:  revID,
+			OrganisationID:  orgID,
+			AccountID:       ln.AccountID,
+			Currency:        ln.Currency,
+			AmountMinor:     -ln.AmountMinor,
+			BaseAmountMinor: -ln.BaseAmountMinor,
+			ExchangeRate:    ln.ExchangeRate,
+			ContactID:       ln.ContactID,
+			ProjectID:       ln.ProjectID,
+			UserID:          ln.UserID,
+			Description:     ln.Description,
+		}); err != nil {
+			return kernel.ErrInternal(err)
+		}
 	}
 	return nil
 }

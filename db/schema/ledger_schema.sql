@@ -96,7 +96,8 @@ CREATE TABLE gl_posting_rules (
                             'OTHER_PAYROLL_DEDUCTIONS',
                             'PAYROLL_DIRECTOR_GROSS_EXPENSE','PAYROLL_DIRECTOR_EMPLOYER_NI_EXPENSE',
                             'PAYROLL_DIRECTOR_EMPLOYER_PENSION_EXPENSE',
-                            'FX_REALISED_GAIN','FX_REALISED_LOSS')),
+                            'FX_REALISED_GAIN','FX_REALISED_LOSS',
+                            'FX_UNREALISED_GAIN','FX_UNREALISED_LOSS')),
 
     -- Which money component of the source row this leg takes. The interpreter reads
     -- the ALREADY-COMPUTED values off the source — it never re-does the arithmetic.
@@ -207,7 +208,7 @@ CREATE TABLE gl_journal_entries (
     source_type         VARCHAR(30) NOT NULL CHECK (source_type IN (
                             'EXPENSE','INVOICE','INVOICE_RECEIPT','BILL','BILL_PAYMENT',
                             'BANK_EXPLANATION','BANK_TRANSFER','MONEY_USER','PAYROLL',
-                            'BANK_OPENING','MANUAL')),
+                            'BANK_OPENING','INVOICE_REVALUATION','MANUAL')),
     source_id           UUID,                                        -- the originating row; NULL only for ad-hoc MANUAL journals
 
     is_reversal         BOOLEAN NOT NULL DEFAULT FALSE,              -- TRUE = a reversing entry (filed-period path)

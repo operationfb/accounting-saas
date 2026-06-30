@@ -173,7 +173,7 @@ func (s *Service) CreateExplanation(ctx context.Context, authUserID, authOrgID u
 		// GL: an invoice receipt posts Dr Bank / Cr Debtors (+ realised FX). Re-post all of
 		// the invoice's receipts so the cumulative debtor relief stays exact.
 		if created.Type == typeInvoiceReceipt {
-			return s.repostInvoiceReceipts(ctx, tx, authOrgID, params.PaidInvoiceID)
+			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, params.PaidInvoiceID)
 		}
 		return nil
 	})
@@ -270,18 +270,18 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 		case params.Type == typeInvoiceReceipt:
 			// Re-point: also fix the OLD invoice's residual (this receipt left its list).
 			if existing.Type == typeInvoiceReceipt && existing.PaidInvoiceID.Valid && existing.PaidInvoiceID != params.PaidInvoiceID {
-				if err := s.repostInvoiceReceipts(ctx, tx, authOrgID, existing.PaidInvoiceID); err != nil {
+				if err := s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID); err != nil {
 					return err
 				}
 			}
-			return s.repostInvoiceReceipts(ctx, tx, authOrgID, params.PaidInvoiceID)
+			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, params.PaidInvoiceID)
 		case existing.Type == typeInvoiceReceipt:
 			// Type changed away from receipt: drop this entry, then re-post the old invoice's
 			// remaining receipts so their cumulative relief closes correctly without it.
 			if err := s.removeReceiptGL(ctx, tx, authOrgID, explUUID); err != nil {
 				return err
 			}
-			return s.repostInvoiceReceipts(ctx, tx, authOrgID, existing.PaidInvoiceID)
+			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
 		}
 		return nil
 	})
@@ -334,7 +334,7 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 			if err := s.removeReceiptGL(ctx, tx, authOrgID, explUUID); err != nil {
 				return err
 			}
-			return s.repostInvoiceReceipts(ctx, tx, authOrgID, existing.PaidInvoiceID)
+			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
 		}
 		return nil
 	})
@@ -347,6 +347,20 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 // =============================================================================
 // GENERAL LEDGER (invoice receipt)
 // =============================================================================
+
+// repostAndRevalueInvoice re-posts an invoice's receipt entries (realised FX, 390) and
+// then keeps its UNREALISED revaluation (391) in step in the SAME transaction: a partial
+// receipt re-revalues the reduced due, a full settlement crystallises with an explicit
+// reversal. The revaluer is nil-guarded, so a deployment without it just re-posts receipts.
+func (s *Service) repostAndRevalueInvoice(ctx context.Context, tx pgx.Tx, authUserID, orgID uuid.UUID, invoiceID pgtype.UUID) error {
+	if err := s.repostInvoiceReceipts(ctx, tx, orgID, invoiceID); err != nil {
+		return err
+	}
+	if s.invoiceRevaluer == nil || !invoiceID.Valid {
+		return nil
+	}
+	return s.invoiceRevaluer.OnInvoiceReceiptChanged(ctx, tx, orgID, uuid.UUID(invoiceID.Bytes), time.Now(), authUserID)
+}
 
 // repostInvoiceReceipts re-derives and re-posts the GL journal entry for EVERY live
 // INVOICE_RECEIPT explanation settling one invoice, in deterministic order. It runs inside
@@ -790,7 +804,7 @@ func (s *Service) computeReceiptFX(ctx context.Context, grossMinor int64, dated 
 		}
 	}
 
-	base := fx.ConvertVia(grossMinor, bankExp, homeExp, rateBank, one)          // bank → home
+	base := fx.ConvertVia(grossMinor, bankExp, homeExp, rateBank, one)               // bank → home
 	settled := fx.ConvertVia(grossMinor, bankExp, invoiceExp, rateBank, rateInvoice) // bank → invoice
 
 	out := receiptFX{

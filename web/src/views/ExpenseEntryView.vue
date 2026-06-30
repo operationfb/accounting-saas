@@ -111,25 +111,46 @@ const discardOnLeave = ref(justCaptured)
 const categories = ref<ExpenseCategory[]>([])
 const categoriesLoading = ref(true)
 const categoriesError = ref('')
-// Maps the raw DB category_group codes to human-readable group headings.
+// Maps the CoA account_type codes to human-readable group headings.
 const GROUP_LABELS: Record<string, string> = {
-  ADMIN: 'Admin Expenses',
-  COS: 'Cost of Sales',
-  ASSETS: 'Assets and Stock',
+  COST_OF_SALES: 'Cost of Sales',
+  ADMIN_EXPENSE: 'Admin Expenses',
+  CAPITAL_ASSET: 'Assets and Stock',
 }
 
-// Categories grouped by their category_group; PrimeVue renders the group as a
-// non-selectable header. Backend already orders by group then nominal code.
+// Categories grouped by their CoA account_type; PrimeVue renders the group as a
+// non-selectable header. Backend already orders by account_type then nominal code.
 const categoryGroups = computed(() => {
   const groups = new Map<string, { label: string; value: string }[]>()
   for (const c of categories.value) {
-    const code = c.category_group ?? ''
+    const code = c.account_type ?? ''
     const groupName = GROUP_LABELS[code] ?? (code || 'Other')
     if (!groups.has(groupName)) groups.set(groupName, [])
     groups.get(groupName)!.push({ label: `${c.name} (${c.nominal_code})`, value: c.id })
   }
   return [...groups.entries()].map(([group, items]) => ({ group, items }))
 })
+
+// onCategoryChange pre-selects the VAT rate from the chosen category's default_vat,
+// so a sensible rate comes pre-filled (the user can still override it). Skipped
+// during edit-mode hydration so it can't clobber the loaded rate. Reuses the
+// vatRateForDefault mapping (same approach as the bank-transaction explain form).
+function onCategoryChange() {
+  if (hydrating.value) return
+  const cat = categories.value.find((c) => c.id === form.category)
+  form.vatRate = vatRateForDefault(cat?.default_vat)
+}
+function vatRateForDefault(defaultVat?: string | null): string {
+  const keyword: Record<string, string> = {
+    STANDARD: 'standard',
+    REDUCED: 'reduced',
+    ZERO: 'zero',
+    EXEMPT: 'exempt',
+  }
+  const kw = defaultVat ? keyword[defaultVat] : undefined
+  if (!kw) return '' // OUTSIDE_SCOPE / unset → no VAT rate
+  return vatRates.value.find((r) => r.name.toLowerCase().includes(kw))?.id ?? ''
+}
 
 async function loadCategories() {
   categoriesLoading.value = true
@@ -878,6 +899,7 @@ async function onSmartFilePicked(e: Event) {
             option-group-children="items"
             option-label="label"
             option-value="value"
+            @change="onCategoryChange"
             :placeholder="categoriesLoading ? 'Loading…' : 'Select a category'"
             :loading="categoriesLoading"
             :invalid="!!errors.category"

@@ -62,6 +62,9 @@ type Querier interface {
 	// paid_value_minor defaults to 0 (written later by banking), so it isn't supplied here.
 	// -----------------------------------------------------------------------------
 	CreateBill(ctx context.Context, arg CreateBillParams) (Bill, error)
+	// The bill "Spending Category" picker is now ListSpendingCategories in
+	// db/queries/categories.sql — one shared spending-account query for both bills
+	// and expenses (the old ListBillCategories lived here; identical SQL).
 	// =============================================================================
 	// BILL ATTACHMENTS
 	// Clone of the expense_attachments query set, scoped to bills. The bytes live in
@@ -112,18 +115,6 @@ type Querier interface {
 	// order (is_primary DESC: TRUE sorts before FALSE, so primary comes first).
 	// -----------------------------------------------------------------------------
 	ListBillAttachments(ctx context.Context, billID uuid.UUID) ([]BillAttachment, error)
-	// -----------------------------------------------------------------------------
-	// ListBillCategories
-	// The "Spending Category" picker. The bill's category_id is a CoA (categories)
-	// account, but a bill may only post to a SPENDING account — so we return just the
-	// subset the expense form offers: cost of sales, admin expenses and capital
-	// assets. Income / balance-sheet / system-managed accounts are excluded. Selects
-	// default_vat so the service can resolve the form's "Auto" VAT rate from the
-	// chosen category. Org-scoped, active rows only.
-	// (The exact account_type set is intended to match what the expense form lists;
-	//  revisit if/when expense_categories and categories are unified — see BACKLOG.)
-	// -----------------------------------------------------------------------------
-	ListBillCategories(ctx context.Context, organisationID uuid.UUID) ([]ListBillCategoriesRow, error)
 	// soft delete filter
 	// -----------------------------------------------------------------------------
 	// ListBills  (the "list")

@@ -177,17 +177,18 @@ type ExpenseDetailResponse struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// ExpenseCategoryResponse is the JSON returned for an expense category — the
-// reference data the frontend uses to populate the category picker.
+// ExpenseCategoryResponse is the JSON returned for an expense category — a
+// spending account from the shared Chart of Accounts the frontend uses to
+// populate the category picker. Same shape as bills' BillCategoryResponse (one
+// unified spending-account list). account_type lets the SPA section the picker;
+// default_vat lets it pre-select a sensible VAT rate when a category is chosen.
 type ExpenseCategoryResponse struct {
-	ID              string  `json:"id"`
-	NominalCode     string  `json:"nominal_code"`
-	Name            string  `json:"name"`
-	CategoryGroup   *string `json:"category_group,omitempty"`
-	Description     *string `json:"description,omitempty"`
-	IsMileage       bool    `json:"is_mileage"`
-	IsCapitalAsset  bool    `json:"is_capital_asset"`
-	IsStockPurchase bool    `json:"is_stock_purchase"`
+	ID          string  `json:"id"`
+	NominalCode string  `json:"nominal_code"`
+	Name        string  `json:"name"`
+	AccountType string  `json:"account_type"`
+	ApiGroup    *string `json:"api_group,omitempty"`
+	DefaultVat  *string `json:"default_vat,omitempty"`
 }
 
 // VATRateResponse is the JSON returned for a VAT rate — reference data the

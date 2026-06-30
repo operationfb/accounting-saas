@@ -32,6 +32,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
+	categoriesdb "github.com/operationfb/accounting-saas/db/categories"
 	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
 	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
@@ -57,6 +58,12 @@ type Service struct {
 	queries     *expensesdb.Queries
 	authQueries auth.Querier
 
+	// categoryQueries reads the shared Chart of Accounts (categories) — the expense
+	// category picker (ListSpendingCategories) and the write-time validateCategory
+	// guard. Expenses were unified onto this CoA (2026-06-30); the old per-module
+	// expense_categories table is gone. Same seam bills uses.
+	categoryQueries categoriesdb.Querier
+
 	// vatQueries is the read-only VAT lookup behind the filed-period lock: approving
 	// an expense ADDS its input VAT to that period's return, so an expense dated in an
 	// already-filed period can no longer be approved (assertNotFiled). Optional/nil-safe.
@@ -72,13 +79,16 @@ type Service struct {
 // NewService is the constructor. Called once in main.go.
 // authQueries is the auth module's query interface — the service uses it to
 // resolve the caller's organisation membership/role for authorisation.
+// categoryQueries reads the shared Chart of Accounts (the expense category picker
+// + the spending-account write guard).
 // vatQueries powers the filed-period lock; pass nil to disable it (the lock is then off).
-func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, vatQueries *vatdb.Queries) *Service {
+func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, categoryQueries categoriesdb.Querier, vatQueries *vatdb.Queries) *Service {
 	return &Service{
-		pool:        pool,
-		queries:     queries,
-		authQueries: authQueries,
-		vatQueries:  vatQueries,
+		pool:            pool,
+		queries:         queries,
+		authQueries:     authQueries,
+		categoryQueries: categoryQueries,
+		vatQueries:      vatQueries,
 	}
 }
 
@@ -118,6 +128,35 @@ func (s *Service) SetPublisher(p EventPublisher) { s.publisher = p }
 // GetMembership does not filter by status, so we check status == "active" here.
 func (s *Service) authorize(ctx context.Context, userID, orgID uuid.UUID) (auth.OrganisationRole, error) {
 	return kernel.AuthorizeMember(ctx, s.authQueries, userID, orgID)
+}
+
+// validateCategory confirms category_id is a SPENDING account in the caller's org —
+// the same filter ListSpendingCategories applies to the picker, enforced here at
+// write time so an expense can never post to an income / balance-sheet / system
+// account. Mirrors internal/bills' validateCategory (the shared CoA, one rule).
+func (s *Service) validateCategory(ctx context.Context, orgID, categoryID uuid.UUID) error {
+	cat, err := s.categoryQueries.GetCategory(ctx, categoriesdb.GetCategoryParams{ID: categoryID, OrganisationID: orgID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return kernel.ErrValidation("category_id does not exist or does not belong to this organisation", nil)
+		}
+		return kernel.ErrInternal(err)
+	}
+	if !cat.IsActive || cat.IsSystemManaged || !isSpendingAccount(cat.AccountType) {
+		return kernel.ErrValidation("category_id is not a valid spending category", nil)
+	}
+	return nil
+}
+
+// isSpendingAccount reports whether a CoA account_type is one an expense may post
+// to — the same set ListSpendingCategories filters the picker to (shared with bills).
+func isSpendingAccount(accountType string) bool {
+	switch accountType {
+	case "COST_OF_SALES", "ADMIN_EXPENSE", "CAPITAL_ASSET":
+		return true
+	default:
+		return false
+	}
 }
 
 // =============================================================================
@@ -313,6 +352,11 @@ func (s *Service) CreateExpense(
 	if err != nil {
 		return nil, kernel.ErrValidation("category_id is not a valid UUID", err)
 	}
+	// The category must be a spending account in this org (the FK alone can't
+	// distinguish a spending account from an income/control one).
+	if err := s.validateCategory(ctx, authOrgID, categoryUUID); err != nil {
+		return nil, err
+	}
 
 	// Parse the date. Go's time.Parse requires an exact reference time as the
 	// layout — this is Go's quirky but memorable approach: the reference is
@@ -470,6 +514,9 @@ func (s *Service) UpdateExpense(
 	categoryUUID, err := uuid.Parse(req.CategoryID)
 	if err != nil {
 		return nil, kernel.ErrValidation("category_id is not a valid UUID", err)
+	}
+	if err := s.validateCategory(ctx, authOrgID, categoryUUID); err != nil {
+		return nil, err
 	}
 	datedOn, err := time.Parse("2006-01-02", req.DatedOn)
 	if err != nil {
@@ -930,11 +977,12 @@ func (s *Service) ListInbox(
 // LISTEXPENSECATEGORIES
 // =============================================================================
 
-// ListExpenseCategories returns the active expense categories for the caller's
-// organisation (for the category picker). Authorisation: any ACTIVE member of
-// the organisation may read its categories — they are shared reference data
-// needed to file expenses — so we authorise on membership, not role. The org
-// scope comes from the authenticated token, never the request body.
+// ListExpenseCategories returns the SPENDING subset of the org's Chart of Accounts
+// (the expense category picker) — the same list bills offers, via the shared
+// ListSpendingCategories query. Authorisation: any ACTIVE member of the
+// organisation may read it — it's shared reference data needed to file expenses —
+// so we authorise on membership, not role. The org scope comes from the
+// authenticated token, never the request body.
 func (s *Service) ListExpenseCategories(
 	ctx context.Context,
 	authUserID uuid.UUID,
@@ -944,7 +992,7 @@ func (s *Service) ListExpenseCategories(
 		return nil, err
 	}
 
-	rows, err := s.queries.ListExpenseCategories(ctx, authOrgID)
+	rows, err := s.categoryQueries.ListSpendingCategories(ctx, authOrgID)
 	if err != nil {
 		return nil, kernel.ErrInternal(err)
 	}
@@ -1046,18 +1094,16 @@ func expenseToResponse(e expensesdb.Expense) *ExpenseResponse {
 	}
 }
 
-// expenseCategoryToResponse maps a generated ExpenseCategory row to the API
+// expenseCategoryToResponse maps a shared-CoA spending-category row to the API
 // shape (UUID → string, nullable pgtype.Text → *string via kernel.NullTextToPtr).
-func expenseCategoryToResponse(c expensesdb.ExpenseCategory) *ExpenseCategoryResponse {
+func expenseCategoryToResponse(c categoriesdb.ListSpendingCategoriesRow) *ExpenseCategoryResponse {
 	return &ExpenseCategoryResponse{
-		ID:              c.ID.String(),
-		NominalCode:     c.NominalCode,
-		Name:            c.Name,
-		CategoryGroup:   kernel.NullTextToPtr(c.CategoryGroup),
-		Description:     kernel.NullTextToPtr(c.Description),
-		IsMileage:       c.IsMileage,
-		IsCapitalAsset:  c.IsCapitalAsset,
-		IsStockPurchase: c.IsStockPurchase,
+		ID:          c.ID.String(),
+		NominalCode: c.NominalCode,
+		Name:        c.Name,
+		AccountType: c.AccountType,
+		ApiGroup:    kernel.NullTextToPtr(c.ApiGroup),
+		DefaultVat:  kernel.NullTextToPtr(c.DefaultVat),
 	}
 }
 

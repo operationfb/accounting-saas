@@ -32,6 +32,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
+	dbcategories "github.com/operationfb/accounting-saas/db/categories"
 	dbexpenses "github.com/operationfb/accounting-saas/db/expenses"
 	attachments "github.com/operationfb/accounting-saas/internal/attachments"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
@@ -87,7 +88,7 @@ func (s *spyEnqueuer) Enqueue(attID, orgID uuid.UUID, documentType string) {
 // the expense + attachment + GCS object. Returns the new draft detail response.
 func captureAs(t *testing.T, ts *testServer, ocr attachments.OcrEnqueuer, callerID, orgID, documentType, filename string, data []byte) *expenses.ExpenseDetailResponse {
 	t.Helper()
-	svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+	svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool), dbcategories.New(ts.pool),
 		ts.storage, ocr, 0, 0)
 	resp, err := svc.CaptureFromReceipt(
 		context.Background(), mustUUID(t, callerID), mustUUID(t, orgID),
@@ -176,7 +177,7 @@ func TestSmartUploadCapture(t *testing.T) {
 	})
 
 	t.Run("invalid document_type is rejected", func(t *testing.T) {
-		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool), dbcategories.New(ts.pool),
 			ts.storage, &spyEnqueuer{}, 0, 0)
 		_, err := svc.CaptureFromReceipt(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
 			"banana", "x.pdf", int64(len(samplePDF())), bytes.NewReader(samplePDF()))
@@ -186,7 +187,7 @@ func TestSmartUploadCapture(t *testing.T) {
 	t.Run("Add file does NOT enqueue OCR", func(t *testing.T) {
 		// The standard attachment path must stay plain — no OCR, no needs_review.
 		spy := &spyEnqueuer{}
-		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool),
+		svc := attachments.NewService(ts.pool, dbexpenses.New(ts.pool), auth.New(ts.pool), dbcategories.New(ts.pool),
 			ts.storage, spy, 0, 0)
 		expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 		resp, err := svc.UploadAttachment(context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),

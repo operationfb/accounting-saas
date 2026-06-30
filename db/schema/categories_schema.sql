@@ -30,14 +30,16 @@
 --
 -- Design decisions worth knowing:
 --
---   SEPARATE FROM expense_categories (FOR NOW).
---   The expenses module has its own expense_categories with a DIFFERENT nominal-code
---   scheme (our '365 Travel' vs FreeAgent's '254 Travel & Subsistence'). This CoA is
---   seeded straight from the FreeAgent workbook, so it is a NEW table; the two are
---   unified in a later, deliberate increment (see BACKLOG).
+--   THE SINGLE category table (since 2026-06-30).
+--   This is now the ONE Chart of Accounts for the whole app — expenses, bills,
+--   banking, invoices, payroll and the GL all post against it. The expenses
+--   module's old per-module expense_categories table (a different nominal-code
+--   scheme: '365 Travel' vs FreeAgent's '254 Travel & Subsistence') was dropped
+--   and folded in here; see the EXPENSES → CHART OF ACCOUNTS WIRING section at
+--   the foot of this file (the expenses FK + the v_expenses_full view).
 --
 --   categories IS PER-ORG; the two reference tables are GLOBAL.
---   Like expense_categories, each org gets its own seeded CoA (+ custom additions).
+--   Each org gets its own seeded CoA (+ custom additions).
 --   transaction_types and the mapping are GLOBAL reference (like vat_rates / currencies)
 --   — the 18 types and their offered nominal codes are the same for everyone. The
 --   mapping therefore SOFT-LINKS by nominal_code (resolved against the caller's org's
@@ -214,10 +216,109 @@ CREATE TRIGGER trg_categories_updated_at
 -- =============================================================================
 -- COMMENTS
 -- =============================================================================
-COMMENT ON TABLE  categories IS 'Per-org Chart of Accounts (FreeAgent nominal codes). The accounts an explanation posts to. Separate from expense_categories (different code scheme) until a later unification.';
+COMMENT ON TABLE  categories IS 'Per-org Chart of Accounts (FreeAgent nominal codes). The single category table for the whole app — expenses, bills, banking, invoices, payroll and the GL all post against it.';
 COMMENT ON COLUMN categories.account_type      IS 'CoA section (workbook tab): INCOME, COST_OF_SALES, ADMIN_EXPENSE, CAPITAL_ASSET, USER_ACCOUNT, etc. Drives report grouping + which transaction types offer the account.';
 COMMENT ON COLUMN categories.api_group         IS 'FreeAgent API category group (income_categories / cost_of_sales_categories / admin_expenses_categories / general_categories). Broad explanation types offer whole groups.';
 COMMENT ON COLUMN categories.is_system_managed IS 'TRUE = FreeAgent-managed control account (VAT, debtors, user sub-accounts). Posted to automatically; not a free pick for explanations.';
 COMMENT ON TABLE  transaction_types IS 'The 18 bank-transaction explanation types (GLOBAL reference, like vat_rates). entity_link records what the type links to (bank account, user, invoice…).';
 COMMENT ON TABLE  transaction_type_categories IS 'GLOBAL mapping: which CoA accounts each transaction type offers (every category per type), branched by company_type. A row targets EITHER a specific nominal_code OR a whole api_group; both SOFT-link categories (resolved per org).';
 COMMENT ON COLUMN transaction_type_categories.company_type IS 'ALL = offered for every company type; else only this organisations.company_type (e.g. Money Paid to User differs Ltd vs sole trader).';
+
+
+-- =============================================================================
+-- EXPENSES → CHART OF ACCOUNTS WIRING (2026-06-30 unification)
+-- The expenses module was unified onto this shared CoA: its old per-module
+-- expense_categories table was dropped, and expenses.category_id /
+-- supplier_category_map.category_id now reference categories(id).
+--
+-- These FKs (and the v_expenses_full view below) are declared HERE, not in
+-- schema.sql, purely for ORDERING: schema.sql is applied first and creates
+-- expenses + expense_mileage + supplier_category_map, but `categories` does not
+-- exist until this file. Both objects need expenses AND categories to exist, so
+-- they live at the join point — the same reason categories.bank_account_id is a
+-- plain (soft-linked) column rather than an FK.
+-- =============================================================================
+
+ALTER TABLE expenses
+    ADD CONSTRAINT fk_expenses_category
+    FOREIGN KEY (category_id) REFERENCES categories(id);
+
+ALTER TABLE supplier_category_map
+    ADD CONSTRAINT fk_supplier_category_category
+    FOREIGN KEY (category_id) REFERENCES categories(id);
+
+
+-- -----------------------------------------------------------------------------
+-- v_expenses_full
+-- A convenience view joining expenses with their mileage sub-record and category
+-- (the shared CoA). Used by the expenses service's "get expense" / list / detail
+-- reads so the JOIN isn't repeated. Plain view (not materialised) — always fresh.
+-- Lives here (moved from schema.sql) because it JOINs categories, created above.
+-- -----------------------------------------------------------------------------
+DROP VIEW IF EXISTS v_expenses_full;
+CREATE VIEW v_expenses_full AS
+SELECT
+    e.id,
+    e.organisation_id,
+    e.user_id,
+    e.created_by_user_id,
+    e.dated_on,
+    e.description,
+    e.receipt_reference,
+    e.invoice_number,
+    e.supplier_name,
+    e.supplier_vat_number,
+    e.currency,
+    e.native_currency,
+    e.exchange_rate,
+    e.gross_value_minor,
+    e.native_gross_value_minor,
+    e.vat_rate_bps,
+    e.vat_value_minor,
+    e.native_vat_value_minor,
+    e.manual_vat_amount_minor,
+    e.vat_status,
+    e.ec_status,
+    e.project_id,
+    e.rebill_type,
+    e.rebill_factor,
+    e.rebilled_invoice_id,
+    e.stock_item_id,
+    e.stock_quantity,
+    e.capital_asset_id,
+    e.status,
+    e.submitted_at,
+    e.approved_at,
+    e.approved_by_user_id,
+    e.paid_at,
+    -- Category fields (from the shared Chart of Accounts, categories)
+    ec.nominal_code         AS category_nominal_code,
+    ec.name                 AS category_name,
+    ec.is_capital_asset     AS category_is_capital_asset,
+    -- Mileage fields (NULL if not a mileage claim)
+    em.miles,
+    em.vehicle_type,
+    em.engine_type,
+    em.engine_size,
+    em.reclaim_mileage,
+    em.initial_rate_ppm,
+    em.reduced_rate_ppm,
+    em.rebill_rate_ppm,
+    em.reimbursement_minor,
+    -- Timestamps
+    e.created_at,
+    e.updated_at,
+    -- Raw FKs (the rest of the view exposes names) — used to pre-fill the edit form.
+    e.category_id,
+    e.vat_rate_id,
+    -- Capture / OCR fields. needs_review drives the Smart Upload review inbox;
+    -- ocr_confidence/ocr_processed_at let the detail screen flag low-confidence captures.
+    e.needs_review,
+    e.ocr_confidence,
+    e.ocr_processed_at,
+    -- Rejection reason for a REJECTED expense.
+    e.rejection_note
+FROM expenses e
+JOIN categories ec ON ec.id = e.category_id            -- the shared Chart of Accounts
+LEFT JOIN expense_mileage em ON em.expense_id = e.id   -- LEFT JOIN: only present for mileage claims
+WHERE e.deleted_at IS NULL;                             -- soft delete filter always applied

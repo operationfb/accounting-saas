@@ -151,11 +151,6 @@ The pay-run / payslip engine + simplified PAYE/NI calculator shipped (`internal/
   `ListExpensesByProject` (`db/queries/query.sql`); user-scoped + filtered
   variants would need new queries. _Files: `expense_service.go`, `server.go`,
   `db/queries/query.sql`._
-- **Store category VAT default.** The category screenshots distinguished
-  "normally VATable" vs "normally Zero-VAT"; we stored only `category_group`,
-  not the VAT default. Consider adding a `normally_vatable` / default-VAT hint to
-  `expense_categories` to pre-fill an expense's VAT status from its category.
-  _Files: `db/schema/schema.sql`, `expense_service.go` (`CreateExpense`)._
 - **Suggest-category endpoint for manual entry.** The supplier→category
   dictionary (`supplier_category_map`, populated by the `learn_supplier_category()`
   trigger) is currently consumed only on the Smart Upload / OCR path
@@ -333,9 +328,6 @@ module's to write. Tested in `bill_service_test.go` + `money/money_test.go` (`Ex
   several spending categories; **supplier→category learning** for bills (a `learn_supplier_category()`
   analogue); **hire-purchase agreement** entity + instalment schedule behind `is_hire_purchase`;
   and **multi-currency** (`exchange_rate` + native-currency totals). _File: `db/schema/bills_schema.sql`._
-- **Revisit the `ListBillCategories` filter** (`account_type IN COST_OF_SALES/ADMIN_EXPENSE/CAPITAL_ASSET`)
-  when `expense_categories` and `categories` are unified, so bills and the expense form share one
-  spending-account list. _Files: `db/queries/bills.sql`, the categories unification._
 - **Bill audit log.** No history table yet (same gap as the unwired `expense_audit_log`).
 
 ## Organisation / Company details
@@ -416,7 +408,23 @@ Full plan: `~/.claude/plans/in-order-to-create-binary-manatee.md` (4 phases).
   `RealisedGainLoss`). Tested in `gl_poster_receipt_test.go` (realised loss + residual
   closure) + `internal/fx/fx_test.go`. _Bills realised FX (symmetric CREDITORS path) +
   cross-rate when org home ≠ GBP remain deferred._
-- **Phase 3 — periodic unrealised revaluation of open foreign debtors** — NOT STARTED.
+- **Phase 3 — periodic unrealised revaluation of open foreign debtors — LANDED (2026-06-30).**
+  `internal/fxrevaluation` retranslates each org's OPEN foreign invoices (SENT, due>0,
+  currency≠home) to today's stored rate, posting the swing on the due portion to the new
+  **391 "Unrealized Currency Exchange Gain/Loss"** via the `INVOICE_REVALUATION` event
+  (sign-split `FX_GAIN`/`FX_LOSS` legs → DR/CR 681 vs `FX_UNREALISED_*`→391; new roles +
+  CHECK + seed). Cumulative-supersede (poster delete-then-insert) so reruns replace, never
+  double. `RunRevaluation(asOf)` is **chained onto the daily FX-rate refresh**
+  (`fxrates` `InternalRefresh` → `SetRevaluer`, best-effort). Receipts keep it in step in
+  the same tx (`bankingSvc.SetInvoiceRevaluer` → `OnInvoiceReceiptChanged`): a **partial**
+  receipt re-revalues the reduced due; a **full settlement** crystallises with an **explicit
+  reversing journal** (new `ledger.Poster.ReverseEntry`, `is_reversal=TRUE`) that zeroes 391
+  by its OWN balance — realised stays independently in 390 (no double-count). Reopen/write-off
+  removes the entry (undo). The Trial Balance + Account Transactions reflect it with no FE
+  change. Tested in `fxrevaluation_test.go` (gain, replace-not-double, full-settlement reversal
+  + 390 independence). _Deferred within Phase 3: org home currency ≠ GBP cross-rate; a manual
+  "revalue now" endpoint (only the daily chain + receipt hooks trigger it today); historical
+  as-of-date revaluation (one live entry, dated the last run)._
 - **Phase 4 — foreign-currency bank-balance revaluation** (750-x vs 390) — NOT STARTED.
   Account-scheme decision pending: invoice realised FX uses 218 + a sibling loss
   account; bank-cash uses a single combined 390 — confirm whether to unify on 390.
@@ -523,9 +531,6 @@ remains is the reconciliation/feed richness:
     Remaining: `CREDIT_NOTE_REFUND` / `HP_PAYMENT` (+ refunds) are valid `type`s but still carry no
     dedicated link — add `paid_credit_note_id` / … to `bank_transaction_explanations` when those modules
     land. Likewise a capital-asset register (Purchase/Disposal) and `project_id` + rebilling.
-  - **`expense_categories` → `categories` unification.** Two category tables coexist
-    (different code schemes: our `365 Travel` vs FreeAgent `254`). Merge into one CoA,
-    mapping the expenses module + `supplier_category_map` + OCR across.
   - **`second_sales_tax` / foreign-currency value** on explanations (FreeAgent has
     both; omitted from the v1 record).
   - **Seed review (Money IN/OUT tabs "as-is").** Confirm the codes seeded verbatim from
@@ -690,16 +695,16 @@ remains is the reconciliation/feed richness:
   only via the manual re-push). Add an outbox table written in the approve
   transaction + a sweeper that publishes, for guaranteed delivery. _Files:
   `expense_status.go`, schema._
-- **Provision a FreeAgent-aligned category chart per org.** Only the dev org
-  (`00000000-…-0001`) has the proper FreeAgent-coded chart (`db/seeds/expense_categories.sql`);
-  new orgs get no expense categories automatically, so their pushes have nothing
-  valid to map. Seed a FreeAgent-nominal-code chart on org creation (the legacy
-  ad-hoc `7400–8200` placeholder categories that several test orgs still carry are
-  not FreeAgent codes and would 400 on push). _Files: org-provisioning path,
-  `db/seeds/expense_categories.sql`._
+- **Provision the shared CoA per org.** Only the dev org (`00000000-…-0001`) is
+  seeded with the FreeAgent-coded chart (`db/seeds/categories.sql`); new orgs get no
+  `categories` automatically, so their expense/bill pickers are empty and their
+  pushes have nothing valid to map. Seed the CoA on org creation. _Files:
+  org-provisioning path, `db/seeds/categories.sql`._
 - **Per-provider category mapping (don't equate `nominal_code` with the provider's code).**
-  The push maps `expense_categories.nominal_code` straight to a FreeAgent category
-  URL, so we set our codes to FreeAgent's real ones (e.g. Sundries = `280`). A second
+  The push maps the shared CoA's `categories.nominal_code` straight to a FreeAgent
+  category URL — and since the CoA IS seeded from FreeAgent's chart (e.g. Travel =
+  `254`), that maps cleanly today (the 2026-06-30 expenses→CoA unification made this
+  more correct, dropping the old divergent `expense_categories` codes). A second
   provider (Xero/QuickBooks) uses a different chart, so add a per-(provider, category)
   mapping (column or table) and have the internal expense-for-push endpoint emit the
   provider's code rather than our raw `nominal_code`. _Files: `internal/integrations/workflow.go`,

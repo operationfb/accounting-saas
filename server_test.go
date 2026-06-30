@@ -14,9 +14,9 @@ package main
 //
 // What you need before running this test:
 //   1. PostgreSQL running locally (e.g. via Docker: see docker-compose.yml)
-//   2. Schema applied: psql $DATABASE_URL -f db/schema/schema.sql
-//   3. Seed data inserted: psql $DATABASE_URL -f db/seeds/expense_categories.sql
-//      (the test reads category UUIDs from expense_categories — table must not be empty)
+//   2. Schema applied: psql $DATABASE_URL -f db/schema/schema.sql (+ the other schema files)
+//   3. Seed data inserted: psql $DATABASE_URL -f db/seeds/categories.sql
+//      (the test reads spending-category UUIDs from the categories CoA — must not be empty)
 //   4. DATABASE_URL set in your .env file
 //
 // Run with:
@@ -67,6 +67,7 @@ import (
 	emailinbox "github.com/operationfb/accounting-saas/internal/emailinbox"
 	expenses "github.com/operationfb/accounting-saas/internal/expenses"
 	"github.com/operationfb/accounting-saas/internal/fxrates"
+	fxrevaluation "github.com/operationfb/accounting-saas/internal/fxrevaluation"
 	integrations "github.com/operationfb/accounting-saas/internal/integrations"
 	freeagent "github.com/operationfb/accounting-saas/internal/integrations/freeagent"
 	invoices "github.com/operationfb/accounting-saas/internal/invoices"
@@ -118,6 +119,10 @@ type testServer struct {
 	// invoiceService is the invoices domain service the harness wires (its Handler
 	// registers /api/v1/invoices on server.Router()). Exposed for direct-call tests.
 	invoiceService *invoices.Service
+
+	// fxRevalService is the unrealised-FX revaluation service (internal/fxrevaluation),
+	// exposed so tests can drive RunRevaluation directly.
+	fxRevalService *fxrevaluation.Service
 
 	// faProvider is the UNIQUE throwaway FreeAgent provider key this test server's
 	// integration service is built with. It scopes both the global
@@ -184,7 +189,7 @@ func newTestServer(t *testing.T) *testServer {
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
 	vatQueries := dbvat.New(pool) // shared: VAT screens + the filed-period lock guard
-	service := expenses.NewService(pool, queries, authQueries, vatQueries)
+	service := expenses.NewService(pool, queries, authQueries, dbcategories.New(pool), vatQueries)
 
 	// Build a real auth handler so the /auth/* routes work, and pass the token
 	// maker to the server so the expense routes' auth middleware can verify
@@ -209,7 +214,7 @@ func newTestServer(t *testing.T) *testServer {
 		}
 		store = gcsStore
 	}
-	attachmentService := attachments.NewService(pool, queries, authQueries, store, nil, 0, 0)
+	attachmentService := attachments.NewService(pool, queries, authQueries, dbcategories.New(pool), store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
 	// fxRateSvc serves stored daily rates to the invoice auto-fill. Provider is nil in
@@ -255,6 +260,13 @@ func newTestServer(t *testing.T) *testServer {
 	bankingSvc := banking.NewService(pool, dbbanking.New(pool), authQueries, categoryQueries, dbinvoices.New(pool), dbbills.New(pool), vatQueries)
 	bankingSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 	bankingSvc.SetRates(fxRateSvc) // settle foreign-currency invoice receipts (realised FX)
+	// Unrealised-FX revaluation (Phase 3): wired like main, so a receipt re-revalues/crystallises
+	// the invoice's 391 entry, and the test can drive the daily RunRevaluation directly.
+	fxRevalSvc := fxrevaluation.NewService(pool, dbinvoices.New(pool), authQueries, ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries), fxRateSvc)
+	bankingSvc.SetInvoiceRevaluer(fxRevalSvc)
+	// Chain on the rate service like main (no-op under the harness's nil provider, but the
+	// chain test drives it through a stub provider).
+	fxRateSvc.SetRevaluer(fxRevalSvc)
 	banking.NewHandler(bankingSvc).RegisterRoutes(server.Router(), tokenMaker)
 	categories.NewHandler(categories.NewService(categoryQueries, authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 
@@ -289,6 +301,7 @@ func newTestServer(t *testing.T) *testServer {
 		emailInboxService:   emailInboxService,
 		integrationService:  integrationSvc,
 		bankingService:      bankingSvc,
+		fxRevalService:      fxRevalSvc,
 		contactService:      contactSvc,
 		organisationService: organisationSvc,
 		invoiceService:      invoiceSvc,
@@ -299,14 +312,18 @@ func newTestServer(t *testing.T) *testServer {
 func randomCategoryUUID(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 
-	// Fetch all category UUIDs for the stub organisation.
+	// Fetch the SPENDING-account UUIDs from the stub org's Chart of Accounts
+	// (categories) — the same subset the expense picker offers, so a created
+	// expense passes the service's validateCategory guard.
 	// We cast id to text so pgx scans it as a plain string — no pgtype.UUID
 	// handling needed in test helper code.
 	rows, err := pool.Query(context.Background(), `
 		SELECT id::text
-		FROM expense_categories
+		FROM categories
 		WHERE organisation_id = '00000000-0000-0000-0000-000000000001'
-		  AND is_active = TRUE
+		  AND is_active
+		  AND is_system_managed = FALSE
+		  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
 	`)
 	if err != nil {
 		t.Fatalf("randomCategoryUUID: query failed: %v", err)
@@ -329,7 +346,7 @@ func randomCategoryUUID(t *testing.T, pool *pgxpool.Pool) string {
 	}
 
 	if len(ids) == 0 {
-		t.Fatal("randomCategoryUUID: expense_categories table is empty — run the seed INSERT script first")
+		t.Fatal("randomCategoryUUID: no spending categories for the stub org — run db/seeds/categories.sql first")
 	}
 
 	// Shuffle the slice in place using the Fisher-Yates algorithm.
@@ -374,9 +391,49 @@ func bearer(t *testing.T, ts *testServer, userID, orgID string) string {
 
 // createExpenseAs creates an expense through the API as the given user/org and
 // returns the new expense id.
+// spendingCategoryForOrg returns the id of a spending account in the GIVEN org's
+// Chart of Accounts (what validateCategory now requires — a category must belong
+// to the expense's org). The seeded dev org already has a CoA; a fresh test org
+// (newOrgWithOwner) has none, so we seed a single '251' Sundry Expenses account
+// and register cleanup. Org-scoped — fixes the old cross-tenant shortcut where any
+// dev-org category was accepted for any org (the FK only checked id existence).
+func spendingCategoryForOrg(t *testing.T, ts *testServer, orgID string) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	err := ts.pool.QueryRow(ctx, `
+		SELECT id::text FROM categories
+		WHERE organisation_id = $1 AND is_active AND is_system_managed = FALSE
+		  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE','CAPITAL_ASSET')
+		ORDER BY account_type, nominal_code LIMIT 1`, orgID).Scan(&id)
+	if err == nil {
+		return id // org already has a CoA (e.g. the seeded dev org)
+	}
+	// Fresh test org with no CoA — seed one spending account (idempotent).
+	if _, err := ts.pool.Exec(ctx, `
+		INSERT INTO categories (organisation_id, nominal_code, name, account_type)
+		VALUES ($1, '251', 'Sundry Expenses', 'ADMIN_EXPENSE')
+		ON CONFLICT (organisation_id, nominal_code) DO NOTHING`, orgID); err != nil {
+		t.Fatalf("spendingCategoryForOrg: insert: %v", err)
+	}
+	if err := ts.pool.QueryRow(ctx,
+		`SELECT id::text FROM categories WHERE organisation_id = $1 AND nominal_code = '251'`,
+		orgID).Scan(&id); err != nil {
+		t.Fatalf("spendingCategoryForOrg: read back: %v", err)
+	}
+	// Delete the org's expenses (+ derived supplier map) before the category, so the
+	// fk_expenses_category constraint doesn't block the category delete.
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM expenses WHERE organisation_id = $1`, orgID)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM supplier_category_map WHERE organisation_id = $1`, orgID)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM categories WHERE organisation_id = $1 AND nominal_code = '251'`, orgID)
+	})
+	return id
+}
+
 func createExpenseAs(t *testing.T, ts *testServer, userID, orgID string) string {
 	t.Helper()
-	categoryID := randomCategoryUUID(t, ts.pool)
+	categoryID := spendingCategoryForOrg(t, ts, orgID)
 	reqBody := expenses.CreateExpenseRequest{
 		CategoryID:       categoryID,
 		DatedOn:          testutil.RandomDatedOn(),
@@ -1203,9 +1260,9 @@ func TestCORS(t *testing.T) {
 // =============================================================================
 
 // TestHandleListExpenseCategories covers GET /api/v1/expense-categories:
-//   - authenticated → 200 with the org's ACTIVE categories, each carrying its
-//     category_group; spot-checks one category per group and the capital-asset
-//     flag; confirms a deactivated legacy category is excluded.
+//   - authenticated → 200 with the org's SPENDING accounts from the shared CoA,
+//     each carrying its account_type + default_vat; spot-checks the '251' Sundry
+//     placeholder and confirms income/control accounts are excluded.
 //   - no token → 401.
 func TestHandleListExpenseCategories(t *testing.T) {
 	ts := newTestServer(t)
@@ -1231,45 +1288,35 @@ func TestHandleListExpenseCategories(t *testing.T) {
 			t.Fatal("expected a non-empty category list")
 		}
 
-		// Index by name; every active category must be grouped and identified.
-		byName := make(map[string]expenses.ExpenseCategoryResponse, len(resp.ExpenseCategories))
+		// Every item is a SPENDING account from the shared CoA, fully identified.
+		spending := map[string]bool{"COST_OF_SALES": true, "ADMIN_EXPENSE": true, "CAPITAL_ASSET": true}
+		byNominal := make(map[string]expenses.ExpenseCategoryResponse, len(resp.ExpenseCategories))
 		for _, c := range resp.ExpenseCategories {
-			byName[c.Name] = c
-			if c.CategoryGroup == nil || *c.CategoryGroup == "" {
-				t.Errorf("category %q has no category_group", c.Name)
+			byNominal[c.NominalCode] = c
+			if c.ID == "" || c.NominalCode == "" || c.Name == "" {
+				t.Errorf("category %q missing id/nominal_code/name", c.NominalCode)
 			}
-			if c.ID == "" || c.NominalCode == "" {
-				t.Errorf("category %q missing id/nominal_code", c.Name)
-			}
-		}
-
-		// Spot-check one category per group, including the capital-asset flag.
-		checks := []struct {
-			name      string
-			group     string
-			isCapital bool
-		}{
-			{"Cost of Sales", "COS", false},
-			{"Accommodation and Meals", "ADMIN", false},
-			{"Computer Equipment Purchase", "ASSETS", true},
-		}
-		for _, ck := range checks {
-			c, ok := byName[ck.name]
-			if !ok {
-				t.Errorf("expected category %q in the list", ck.name)
-				continue
-			}
-			if c.CategoryGroup == nil || *c.CategoryGroup != ck.group {
-				t.Errorf("%q: category_group = %v, want %q", ck.name, c.CategoryGroup, ck.group)
-			}
-			if c.IsCapitalAsset != ck.isCapital {
-				t.Errorf("%q: is_capital_asset = %v, want %v", ck.name, c.IsCapitalAsset, ck.isCapital)
+			if !spending[c.AccountType] {
+				t.Errorf("category %q has non-spending account_type %q", c.NominalCode, c.AccountType)
 			}
 		}
 
-		// Deactivated legacy categories must NOT appear.
-		if _, found := byName["Travel & Subsistence"]; found {
-			t.Error("deactivated category 'Travel & Subsistence' should not be listed")
+		// Spot-check the Smart-Upload placeholder: '251' Sundry Expenses, an
+		// ADMIN_EXPENSE that pre-fills STANDARD VAT on the picker.
+		if c, ok := byNominal["251"]; !ok {
+			t.Error("expected the '251' Sundry Expenses account in the list")
+		} else {
+			if c.AccountType != "ADMIN_EXPENSE" {
+				t.Errorf("'251': account_type = %q, want ADMIN_EXPENSE", c.AccountType)
+			}
+			if c.DefaultVat == nil || *c.DefaultVat != "STANDARD" {
+				t.Errorf("'251': default_vat = %v, want STANDARD", c.DefaultVat)
+			}
+		}
+
+		// Income / control accounts must NOT appear (e.g. '001' Sales).
+		if _, found := byNominal["001"]; found {
+			t.Error("income account '001' Sales should not be in the spending picker")
 		}
 	})
 
@@ -2014,15 +2061,16 @@ func userEmail(t *testing.T, ts *testServer, userID string) string {
 	return email
 }
 
-// namedCategory returns an ordinary (non-asset/mileage/stock) active category's
-// id and name for the org, so the export's category cell can be asserted.
+// namedCategory returns an ordinary (non-capital) active spending category's id
+// and name from the org's Chart of Accounts, so the export's category cell can be
+// asserted.
 func namedCategory(t *testing.T, ts *testServer, orgID string) (id, name string) {
 	t.Helper()
 	err := ts.pool.QueryRow(context.Background(), `
-		SELECT id::text, name FROM expense_categories
-		WHERE organisation_id = $1 AND is_active = TRUE
-		  AND is_capital_asset = FALSE AND is_mileage = FALSE AND is_stock_purchase = FALSE
-		ORDER BY nominal_code LIMIT 1`, orgID).Scan(&id, &name)
+		SELECT id::text, name FROM categories
+		WHERE organisation_id = $1 AND is_active AND is_system_managed = FALSE
+		  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE')
+		ORDER BY account_type, nominal_code LIMIT 1`, orgID).Scan(&id, &name)
 	if err != nil {
 		t.Fatalf("namedCategory: %v", err)
 	}
@@ -2045,19 +2093,20 @@ func gbStandardVatRateID(t *testing.T, ts *testServer) string {
 	return id
 }
 
-// newCategory inserts an ephemeral active expense category for an org and returns
-// its id, with cleanup. Used to give a second tenant a category to file against.
-// (newOrgWithOwner — the second-tenant helper — lives in attachment_service_test.go.)
+// newCategory inserts an ephemeral active spending account into the org's Chart
+// of Accounts and returns its id, with cleanup. Used to give a second tenant a
+// category to file against. (newOrgWithOwner — the second-tenant helper — lives in
+// attachment_service_test.go.)
 func newCategory(t *testing.T, ts *testServer, orgID string) string {
 	t.Helper()
 	ctx := context.Background()
 	id := uuid.NewString()
 	if _, err := ts.pool.Exec(ctx,
-		`INSERT INTO expense_categories (id, organisation_id, nominal_code, name)
-		 VALUES ($1, $2, '7999', 'Export Test Category')`, id, orgID); err != nil {
+		`INSERT INTO categories (id, organisation_id, nominal_code, name, account_type)
+		 VALUES ($1, $2, '299', 'Export Test Category', 'ADMIN_EXPENSE')`, id, orgID); err != nil {
 		t.Fatalf("newCategory: %v", err)
 	}
-	t.Cleanup(func() { _, _ = ts.pool.Exec(ctx, `DELETE FROM expense_categories WHERE id = $1`, id) })
+	t.Cleanup(func() { _, _ = ts.pool.Exec(ctx, `DELETE FROM categories WHERE id = $1`, id) })
 	return id
 }
 

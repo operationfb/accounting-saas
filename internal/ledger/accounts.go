@@ -61,6 +61,12 @@ const (
 	RoleFXRealisedGain = "FX_REALISED_GAIN"
 	RoleFXRealisedLoss = "FX_REALISED_LOSS"
 
+	// Unrealised FX on the periodic revaluation of open foreign debtors. Both map to the
+	// single signed 391 "Unrealized Currency Exchange Gain/Loss" account via gl_account_roles
+	// (separate nominal from realised 390 so the two never double-count).
+	RoleFXUnrealisedGain = "FX_UNREALISED_GAIN"
+	RoleFXUnrealisedLoss = "FX_UNREALISED_LOSS"
+
 	// Payroll accrual (PAYROLL_COMPLETED). All resolve via gl_account_roles like the
 	// other fixed control roles; NET_PAY_PAYABLE → 902 then user-subdivides per payslip.
 	RolePayrollGrossExpense           = "PAYROLL_GROSS_EXPENSE"
@@ -134,6 +140,7 @@ func (a *Accounts) Resolve(ctx context.Context, role string, in ResolveInput) (u
 	case RoleDebtors, RoleCreditors, RoleVATControl, RoleSalesDefault,
 		RoleOpeningEquity, RoleSuspense, RoleUserAccount,
 		RoleFXRealisedGain, RoleFXRealisedLoss,
+		RoleFXUnrealisedGain, RoleFXUnrealisedLoss,
 		RolePayrollGrossExpense, RolePayrollEmployerNIExpense, RolePayrollEmployerPensionExpense,
 		RolePayrollDirectorGrossExpense, RolePayrollDirectorEmployerNIExpense, RolePayrollDirectorEmployerPensionExpense,
 		RolePAYENILiability, RolePensionLiability, RoleStudentLoanLiability,

@@ -13,6 +13,11 @@ import (
 type Querier interface {
 	CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error)
 	CreateJournalLine(ctx context.Context, arg CreateJournalLineParams) error
+	// Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
+	// crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
+	// idempotency unique index excludes reversals, so this never collides with the live
+	// (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+	CreateReversalEntry(ctx context.Context, arg CreateReversalEntryParams) (uuid.UUID, error)
 	// -----------------------------------------------------------------------------
 	// JOURNAL ENTRIES + LINES (the poster's write path)
 	// The poster replaces any prior entry for a source event (DeleteJournalEntryForSource,

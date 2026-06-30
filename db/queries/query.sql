@@ -860,7 +860,7 @@ SELECT
     COALESCE(SUM(e.native_gross_value_minor), 0)  AS total_gross_minor,
     COALESCE(SUM(e.native_vat_value_minor), 0)    AS total_vat_minor
 FROM expenses e
-JOIN expense_categories ec ON ec.id = e.category_id
+JOIN categories ec ON ec.id = e.category_id   -- the shared Chart of Accounts
 WHERE e.organisation_id = $1
   AND e.dated_on BETWEEN $2 AND $3
   AND e.deleted_at IS NULL
@@ -909,33 +909,11 @@ GROUP BY status;
 -- =============================================================================
 -- SECTION 6: EXPENSE CATEGORIES (reference data)
 -- =============================================================================
-
--- -----------------------------------------------------------------------------
--- ListExpenseCategories
--- All ACTIVE categories for an organisation, for the expense category picker.
--- Scoped by organisation_id — categories are per-tenant reference data.
--- Ordered by category_group then nominal_code so the UI can render stable
--- sections (Admin expenses / Assets and stock / Cost of Sales).
--- -----------------------------------------------------------------------------
--- name: ListExpenseCategories :many
-SELECT * FROM expense_categories
-WHERE organisation_id = $1
-  AND is_active = TRUE
-ORDER BY category_group, nominal_code;
-
-
--- -----------------------------------------------------------------------------
--- GetExpenseCategoryByNominalCode
--- Fetch one active category by its nominal code within an organisation. Smart
--- Upload uses this to resolve the org's placeholder category ('6021' Sundries)
--- for a skeleton expense, since category UUIDs are generated per-org and so
--- can't be hardcoded. Org-scoped — categories are per-tenant reference data.
--- -----------------------------------------------------------------------------
--- name: GetExpenseCategoryByNominalCode :one
-SELECT * FROM expense_categories
-WHERE organisation_id = $1
-  AND nominal_code    = $2
-  AND is_active = TRUE;
+-- Expense categories now come from the shared Chart of Accounts (categories).
+-- The picker query is ListSpendingCategories and the Smart-Upload placeholder
+-- lookup is GetCategoryByNominal — both in db/queries/categories.sql. The old
+-- per-module ListExpenseCategories / GetExpenseCategoryByNominalCode (over the
+-- dropped expense_categories table) were removed in the 2026-06-30 unification.
 
 
 -- =============================================================================
