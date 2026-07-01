@@ -265,7 +265,7 @@ When an expense is **approved**, it is pushed to the organisation's FreeAgent ac
 
 ## Direct Database Access (terminal)
 
-Claude Code **is authorized to query the development database directly — reads and writes — without asking each time** (confirmed by Aydin). Use it to inspect schema/data, verify changes, and debug while building.
+Claude Code **is authorized to query the development database directly — reads and writes — without asking each time** (confirmed by Aydin), **except for the `gl_journal_` append-only rule in Cautions below**. Use it to inspect schema/data, verify changes, and debug while building.
 
 - **Connection string:** read it from `.env` as `DATABASE_URL` — that file is the source of truth (currently the `accounting` database on a remote shared dev Postgres). Don't hardcode or echo the password.
 - **`psql` is installed via Homebrew `libpq`, which is keg-only**, so bare `psql` is NOT on `PATH` in a non-interactive shell. Use the full path:
@@ -278,6 +278,7 @@ Claude Code **is authorized to query the development database directly — reads
   ```
 
 Cautions:
+- **HARD RULE — the `gl_journal_` ledger is APPEND-ONLY. NEVER run `UPDATE`, `DELETE`, or `TRUNCATE` on `gl_journal_entries` / `gl_journal_lines`, and NEVER weaken their append-only guard (no `DROP`/`DISABLE TRIGGER` on them, no `SET session_replication_role = replica`) — unless Aydin has EXPLICITLY requested that exact change in the conversation.** This holds in every permission mode, including Auto. Corrections to the ledger are made as **reversing journal entries** (`INSERT`), never in-place edits. This is enforced by a PreToolUse hook (`.claude/hooks/gl-append-only-guard.py`, wired in `.claude/settings.json`) that forces a confirmation prompt on any such Bash/psql command (including SQL passed via `psql -f`), and by DB guard triggers (`trg_gl_lines_no_update`, etc.) that reject the mutation outright.
 - This is a **shared dev database**, not production — and the integration tests (`go test ./...`) read and write to it. **Avoid destructive operations (`DROP`/`TRUNCATE`/bulk `DELETE`) unless explicitly asked.**
 - Schema and seed are already applied (expenses + auth tables exist). The seeded dev login user is `dev@example.com` (org `00000000-0000-0000-0000-000000000001`).
 
