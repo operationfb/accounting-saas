@@ -28,14 +28,18 @@ export async function listReportAccounts(): Promise<AccountSummary[]> {
 // GET /api/v1/reports/account-transactions — the general-ledger lines for one
 // account (by nominal code) over an optional date range. `from`/`to` are
 // YYYY-MM-DD; omit `from` for an open lower bound (the default "All time").
+// By default superseded/reversed entries are hidden (only the live entries show);
+// pass includeSuperseded to reveal the full reversal chain for auditing.
 export async function getAccountTransactions(
   account: string,
   from?: string,
   to?: string,
+  includeSuperseded = false,
 ): Promise<AccountTransactions> {
   const q = new URLSearchParams({ account })
   if (from) q.set('from', from)
   if (to) q.set('to', to)
+  if (includeSuperseded) q.set('include_superseded', 'true')
   const data = await apiFetch<unknown>(`/reports/account-transactions?${q.toString()}`, {
     method: 'GET',
   })

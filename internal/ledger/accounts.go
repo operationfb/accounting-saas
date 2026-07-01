@@ -8,7 +8,8 @@ package ledger
 // Three classes of role (see ledger_schema.sql / gl_account_roles):
 //   1. PASS-THROUGH  (EXPLANATION_CATEGORY, SOURCE_CATEGORY) — the category id is
 //      already on the source row; we just load it.
-//   2. FIXED CONTROL (DEBTORS, CREDITORS, VAT_CONTROL, SALES_DEFAULT, OPENING_EQUITY,
+//   2. FIXED CONTROL (DEBTORS, CREDITORS, VAT_CHARGED (output/819), VAT_RECLAIMED
+//      (input/818), VAT_CONTROL (817, reserved), SALES_DEFAULT, OPENING_EQUITY,
 //      SUSPENSE, USER_ACCOUNT) — gl_account_roles maps role→nominal_code, looked up
 //      in the caller's org categories.
 //   3. ENTITY-DERIVED bank roles (BANK, TRANSFER_*_BANK) — resolve from the event's
@@ -45,7 +46,9 @@ const (
 	RoleBank                = "BANK"
 	RoleDebtors             = "DEBTORS"
 	RoleCreditors           = "CREDITORS"
-	RoleVATControl          = "VAT_CONTROL"
+	RoleVATControl          = "VAT_CONTROL"   // 817 VAT-return control — reserved (no rule uses it after the 818/819 split)
+	RoleVATCharged          = "VAT_CHARGED"   // 819 output VAT charged on sales
+	RoleVATReclaimed        = "VAT_RECLAIMED" // 818 input VAT reclaimed on purchases
 	RoleUserAccount         = "USER_ACCOUNT"
 	RoleOpeningEquity       = "OPENING_EQUITY"
 	RoleExplanationCategory = "EXPLANATION_CATEGORY"
@@ -137,7 +140,7 @@ func (a *Accounts) Resolve(ctx context.Context, role string, in ResolveInput) (u
 		}
 		return a.maybeUserSubAccount(ctx, in, cat)
 
-	case RoleDebtors, RoleCreditors, RoleVATControl, RoleSalesDefault,
+	case RoleDebtors, RoleCreditors, RoleVATControl, RoleVATCharged, RoleVATReclaimed, RoleSalesDefault,
 		RoleOpeningEquity, RoleSuspense, RoleUserAccount,
 		RoleFXRealisedGain, RoleFXRealisedLoss,
 		RoleFXUnrealisedGain, RoleFXUnrealisedLoss,

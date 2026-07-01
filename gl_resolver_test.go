@@ -49,6 +49,8 @@ func TestLedgerResolver(t *testing.T) {
 		{ledger.RoleDebtors, "681"},
 		{ledger.RoleCreditors, "796"},
 		{ledger.RoleVATControl, "817"},
+		{ledger.RoleVATCharged, "819"},   // output VAT on sales
+		{ledger.RoleVATReclaimed, "818"}, // input VAT on purchases
 		{ledger.RoleSalesDefault, "001"},
 	} {
 		got, err := res.Resolve(ctx, tc.role, ledger.ResolveInput{OrganisationID: org, CompanyType: "limited"})

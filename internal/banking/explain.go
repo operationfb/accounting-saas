@@ -278,7 +278,7 @@ func (s *Service) UpdateExplanation(ctx context.Context, authUserID, authOrgID u
 		case existing.Type == typeInvoiceReceipt:
 			// Type changed away from receipt: reverse this entry, then re-post the old invoice's
 			// remaining receipts so their cumulative relief closes correctly without it.
-			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.DatedOn); err != nil {
+			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.PaidInvoiceID, existing.DatedOn); err != nil {
 				return err
 			}
 			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
@@ -331,7 +331,7 @@ func (s *Service) DeleteExplanation(ctx context.Context, authUserID, authOrgID u
 		// GL: remove this receipt's journal entry (lines cascade), then re-post the invoice's
 		// remaining receipts so their cumulative debtor relief closes correctly without it.
 		if existing.Type == typeInvoiceReceipt {
-			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.DatedOn); err != nil {
+			if err := s.removeReceiptGL(ctx, tx, authUserID, authOrgID, explUUID, existing.PaidInvoiceID, existing.DatedOn); err != nil {
 				return err
 			}
 			return s.repostAndRevalueInvoice(ctx, tx, authUserID, authOrgID, existing.PaidInvoiceID)
@@ -460,7 +460,7 @@ func (s *Service) repostInvoiceReceipts(ctx context.Context, tx pgx.Tx, orgID uu
 			SourceType:     typeInvoiceReceipt,
 			SourceID:       r.ID,
 			EntryDate:      r.DatedOn,
-			Narrative:      "Invoice receipt",
+			Narrative:      invoiceReceiptNarrative(inv.Reference.String),
 			CreatedBy:      createdBy,
 			Amounts:        amounts,
 			BankAccountID:  &bankID,
@@ -475,12 +475,44 @@ func (s *Service) repostInvoiceReceipts(ctx context.Context, tx pgx.Tx, orgID uu
 }
 
 // removeReceiptGL backs out the receipt's journal entry by REVERSING it (append-only —
-// never deleted), dated at the receipt's own date. Nil-guarded.
-func (s *Service) removeReceiptGL(ctx context.Context, tx pgx.Tx, authUserID, orgID, explID uuid.UUID, asOf pgtype.Date) error {
+// never deleted), dated at the receipt's own date. Nil-guarded. invoiceID names the
+// settled invoice so the reversal narrative carries its reference (e.g. "Invoice receipt
+// against 002 reversed"), matching the original entry it undoes.
+func (s *Service) removeReceiptGL(ctx context.Context, tx pgx.Tx, authUserID, orgID, explID uuid.UUID, invoiceID pgtype.UUID, asOf pgtype.Date) error {
 	if s.poster == nil {
 		return nil
 	}
-	return s.poster.ReverseEntry(ctx, tx, orgID, typeInvoiceReceipt, explID, asOf, "Invoice receipt reversed", authUserID)
+	narrative := invoiceReceiptNarrative(s.invoiceReference(ctx, tx, orgID, invoiceID)) + " reversed"
+	return s.poster.ReverseEntry(ctx, tx, orgID, typeInvoiceReceipt, explID, asOf, narrative, authUserID)
+}
+
+// invoiceReference reads the settled invoice's user-facing reference for a receipt's GL
+// narrative. Best-effort: a missing link or a vanished invoice yields "" (the narrative
+// then falls back to the bare "Invoice receipt"), so it never blocks the reversal.
+func (s *Service) invoiceReference(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, invoiceID pgtype.UUID) string {
+	if !invoiceID.Valid {
+		return ""
+	}
+	invUUID, err := uuid.FromBytes(invoiceID.Bytes[:])
+	if err != nil {
+		return ""
+	}
+	inv, err := s.invoiceQueries.WithTx(tx).GetInvoice(ctx, invoicesdb.GetInvoiceParams{ID: invUUID, OrganisationID: orgID})
+	if err != nil {
+		return ""
+	}
+	return inv.Reference.String
+}
+
+// invoiceReceiptNarrative builds the GL entry narrative for an invoice-receipt posting,
+// naming the invoice it settles (e.g. "Invoice receipt against 002"). A blank reference
+// falls back to the bare label so the narrative is always meaningful.
+func invoiceReceiptNarrative(reference string) string {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return "Invoice receipt"
+	}
+	return "Invoice receipt against " + reference
 }
 
 // =============================================================================

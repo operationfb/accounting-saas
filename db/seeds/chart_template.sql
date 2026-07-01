@@ -98,6 +98,8 @@ INSERT INTO chart_template (country_code, nominal_code, name, account_type, api_
   (NULL, '814', 'PAYE / NI', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
   (NULL, '815', 'Other Payroll Deductions', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
   (NULL, '817', 'VAT', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
+  (NULL, '818', 'VAT Reclaimed', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
+  (NULL, '819', 'VAT Charged', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
   (NULL, '820', 'Corporation Tax', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
   (NULL, '823', 'Deferred VAT', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),
   (NULL, '824', 'VAT OSS', 'TAX_LIABILITY', 'general_categories', NULL, NULL, NULL, 'f', 't', 'f'),

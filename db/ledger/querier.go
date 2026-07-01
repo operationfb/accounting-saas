@@ -32,10 +32,17 @@ type Querier interface {
 	GetAccountRoleNominal(ctx context.Context, arg GetAccountRoleNominalParams) (string, error)
 	// The general-ledger lines posted to ONE account (by nominal_code) for an org, over
 	// an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
-	// (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
-	// are real lines). Ordered chronologically (entry_date, then insertion order) so the
-	// report reads top-to-bottom in time. Backs the Account Transactions report (the
-	// trial-balance drill-down).
+	// (DR +, CR -) drives the Debit/Credit split in Go. Ordered chronologically
+	// (entry_date, then insertion order) so the report reads top-to-bottom in time. Backs
+	// the Account Transactions report (the trial-balance drill-down).
+	//
+	// By DEFAULT (include_superseded = FALSE) this hides superseded/reversed activity: both
+	// a reversal entry (is_reversal) AND the entry a reversal points at are dropped, leaving
+	// only the EFFECTIVE (live) entries — the same predicate as GetJournalEntryForSource.
+	// Every such (original + reversal) pair nets to zero on every account, so hiding them
+	// does NOT change total_debit/total_credit or the agreement with the Trial Balance
+	// (which, unlike this drill-down, keeps reversals in to stay balanced). Pass
+	// include_superseded = TRUE to reveal the full reversal chain for auditing.
 	GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error)
 	// The EFFECTIVE entry for a source event: the one non-reversal entry NOT yet reversed
 	// (no reversal points at it). With reverse-then-post this is ≤1 row — the current live

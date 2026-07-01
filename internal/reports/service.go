@@ -136,7 +136,7 @@ func (s *Service) Accounts(ctx context.Context, userID, orgID uuid.UUID) ([]Acco
 // nominal code) over a date range: from is the optional lower bound (nil = open),
 // to is the inclusive upper bound. Each line is split into Debit/Credit by the sign
 // of base_amount_minor, with column totals. Any active member may read.
-func (s *Service) AccountTransactions(ctx context.Context, userID, orgID uuid.UUID, nominal string, from *time.Time, to time.Time) (*AccountTransactionsResponse, error) {
+func (s *Service) AccountTransactions(ctx context.Context, userID, orgID uuid.UUID, nominal string, from *time.Time, to time.Time, includeSuperseded bool) (*AccountTransactionsResponse, error) {
 	if _, err := kernel.AuthorizeMember(ctx, s.authQueries, userID, orgID); err != nil {
 		return nil, err
 	}
@@ -168,10 +168,11 @@ func (s *Service) AccountTransactions(ctx context.Context, userID, orgID uuid.UU
 	}
 
 	rows, err := s.ledger.GetAccountTransactions(ctx, ledgerdb.GetAccountTransactionsParams{
-		OrganisationID: orgID,
-		NominalCode:    nominal,
-		FromDate:       fromParam,
-		ToDate:         pgtype.Date{Time: to, Valid: true},
+		OrganisationID:    orgID,
+		NominalCode:       nominal,
+		FromDate:          fromParam,
+		ToDate:            pgtype.Date{Time: to, Valid: true},
+		IncludeSuperseded: includeSuperseded,
 	})
 	if err != nil {
 		return nil, err

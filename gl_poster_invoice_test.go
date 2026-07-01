@@ -105,11 +105,12 @@ func TestInvoiceSentPostsBalancedEntry_GBP(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 journal lines, got %d: %v", len(lines), lines)
 	}
-	// Dr Debtors (681) +120.00, Cr Sales (001) −100.00, Cr VAT control (817) −20.00.
+	// Dr Debtors (681) +120.00, Cr Sales (001) −100.00, Cr VAT Charged (819) −20.00.
+	// (Output VAT posts to 819, not the 817 VAT-return control — see the 818/819 split.)
 	// GBP invoice: base == amount on every line.
 	assertLine(t, lines, "681", "GBP", 12000, 12000)
 	assertLine(t, lines, "001", "GBP", -10000, -10000)
-	assertLine(t, lines, "817", "GBP", -2000, -2000)
+	assertLine(t, lines, "819", "GBP", -2000, -2000)
 
 	var sum int64
 	for _, l := range lines {
@@ -132,7 +133,7 @@ func TestInvoiceSentPostsBalancedEntry_EUR(t *testing.T) {
 	// Transaction amounts in EUR; base amounts in GBP (the home currency).
 	assertLine(t, lines, "681", "EUR", 12000, 10320) // €120.00 → £103.20
 	assertLine(t, lines, "001", "EUR", -10000, -8600)
-	assertLine(t, lines, "817", "EUR", -2000, -1720)
+	assertLine(t, lines, "819", "EUR", -2000, -1720) // output VAT → 819 VAT Charged
 
 	var sumBase, sumTxn int64
 	for _, l := range lines {

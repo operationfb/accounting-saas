@@ -15,7 +15,9 @@
 --   EXPLANATION_CATEGORY = the category the user picked on the bank explanation
 --   SOURCE_CATEGORY      = the bill/expense line's category
 --   BANK                 = the bank line's own account; TRANSFER_*_BANK the two sides
---   DEBTORS/CREDITORS/VAT_CONTROL/USER_ACCOUNT/OPENING_EQUITY = control accounts
+--   DEBTORS/CREDITORS/USER_ACCOUNT/OPENING_EQUITY = control accounts
+--   VAT_CHARGED = output VAT on sales (819); VAT_RECLAIMED = input VAT on purchases (818)
+--     (VAT_CONTROL/817 is the VAT-return control — reserved, not used by any rule below)
 --   SALES_DEFAULT        = default income (001) until invoices carry per-line categories
 --   SUSPENSE             = holding account for not-yet-built entity types (credit
 --                          note / HP) — PROVISIONAL, replace when those modules land
@@ -27,9 +29,9 @@
 INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, direction, display_order) VALUES
 
   -- ========================== BANK EXPLANATIONS — MONEY OUT ==========================
-  -- Payment to a CoA category (net to the category, input VAT to VAT control, gross out of bank).
+  -- Payment to a CoA category (net to the category, input VAT to VAT Reclaimed 818, gross out of bank).
   ('PAYMENT',                 1, 'EXPLANATION_CATEGORY', 'NET',   'DR', 1),
-  ('PAYMENT',                 2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('PAYMENT',                 2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('PAYMENT',                 3, 'BANK',                 'GROSS', 'CR', 3),
 
   -- Bill payment: settles a payable (no VAT — that was booked at bill creation).
@@ -46,12 +48,12 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
 
   -- Purchase of a capital asset: the picked 602 account (net) + input VAT, out of bank.
   ('PURCHASE_CAPITAL_ASSET',  1, 'EXPLANATION_CATEGORY', 'NET',   'DR', 1),
-  ('PURCHASE_CAPITAL_ASSET',  2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('PURCHASE_CAPITAL_ASSET',  2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('PURCHASE_CAPITAL_ASSET',  3, 'BANK',                 'GROSS', 'CR', 3),
 
   -- Sales refund (money out reduces sales): debit the income category (net) + reverse VAT.
   ('SALES_REFUND',            1, 'EXPLANATION_CATEGORY', 'NET',   'DR', 1),
-  ('SALES_REFUND',            2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('SALES_REFUND',            2, 'VAT_CHARGED',          'VAT',   'DR', 2),
   ('SALES_REFUND',            3, 'BANK',                 'GROSS', 'CR', 3),
 
   -- Credit note refund (future entity): provisional — bank vs suspense until the module lands.
@@ -64,7 +66,7 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
 
   -- Other money out: a specific control account (net) + any VAT, out of bank.
   ('OTHER_MONEY_OUT',         1, 'EXPLANATION_CATEGORY', 'NET',   'DR', 1),
-  ('OTHER_MONEY_OUT',         2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('OTHER_MONEY_OUT',         2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('OTHER_MONEY_OUT',         3, 'BANK',                 'GROSS', 'CR', 3),
 
   -- ========================== BANK EXPLANATIONS — MONEY IN ===========================
@@ -92,7 +94,7 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   -- Sales: cash in, income recognised (net) + output VAT.
   ('SALES',                   1, 'BANK',                 'GROSS', 'DR', 1),
   ('SALES',                   2, 'EXPLANATION_CATEGORY', 'NET',   'CR', 2),
-  ('SALES',                   3, 'VAT_CONTROL',          'VAT',   'CR', 3),
+  ('SALES',                   3, 'VAT_CHARGED',          'VAT',   'CR', 3),
 
   -- Transfer from another account: into this bank, out of the source bank.
   ('TRANSFER_FROM_ACCOUNT',   1, 'BANK',                 'GROSS', 'DR', 1),
@@ -101,7 +103,7 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   -- Refund received into a category (net) + VAT reclaimed back.
   ('REFUND',                  1, 'BANK',                 'GROSS', 'DR', 1),
   ('REFUND',                  2, 'EXPLANATION_CATEGORY', 'NET',   'CR', 2),
-  ('REFUND',                  3, 'VAT_CONTROL',          'VAT',   'CR', 3),
+  ('REFUND',                  3, 'VAT_RECLAIMED',        'VAT',   'CR', 3),
 
   -- Bill refund: supplier returns money against a payable.
   ('BILL_REFUND',             1, 'BANK',                 'GROSS', 'DR', 1),
@@ -114,7 +116,7 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   -- Disposal of a capital asset: into bank, credit the 604 disposal account (net) + output VAT.
   ('DISPOSAL_CAPITAL_ASSET',  1, 'BANK',                 'GROSS', 'DR', 1),
   ('DISPOSAL_CAPITAL_ASSET',  2, 'EXPLANATION_CATEGORY', 'NET',   'CR', 2),
-  ('DISPOSAL_CAPITAL_ASSET',  3, 'VAT_CONTROL',          'VAT',   'CR', 3),
+  ('DISPOSAL_CAPITAL_ASSET',  3, 'VAT_CHARGED',          'VAT',   'CR', 3),
 
   -- HP refund (future entity): provisional — bank vs suspense.
   ('HP_REFUND',               1, 'BANK',                 'GROSS', 'DR', 1),
@@ -123,22 +125,22 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   -- Other money in: a specific account (net) + any VAT, into bank.
   ('OTHER_MONEY_IN',          1, 'BANK',                 'GROSS', 'DR', 1),
   ('OTHER_MONEY_IN',          2, 'EXPLANATION_CATEGORY', 'NET',   'CR', 2),
-  ('OTHER_MONEY_IN',          3, 'VAT_CONTROL',          'VAT',   'CR', 3),
+  ('OTHER_MONEY_IN',          3, 'VAT_CHARGED',          'VAT',   'CR', 3),
 
   -- ============================ NON-BANK ECONOMIC EVENTS =============================
   -- Expense approved (claimant paid personally): expense (net) + input VAT, owed back to the user.
   ('EXPENSE_APPROVED',        1, 'SOURCE_CATEGORY',      'NET',   'DR', 1),
-  ('EXPENSE_APPROVED',        2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('EXPENSE_APPROVED',        2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('EXPENSE_APPROVED',        3, 'USER_ACCOUNT',         'GROSS', 'CR', 3),
 
   -- Invoice sent: receivable up (gross) against income (net) + output VAT.
   ('INVOICE_SENT',            1, 'DEBTORS',              'GROSS', 'DR', 1),
   ('INVOICE_SENT',            2, 'SALES_DEFAULT',        'NET',   'CR', 2),
-  ('INVOICE_SENT',            3, 'VAT_CONTROL',          'VAT',   'CR', 3),
+  ('INVOICE_SENT',            3, 'VAT_CHARGED',          'VAT',   'CR', 3),
 
   -- Bill created (unpaid): expense (net) + input VAT against a payable.
   ('BILL_CREATED',            1, 'SOURCE_CATEGORY',      'NET',   'DR', 1),
-  ('BILL_CREATED',            2, 'VAT_CONTROL',          'VAT',   'DR', 2),
+  ('BILL_CREATED',            2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('BILL_CREATED',            3, 'CREDITORS',            'GROSS', 'CR', 3),
 
   -- Bank opening balance: opening cash against the opening-balances equity contra.

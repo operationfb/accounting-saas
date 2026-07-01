@@ -192,14 +192,19 @@ WHERE l.organisation_id = $1
   AND c.nominal_code = $2
   AND ($3::date IS NULL OR e.entry_date >= $3)
   AND e.entry_date <= $4
+  AND ($5::bool
+       OR (NOT e.is_reversal
+           AND NOT EXISTS (SELECT 1 FROM gl_journal_entries r
+                           WHERE r.reverses_entry_id = e.id)))
 ORDER BY e.entry_date, e.created_at
 `
 
 type GetAccountTransactionsParams struct {
-	OrganisationID uuid.UUID   `json:"organisation_id"`
-	NominalCode    string      `json:"nominal_code"`
-	FromDate       pgtype.Date `json:"from_date"`
-	ToDate         pgtype.Date `json:"to_date"`
+	OrganisationID    uuid.UUID   `json:"organisation_id"`
+	NominalCode       string      `json:"nominal_code"`
+	FromDate          pgtype.Date `json:"from_date"`
+	ToDate            pgtype.Date `json:"to_date"`
+	IncludeSuperseded bool        `json:"include_superseded"`
 }
 
 type GetAccountTransactionsRow struct {
@@ -213,16 +218,24 @@ type GetAccountTransactionsRow struct {
 
 // The general-ledger lines posted to ONE account (by nominal_code) for an org, over
 // an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
-// (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
-// are real lines). Ordered chronologically (entry_date, then insertion order) so the
-// report reads top-to-bottom in time. Backs the Account Transactions report (the
-// trial-balance drill-down).
+// (DR +, CR -) drives the Debit/Credit split in Go. Ordered chronologically
+// (entry_date, then insertion order) so the report reads top-to-bottom in time. Backs
+// the Account Transactions report (the trial-balance drill-down).
+//
+// By DEFAULT (include_superseded = FALSE) this hides superseded/reversed activity: both
+// a reversal entry (is_reversal) AND the entry a reversal points at are dropped, leaving
+// only the EFFECTIVE (live) entries — the same predicate as GetJournalEntryForSource.
+// Every such (original + reversal) pair nets to zero on every account, so hiding them
+// does NOT change total_debit/total_credit or the agreement with the Trial Balance
+// (which, unlike this drill-down, keeps reversals in to stay balanced). Pass
+// include_superseded = TRUE to reveal the full reversal chain for auditing.
 func (q *Queries) GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, getAccountTransactions,
 		arg.OrganisationID,
 		arg.NominalCode,
 		arg.FromDate,
 		arg.ToDate,
+		arg.IncludeSuperseded,
 	)
 	if err != nil {
 		return nil, err

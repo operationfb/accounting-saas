@@ -12,6 +12,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
+import Checkbox from 'primevue/checkbox'
 import AppLayout from '@/layouts/AppLayout.vue'
 import { listReportAccounts, getAccountTransactions } from '@/services/reports.service'
 import { formatNumber, formatDate } from '@/lib/format'
@@ -24,6 +25,10 @@ const router = useRouter()
 const accounts = ref<AccountSummary[]>([])
 const selectedAccount = ref<string>('') // the nominal code
 const datePreset = ref<string>('all')
+// Superseded/reversed activity (an edited or reopened invoice leaves an original +
+// its reversal that net to zero) is hidden by default; ticking this reveals the full
+// reversal chain for auditing. See the API's include_superseded flag.
+const includeSuperseded = ref(false)
 
 const report = ref<AccountTransactions | null>(null)
 const loading = ref(false)
@@ -136,7 +141,7 @@ async function load() {
   error.value = ''
   try {
     const { from, to } = rangeFor(datePreset.value)
-    report.value = await getAccountTransactions(selectedAccount.value, from, to)
+    report.value = await getAccountTransactions(selectedAccount.value, from, to, includeSuperseded.value)
   } catch (err) {
     report.value = null
     error.value = (err as ApiError)?.message ?? 'Could not load the account transactions.'
@@ -155,6 +160,9 @@ function apply() {
     router.replace({ query: { ...route.query, account: selectedAccount.value } })
   }
 }
+
+// Toggling the superseded filter re-fetches (load() no-ops until an account is chosen).
+watch(includeSuperseded, load)
 
 onMounted(loadAccounts)
 
@@ -201,6 +209,15 @@ watch(
         />
       </div>
       <Button label="Apply" :disabled="!selectedAccount" @click="apply" />
+
+      <!-- Reveal the reversal chain (superseded originals + their reversals), hidden
+           by default. Pushed to the right edge of the strip. -->
+      <div class="ml-auto flex items-center gap-2 self-center">
+        <Checkbox v-model="includeSuperseded" binary input-id="include-superseded" />
+        <label for="include-superseded" class="cursor-pointer text-[13px] text-fa-muted">
+          Show superseded / reversed entries
+        </label>
+      </div>
     </div>
 
     <div class="overflow-hidden rounded-[5px] border border-fa-border bg-white">

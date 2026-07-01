@@ -140,10 +140,18 @@ ORDER BY c.nominal_code;
 -- name: GetAccountTransactions :many
 -- The general-ledger lines posted to ONE account (by nominal_code) for an org, over
 -- an OPTIONAL date range (from_date NULL = open lower bound). Signed base_amount_minor
--- (DR +, CR -) drives the Debit/Credit split in Go. Reversal lines ARE included (they
--- are real lines). Ordered chronologically (entry_date, then insertion order) so the
--- report reads top-to-bottom in time. Backs the Account Transactions report (the
--- trial-balance drill-down).
+-- (DR +, CR -) drives the Debit/Credit split in Go. Ordered chronologically
+-- (entry_date, then insertion order) so the report reads top-to-bottom in time. Backs
+-- the Account Transactions report (the trial-balance drill-down).
+--
+-- By DEFAULT (include_superseded = FALSE) this hides superseded/reversed activity: both
+-- a reversal entry (is_reversal) AND the entry a reversal points at are dropped, leaving
+-- only the EFFECTIVE (live) entries — the same predicate as GetJournalEntryForSource.
+-- Every such (original + reversal) pair nets to zero on the account, so hiding it leaves
+-- the account's NET balance unchanged — and makes the report's Debit/Credit column
+-- totals reconcile with the Trial Balance figure. (Showing the pair instead inflates
+-- both columns by the same amount: the net is preserved but the column totals grow.)
+-- Pass include_superseded = TRUE to reveal the full reversal chain for auditing.
 SELECT e.entry_date,
        e.narrative,
        e.source_type,
@@ -157,6 +165,10 @@ WHERE l.organisation_id = $1
   AND c.nominal_code = sqlc.arg(nominal_code)
   AND (sqlc.narg(from_date)::date IS NULL OR e.entry_date >= sqlc.narg(from_date))
   AND e.entry_date <= sqlc.arg(to_date)
+  AND (sqlc.arg(include_superseded)::bool
+       OR (NOT e.is_reversal
+           AND NOT EXISTS (SELECT 1 FROM gl_journal_entries r
+                           WHERE r.reverses_entry_id = e.id)))
 ORDER BY e.entry_date, e.created_at;
 
 -- name: LockSource :exec

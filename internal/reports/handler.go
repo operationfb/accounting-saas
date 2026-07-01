@@ -107,7 +107,11 @@ func (h *Handler) AccountTransactions(c *gin.Context) {
 		to = parsed
 	}
 
-	res, err := h.svc.AccountTransactions(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), nominal, from, to)
+	// Superseded/reversed activity is hidden by default; ?include_superseded=true
+	// reveals the full reversal chain for auditing.
+	includeSuperseded := c.Query("include_superseded") == "true"
+
+	res, err := h.svc.AccountTransactions(c.Request.Context(), kernel.GetAuthUserID(c), kernel.GetAuthOrgID(c), nominal, from, to, includeSuperseded)
 	if err != nil {
 		kernel.RespondError(c, err)
 		return

@@ -86,7 +86,7 @@ CREATE TABLE gl_posting_rules (
     --   PAYROLL_DIRECTOR_*    director variants of the three employer-cost expense legs
     --                          (407/408/409); staff use the plain PAYROLL_*_EXPENSE (401/402/403)
     account_role         VARCHAR(50) NOT NULL CHECK (account_role IN (
-                            'BANK','DEBTORS','CREDITORS','VAT_CONTROL','USER_ACCOUNT',
+                            'BANK','DEBTORS','CREDITORS','VAT_CONTROL','VAT_CHARGED','VAT_RECLAIMED','USER_ACCOUNT',
                             'OPENING_EQUITY','EXPLANATION_CATEGORY','SOURCE_CATEGORY',
                             'SALES_DEFAULT','TRANSFER_SOURCE_BANK','TRANSFER_DEST_BANK',
                             'SUSPENSE',
@@ -343,6 +343,6 @@ COMMENT ON TABLE  gl_journal_lines IS 'Journal legs. MULTI-CURRENCY: currency/am
 COMMENT ON TABLE  gl_posting_rules IS 'The double-entry mapping AS DATA: per economic event, the journal legs (account role + money component + Dr/Cr). GLOBAL reference (no organisation_id), like transaction_types. A generic interpreter reads these to post balanced journal entries; validated against FreeAgent''s chart/trial balance.';
 COMMENT ON TABLE  gl_account_roles IS 'Maps a fixed control account_role (DEBTORS, VAT_CONTROL, USER_ACCOUNT, …) to the nominal_code it posts to, soft-linked to per-org categories by nominal_code. Overridable per organisation_id / country_code (both NULL = global default); the resolver picks the most specific match: org → country → company_type → global. Entity-derived roles (EXPLANATION_CATEGORY, BANK) are NOT here — they resolve from the event''s links.';
 COMMENT ON COLUMN gl_posting_rules.event_code   IS 'Bank explanations: == transaction_types.code (PAYMENT, SALES, …). Non-bank: synthetic (EXPENSE_APPROVED, INVOICE_SENT, BILL_CREATED, BANK_OPENING). Free text — no FK (synthetic codes have no transaction_types row).';
-COMMENT ON COLUMN gl_posting_rules.account_role IS 'Symbolic posting target resolved to a categories row at post time (BANK, DEBTORS, CREDITORS, VAT_CONTROL, USER_ACCOUNT, EXPLANATION_CATEGORY, …). EXPLANATION_CATEGORY/SOURCE_CATEGORY resolve to the live picked category.';
+COMMENT ON COLUMN gl_posting_rules.account_role IS 'Symbolic posting target resolved to a categories row at post time (BANK, DEBTORS, CREDITORS, VAT_CHARGED (output VAT/819), VAT_RECLAIMED (input VAT/818), VAT_CONTROL (817, VAT-return control — reserved), USER_ACCOUNT, EXPLANATION_CATEGORY, …). EXPLANATION_CATEGORY/SOURCE_CATEGORY resolve to the live picked category.';
 COMMENT ON COLUMN gl_posting_rules.amount_basis IS 'Which already-computed money component this leg takes: GROSS, NET or VAT. GROSS = NET + VAT, so an entry of (NET + VAT) against GROSS balances.';
 COMMENT ON COLUMN gl_posting_rules.direction    IS 'DR or CR. The interpreter posts +amount for DR, −amount for CR; the legs of an event sum to zero. A leg resolving to amount 0 (no VAT) is dropped.';

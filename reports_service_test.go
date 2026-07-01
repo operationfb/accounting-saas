@@ -574,6 +574,152 @@ func TestAccountTransactionsMultiTenant(t *testing.T) {
 	}
 }
 
+// seedGLEntry inserts one balanced journal entry (header + lines) with full control
+// over is_reversal / reverses_entry_id, returning the new entry's id. Unlike
+// postSourcedEntry it can reproduce what the real ledger poster writes when it
+// supersedes: a reversal that POINTS AT its original (reverses_entry_id). Cleanup is
+// LIFO, so a reversal seeded after its original is deleted first — satisfying the FK.
+// Legs must sum to zero.
+func seedGLEntry(t *testing.T, ts *testServer, orgID string, entryDate time.Time, sourceType, sourceID, narrative string, isReversal bool, reversesEntryID string, lines ...jline) string {
+	t.Helper()
+	ctx := context.Background()
+
+	var sum int64
+	for _, l := range lines {
+		sum += l.amount
+	}
+	if sum != 0 {
+		t.Fatalf("seedGLEntry: legs do not balance (Σ = %d); fix the test", sum)
+	}
+
+	tx, err := ts.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("seedGLEntry: begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// "" → SQL NULL for the optional source_id / reverses_entry_id columns.
+	var src, rev any
+	if sourceID != "" {
+		src = sourceID
+	}
+	if reversesEntryID != "" {
+		rev = reversesEntryID
+	}
+
+	var entryID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO gl_journal_entries
+		   (organisation_id, entry_date, base_currency, source_type, source_id, narrative, is_reversal, reverses_entry_id)
+		 VALUES ($1, $2, 'GBP', $3, $4, $5, $6, $7)
+		 RETURNING id`, orgID, entryDate, sourceType, src, narrative, isReversal, rev).Scan(&entryID); err != nil {
+		t.Fatalf("seedGLEntry: insert entry: %v", err)
+	}
+	t.Cleanup(func() {
+		purgeGLEntries(ctx, t, ts.pool, `id = $1`, entryID)
+	})
+
+	for _, l := range lines {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO gl_journal_lines
+			   (journal_entry_id, organisation_id, account_id, currency, amount_minor, base_amount_minor)
+			 VALUES ($1, $2, $3, 'GBP', $4, $4)`,
+			entryID, orgID, l.accountID, l.amount); err != nil {
+			t.Fatalf("seedGLEntry: insert line: %v", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("seedGLEntry: commit (balance trigger?): %v", err)
+	}
+	return entryID
+}
+
+// getAccountTransactionsInc is getAccountTransactions with the include_superseded flag
+// (the default helper omits it, i.e. hidden).
+func getAccountTransactionsInc(t *testing.T, ts *testServer, authHeader, account string, includeSuperseded bool) *httptest.ResponseRecorder {
+	t.Helper()
+	q := url.Values{}
+	q.Set("account", account)
+	if includeSuperseded {
+		q.Set("include_superseded", "true")
+	}
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/reports/account-transactions?"+q.Encode(), nil)
+	req.Header.Set("Authorization", authHeader)
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAccountTransactionsHidesSuperseded confirms the report hides superseded activity
+// AND its reversal by default, leaving only the EFFECTIVE (live) entries — and that
+// ?include_superseded=true reveals the full chain. Two shapes are seeded exactly as the
+// poster writes them: a reverse-then-repost (invoice edited £1,000 → £1,500) and an
+// invoice reopen (a reversal with NO fresh entry — the item is undone). Because each
+// (original + reversal) pair nets to zero, hiding them leaves the account's NET balance
+// unchanged; the column totals differ (showing a pair inflates both columns equally).
+func TestAccountTransactionsHidesSuperseded(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	orgID, ownerID := newOrgWithOwner(t, ts)
+	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
+	sales := seedCategory(t, ts, orgID, "001", "Sales", "INCOME")
+
+	today := time.Now()
+
+	// Reverse-then-repost: original £1,000, its reversal, then the fresh live £1,500.
+	inv := uuid.NewString()
+	orig := seedGLEntry(t, ts, orgID, today, "INVOICE", inv, "Invoice 001", false, "",
+		jline{debtors, 100000}, jline{sales, -100000})
+	seedGLEntry(t, ts, orgID, today, "INVOICE", inv, "Superseded (re-posted)", true, orig,
+		jline{debtors, -100000}, jline{sales, 100000})
+	seedGLEntry(t, ts, orgID, today, "INVOICE", inv, "Invoice 001", false, "",
+		jline{debtors, 150000}, jline{sales, -150000})
+
+	// Invoice reopen: an original £900 and its reversal, with NO fresh entry (undone).
+	reopened := uuid.NewString()
+	roOrig := seedGLEntry(t, ts, orgID, today, "INVOICE", reopened, "Invoice 002", false, "",
+		jline{debtors, 90000}, jline{sales, -90000})
+	seedGLEntry(t, ts, orgID, today, "INVOICE", reopened, "Reversed (reopened)", true, roOrig,
+		jline{debtors, -90000}, jline{sales, 90000})
+
+	authHeader := bearer(t, ts, ownerID, orgID)
+
+	// --- Default: hidden. Only the live £1,500 line survives on Sales. ---
+	rec := getAccountTransactionsInc(t, ts, authHeader, "001", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+	}
+	at := decodeAccountTransactions(t, rec.Body.Bytes())
+	if len(at.Rows) != 1 {
+		t.Fatalf("default rows: got %d, want 1 (live only) — %+v", len(at.Rows), at.Rows)
+	}
+	if at.Rows[0].Credit != "1500.00" || at.Rows[0].Debit != "" {
+		t.Errorf("default live row: got debit=%q credit=%q, want \"\"/1500.00", at.Rows[0].Debit, at.Rows[0].Credit)
+	}
+	// Column totals reconcile with the account's net balance (£1,500 CR).
+	if at.TotalCredit != "1500.00" || at.TotalDebit != "0.00" {
+		t.Errorf("default totals: got debit=%q credit=%q, want 0.00/1500.00", at.TotalDebit, at.TotalCredit)
+	}
+
+	// --- include_superseded=true: the full chain. 5 Sales lines: original CR1000,
+	// reversal DR1000, live CR1500, reopened CR900, its reversal DR900. ---
+	recAll := getAccountTransactionsInc(t, ts, authHeader, "001", true)
+	if recAll.Code != http.StatusOK {
+		t.Fatalf("include_superseded: expected 200, got %d — body: %s", recAll.Code, recAll.Body.String())
+	}
+	all := decodeAccountTransactions(t, recAll.Body.Bytes())
+	if len(all.Rows) != 5 {
+		t.Fatalf("include_superseded rows: got %d, want 5 (full chain) — %+v", len(all.Rows), all.Rows)
+	}
+	// The reversals inflate both columns equally, so the NET (credit − debit = £1,500)
+	// is preserved even though the raw column totals grow.
+	if all.TotalDebit != "1900.00" || all.TotalCredit != "3400.00" {
+		t.Errorf("include_superseded totals: got debit=%q credit=%q, want 1900.00/3400.00", all.TotalDebit, all.TotalCredit)
+	}
+}
+
 // TestReportAccountsList confirms GET /reports/accounts returns the org's active
 // accounts and requires auth.
 func TestReportAccountsList(t *testing.T) {

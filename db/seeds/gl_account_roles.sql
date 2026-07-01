@@ -18,7 +18,9 @@
 INSERT INTO gl_account_roles (role, nominal_code) VALUES
   ('DEBTORS',        '681'),   -- Trade Debtors
   ('CREDITORS',      '796'),   -- Trade Creditors
-  ('VAT_CONTROL',    '817'),   -- VAT
+  ('VAT_CONTROL',    '817'),   -- VAT-return control account (817). Reserved: no posting rule uses it after the 818/819 split — the future VAT-return process nets 818 + 819 into it.
+  ('VAT_CHARGED',    '819'),   -- Output VAT charged on sales (INVOICE_SENT / SALES / DISPOSAL / OTHER_MONEY_IN / SALES_REFUND)
+  ('VAT_RECLAIMED',  '818'),   -- Input VAT reclaimed on purchases (PAYMENT / PURCHASE_CAPITAL_ASSET / OTHER_MONEY_OUT / REFUND / EXPENSE_APPROVED / BILL_CREATED)
   ('SALES_DEFAULT',  '001'),   -- Sales (until invoices carry per-line categories)
   ('OPENING_EQUITY', '968'),   -- provisional (FreeAgent "Profit and Loss" reserve)
   ('SUSPENSE',       '999'),   -- Suspense Account
