@@ -126,6 +126,10 @@ type UserResponse struct {
 	AddressLine4  *string `json:"address_line_4,omitempty"`
 	Postcode      *string `json:"postcode,omitempty"`
 	EmailVerified bool    `json:"email_verified"`
+	// IsSuperuser marks a platform-wide superuser (read-only "god view" over all
+	// orgs/users). Surfaced here so the SPA can show the admin dashboard link. It
+	// is set MANUALLY in the DB (no self-service endpoint), never via the API.
+	IsSuperuser bool `json:"is_superuser"`
 }
 
 // OrganisationResponse is the safe public view of the organisation the session
@@ -174,6 +178,7 @@ func NewUserResponse(u auth.User) UserResponse {
 		AddressLine4:            kernel.NullTextToPtr(u.AddressLine4),
 		Postcode:                kernel.NullTextToPtr(u.Postcode),
 		EmailVerified:           u.EmailVerifiedAt.Valid, // verified iff the timestamp is set
+		IsSuperuser:             u.IsSuperuser,
 	}
 }
 

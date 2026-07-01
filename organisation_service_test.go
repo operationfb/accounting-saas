@@ -108,7 +108,6 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 			Town:                    ptr("London"),
 			Region:                  ptr("Greater London"),
 			Postcode:                ptr("SW19 8PP"),
-			CountryCode:             "gb", // lowercase on purpose — service must upper-case it
 			BusinessPhone:           ptr("07340310347"),
 			ContactEmail:            ptr("hello@axion.example"),
 			ContactPhone:            ptr("020 7946 0000"),
@@ -129,8 +128,10 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		if got.Name != "AXION LONDON LIMITED" {
 			t.Errorf("name: got %q, want %q", got.Name, "AXION LONDON LIMITED")
 		}
+		// country_code is immutable here — it's not on the request; the response
+		// should carry the org's creation-time country ('GB' from newOrgWithOwner).
 		if got.CountryCode != "GB" {
-			t.Errorf("country_code: got %q, want %q (should be upper-cased)", got.CountryCode, "GB")
+			t.Errorf("country_code: got %q, want %q (preserved from creation)", got.CountryCode, "GB")
 		}
 		assertOrgStrPtr(t, "company_type", got.CompanyType, "limited")
 		assertOrgStrPtr(t, "companies_house_number", got.CompaniesHouseNumber, "17153114")
@@ -202,15 +203,6 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid country_code → 400 binding", func(t *testing.T) {
-		orgB, ownerB := newOrgWithOwner(t, ts)
-		rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-			organisation.UpdateOrganisationRequest{Name: "X", CountryCode: "GBR"}) // 3 letters fails len=2
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
-		}
-	})
-
 	t.Run("requires auth → 401", func(t *testing.T) {
 		rec := putOrganisation(t, ts, "", organisation.UpdateOrganisationRequest{Name: "X"})
 		if rec.Code != http.StatusUnauthorized {
@@ -236,7 +228,6 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 		req  organisation.UpdateOrganisationRequest
 	}{
 		{"invalid company_type", organisation.UpdateOrganisationRequest{Name: "X", CompanyType: ptr("plc")}},
-		{"invalid country_code", organisation.UpdateOrganisationRequest{Name: "X", CountryCode: "ZZZ"}},
 		{"blank name", organisation.UpdateOrganisationRequest{Name: "   "}},
 	}
 	for _, tc := range cases {
@@ -250,8 +241,9 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 
 // TestOrganisationService_FieldPreservation proves the read-modify-write keeps the
 // columns the Company Details form does NOT edit (slug, native_currency, timezone,
-// vrn) while still applying the fields it does — a PUT from this form must not wipe
-// them.
+// vrn) — including country_code + native_currency, which are fixed at creation and
+// immutable here — while still applying the fields it does. A PUT from this form
+// must not wipe or change any of them.
 func TestOrganisationService_FieldPreservation(t *testing.T) {
 	ts := newTestServer(t)
 	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
@@ -262,26 +254,30 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 	orgB, ownerB := newOrgWithOwner(t, ts)
 
 	// Seed the not-on-this-form columns with sentinel values (slug is UNIQUE, so
-	// derive it from the org id).
+	// derive it from the org id). native_currency + country_code are the immutable
+	// creation-time fields: set them to non-default sentinels ('USD', 'FR') to prove
+	// the PUT leaves them alone.
 	slug := "pre-slug-" + orgB
 	if _, err := ts.pool.Exec(context.Background(),
 		`UPDATE organisations
-		    SET slug = $2, native_currency = 'USD', timezone = 'America/New_York', vrn = 'GB999999999'
+		    SET slug = $2, native_currency = 'USD', timezone = 'America/New_York', vrn = 'GB999999999',
+		        country_code = 'FR'
 		  WHERE id = $1`, orgB, slug); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
 
-	// PUT company details — none of slug/native_currency/timezone/vrn are sent.
+	// PUT company details — none of slug/native_currency/timezone/vrn/country_code
+	// are sent (country_code isn't even a field on the request anymore).
 	rec := putOrganisation(t, ts, bearer(t, ts, ownerB, orgB),
-		organisation.UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("landlord"), CountryCode: "GB"})
+		organisation.UpdateOrganisationRequest{Name: "Preserved Co", CompanyType: ptr("landlord")})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
 
-	var gotSlug, gotCur, gotTz, gotVrn, gotName, gotType string
+	var gotSlug, gotCur, gotTz, gotVrn, gotCountry, gotName, gotType string
 	if err := ts.pool.QueryRow(context.Background(),
-		`SELECT slug, native_currency, timezone, vrn, name, company_type FROM organisations WHERE id = $1`,
-		orgB).Scan(&gotSlug, &gotCur, &gotTz, &gotVrn, &gotName, &gotType); err != nil {
+		`SELECT slug, native_currency, timezone, vrn, country_code, name, company_type FROM organisations WHERE id = $1`,
+		orgB).Scan(&gotSlug, &gotCur, &gotTz, &gotVrn, &gotCountry, &gotName, &gotType); err != nil {
 		t.Fatalf("read org: %v", err)
 	}
 	// Preserved.
@@ -296,6 +292,9 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 	}
 	if gotVrn != "GB999999999" {
 		t.Errorf("vrn not preserved: got %q, want GB999999999", gotVrn)
+	}
+	if gotCountry != "FR" {
+		t.Errorf("country_code not preserved (should be immutable): got %q, want FR", gotCountry)
 	}
 	// Edited.
 	if gotName != "Preserved Co" {

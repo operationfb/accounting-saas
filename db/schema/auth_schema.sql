@@ -347,6 +347,18 @@ CREATE TABLE users (
     last_login_ip           INET,                       -- IP address of last login (INET is a native PG type)
 
     -- -------------------------------------------------------------------------
+    -- Platform administration
+    -- -------------------------------------------------------------------------
+    -- Platform-wide superuser. Grants READ-ONLY access to the cross-tenant admin
+    -- dashboard (browse all organisations + users). This is the ONE privilege
+    -- that deliberately breaks org-scoping, so it is set MANUALLY via SQL — like
+    -- provider_credentials there is no self-service endpoint, so a normal API
+    -- caller can never grant it (not even to themselves). Defaults FALSE, so every
+    -- existing account is unaffected and the platform stays fully org-scoped for
+    -- everyone who isn't explicitly flagged.
+    is_superuser            BOOLEAN     NOT NULL DEFAULT FALSE,
+
+    -- -------------------------------------------------------------------------
     -- Lifecycle
     -- -------------------------------------------------------------------------
     is_active               BOOLEAN     NOT NULL DEFAULT TRUE,

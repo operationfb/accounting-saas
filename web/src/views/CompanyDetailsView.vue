@@ -10,6 +10,7 @@
 // The three cards mirror the screenshot: Company details, Other details,
 // About your business.
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRoute, RouterLink } from 'vue-router'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
@@ -19,21 +20,40 @@ import FaCard from '@/components/FaCard.vue'
 import FormRow from '@/components/FormRow.vue'
 import { useAuthStore } from '@/stores/auth'
 import { getOrganisation, updateOrganisation } from '@/services/organisation.service'
+import { getAdminOrganisationDetails, updateAdminOrganisationDetails } from '@/services/admin.service'
+import { listCurrencies } from '@/services/currencies.service'
 import { COMPANY_TYPE_OPTIONS, type OrganisationDetails } from '@/types/organisation'
 import type { UpdateOrganisationRequest } from '@/types/organisation'
 import { COUNTRIES } from '@/lib/countries'
+import { buildCurrencyOptions, type CurrencyOption } from '@/lib/currency'
 import type { ApiError } from '@/lib/api'
 
 const auth = useAuthStore()
+const route = useRoute()
 
-// Only owners/admins may edit (mirrors the backend's owner/admin-only PUT). For
-// everyone else the fields render disabled and the Save/Cancel actions are hidden.
-const canEdit = computed(() => auth.isOrgAdmin)
+// Dual-mode (mirrors MyDetailsView's self vs admin modes):
+//   - SELF  (/company-details)               → the caller's own org, edit if owner/admin.
+//   - ADMIN (/admin/organisations/:id/…)     → a chosen org (god view), edit if superuser.
+// The route param drives the data source, the auth check, and where "back" goes.
+const adminOrgId = computed(() => (route.params.id as string | undefined) || '')
+const isAdminMode = computed(() => adminOrgId.value !== '')
+
+// Who may edit: owner/admin of their own org (self), or a platform superuser (admin
+// mode). For everyone else the fields render disabled and Save/Cancel are hidden.
+const canEdit = computed(() =>
+  isAdminMode.value ? !!auth.user?.is_superuser : auth.isOrgAdmin,
+)
 
 // Simple email shape check (the backend's `email` binding is the final authority).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 const countryOptions = COUNTRIES.map((c) => ({ label: c.name, value: c.code }))
+
+// Currency options for the (read-only) Native currency Select — loaded from the
+// currencies API so the code renders with a friendly "GBP - British Pound" label,
+// exactly like the editable pickers on Bills/Projects. The field itself is always
+// disabled: native_currency is fixed at organisation creation and immutable here.
+const currencyOptions = ref<CurrencyOption[]>([])
 
 // --- form state (seeded with the backend's defaults) ---
 // legalName has no visible field: the backend treats legal_name as a form-owned
@@ -50,6 +70,7 @@ const defaults = () => ({
   region: '',
   postcode: '',
   countryCode: 'GB',
+  nativeCurrency: 'GBP',
   businessPhone: '',
   companiesHouseNumber: '',
   payeReference: '',
@@ -81,6 +102,7 @@ function hydrate(o: OrganisationDetails) {
   form.region = o.region ?? ''
   form.postcode = o.postcode ?? ''
   form.countryCode = o.country_code || 'GB'
+  form.nativeCurrency = o.native_currency || 'GBP'
   form.businessPhone = o.business_phone ?? ''
   form.companiesHouseNumber = o.companies_house_number ?? ''
   form.payeReference = o.paye_reference ?? ''
@@ -98,7 +120,14 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const o = await getOrganisation()
+    // Fetch the org and the currency catalogue together; the catalogue only drives
+    // the read-only Native currency label, so a failure there shouldn't block the
+    // page — fall back to an empty list (the Select then shows the bare code).
+    const [o, currencies] = await Promise.all([
+      isAdminMode.value ? getAdminOrganisationDetails(adminOrgId.value) : getOrganisation(),
+      listCurrencies().catch(() => []),
+    ])
+    currencyOptions.value = buildCurrencyOptions(currencies)
     loaded.value = o
     hydrate(o)
   } catch (err) {
@@ -166,7 +195,8 @@ function buildPayload(): UpdateOrganisationRequest {
     town: opt(form.town),
     region: opt(form.region),
     postcode: opt(form.postcode),
-    country_code: form.countryCode,
+    // country_code + native_currency are NOT sent: both are fixed at creation and
+    // immutable. The backend preserves the stored values regardless.
     business_phone: opt(form.businessPhone),
     contact_email: opt(form.contactEmail),
     contact_phone: opt(form.contactPhone),
@@ -183,11 +213,16 @@ async function submit() {
   if (!validate()) return
   submitting.value = true
   try {
-    const updated = await updateOrganisation(buildPayload())
+    const updated = isAdminMode.value
+      ? await updateAdminOrganisationDetails(adminOrgId.value, buildPayload())
+      : await updateOrganisation(buildPayload())
     loaded.value = updated
     hydrate(updated)
-    // Keep the top bar's company name (and country) in sync after a rename.
-    auth.patchOrganisationSummary({ name: updated.name, country_code: updated.country_code })
+    // Only in SELF mode does this org back the top bar — keep its name/country in
+    // sync after a rename. In admin mode we're editing a DIFFERENT org, so don't.
+    if (!isAdminMode.value) {
+      auth.patchOrganisationSummary({ name: updated.name, country_code: updated.country_code })
+    }
     successMessage.value = 'Company details saved.'
   } catch (err) {
     // 401 is handled by apiFetch. 400/403/422 land here.
@@ -210,7 +245,19 @@ function cancel() {
 
 <template>
   <AppLayout>
-    <h1 class="mb-[18px] text-[22px] font-bold">Company Details</h1>
+    <!-- Admin mode: a back link to the all-organisations list, so the god-view
+         context is clear (we're editing a specific org, not the caller's own). -->
+    <RouterLink
+      v-if="isAdminMode"
+      to="/admin/organisations"
+      class="mb-2 inline-block text-sm text-fa-blue hover:underline"
+    >
+      ← All organisations
+    </RouterLink>
+    <h1 class="mb-[18px] text-[22px] font-bold">
+      Company Details
+      <span v-if="isAdminMode && loaded" class="font-normal text-fa-muted">— {{ loaded.name }}</span>
+    </h1>
 
     <!-- Loading -->
     <FaCard v-if="loading" title="Company details">
@@ -321,6 +368,8 @@ function cancel() {
           />
           <p v-if="errors.postcode" class="text-xs text-[#c0392b]">{{ errors.postcode }}</p>
         </FormRow>
+        <!-- Country + Native currency are fixed at organisation creation and
+             immutable here — always disabled, regardless of role. -->
         <FormRow label="Country" label-for="country">
           <Select
             id="country"
@@ -331,8 +380,21 @@ function cancel() {
             filter
             filter-placeholder="Search countries"
             class="w-full sm:w-72"
-            :disabled="!canEdit"
+            disabled
           />
+          <p class="text-xs text-fa-muted">Set when the organisation was created and can't be changed.</p>
+        </FormRow>
+        <FormRow label="Native currency" label-for="native-currency">
+          <Select
+            id="native-currency"
+            v-model="form.nativeCurrency"
+            :options="currencyOptions"
+            option-label="label"
+            option-value="value"
+            class="w-full sm:w-72"
+            disabled
+          />
+          <p class="text-xs text-fa-muted">Set when the organisation was created and can't be changed.</p>
         </FormRow>
         <FormRow label="Business phone number" label-for="business-phone">
           <InputText

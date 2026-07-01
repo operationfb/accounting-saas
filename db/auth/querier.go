@@ -163,12 +163,28 @@ type Querier interface {
 	// so the application can decide whether to lock the account (then call LockUser).
 	// -----------------------------------------------------------------------------
 	IncrementFailedLogin(ctx context.Context, id uuid.UUID) (int32, error)
+	// =============================================================================
+	// PLATFORM ADMIN (superuser / "god view") — CROSS-TENANT READS
+	// These three queries deliberately span ALL organisations/users (no
+	// organisation_id filter). They are the ONLY queries in the codebase that are
+	// not org-scoped, so they are gated by is_superuser in the platformadmin service
+	// (a normal caller can never reach them). Read-only — no writes here.
+	// =============================================================================
+	// Every live organisation with a member count, for the god-view org list.
+	ListAllOrganisations(ctx context.Context) ([]ListAllOrganisationsRow, error)
+	// Every live user, for the god-view user list. Exposes is_superuser so the UI can
+	// badge other admins. No secrets (no password hash / tokens).
+	ListAllUsers(ctx context.Context) ([]ListAllUsersRow, error)
 	// -----------------------------------------------------------------------------
 	// ListMembersByOrganisation
 	// The members admin page: every member of an organisation joined to their user
 	// profile. Projects only the fields the UI needs (no password_hash).
 	// -----------------------------------------------------------------------------
 	ListMembersByOrganisation(ctx context.Context, organisationID uuid.UUID) ([]ListMembersByOrganisationRow, error)
+	// Every organisation a given user belongs to (ALL statuses, not just active), for
+	// the god-view user drill-in. Distinct from ListOrganisationsForUser, which filters
+	// to active memberships and powers the org switcher.
+	ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]ListMembershipsForUserRow, error)
 	// -----------------------------------------------------------------------------
 	// ListOrganisationsForUser
 	// All organisations a user actively belongs to, with their role at each — this

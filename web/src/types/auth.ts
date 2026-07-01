@@ -21,6 +21,10 @@ export const UserSchema = z.object({
   address_line_4: z.string().nullish(),
   postcode: z.string().nullish(),
   email_verified: z.boolean(),
+  // Platform-wide superuser (read-only "god view" over all orgs/users). Drives the
+  // admin dashboard link. Defaults false so a session persisted before this field
+  // existed (or any non-superuser) is simply treated as a normal user.
+  is_superuser: z.boolean().default(false),
 })
 export type User = z.infer<typeof UserSchema>
 
@@ -64,3 +68,15 @@ export interface LoginRequest {
   email: string
   password: string
 }
+
+// GET /me/organisations success body — every organisation the caller actively
+// belongs to (with their role at each), for the top-bar org switcher. Each entry
+// is the same Organisation shape the login response returns.
+export const MyOrganisationsResponseSchema = z.object({
+  organisations: z.array(OrganisationSchema),
+})
+export type MyOrganisationsResponse = z.infer<typeof MyOrganisationsResponseSchema>
+
+// POST /me/organisations/switch returns the SAME body as login (a fresh
+// access_token scoped to the target org, plus the user + organisation), so it
+// reuses LoginResponseSchema — the client stores it exactly like a login.

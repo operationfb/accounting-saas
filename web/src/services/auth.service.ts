@@ -1,5 +1,10 @@
 import { apiFetch } from '@/lib/api'
-import { LoginResponseSchema, type LoginResponse } from '@/types/auth'
+import {
+  LoginResponseSchema,
+  MyOrganisationsResponseSchema,
+  type LoginResponse,
+  type Organisation,
+} from '@/types/auth'
 
 // Calls POST /auth/login.
 //   - auth:false           → no bearer token to send yet
@@ -40,4 +45,22 @@ export async function resetPassword(token: string, password: string): Promise<{ 
     skipAuthRedirect: true,
     body: { password },
   })
+}
+
+// Calls GET /me/organisations — every organisation the signed-in user belongs to,
+// for the top-bar switcher. Authenticated (bearer token attached by default).
+export async function listMyOrganisations(): Promise<Organisation[]> {
+  const data = await apiFetch<unknown>('/me/organisations')
+  return MyOrganisationsResponseSchema.parse(data).organisations
+}
+
+// Calls POST /me/organisations/switch — re-scope the session to another org the
+// user belongs to. The backend returns a fresh access token (same body as login),
+// which the caller stores in place of the current session.
+export async function switchOrganisation(organisationId: string): Promise<LoginResponse> {
+  const data = await apiFetch<unknown>('/me/organisations/switch', {
+    method: 'POST',
+    body: { organisation_id: organisationId },
+  })
+  return LoginResponseSchema.parse(data)
 }

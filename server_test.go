@@ -76,6 +76,7 @@ import (
 	ocr "github.com/operationfb/accounting-saas/internal/ocr"
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	payroll "github.com/operationfb/accounting-saas/internal/payroll"
+	platformadmin "github.com/operationfb/accounting-saas/internal/platformadmin"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	reports "github.com/operationfb/accounting-saas/internal/reports"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
@@ -226,7 +227,7 @@ func newTestServer(t *testing.T) *testServer {
 	memberSvc := members.NewService(pool, authQueries)
 	organisationSvc := organisation.NewService(authQueries)
 	vatSvc := vat.NewService(authQueries, vatQueries, nil /* HMRC not wired in tests */)
-	userSvc := userauth.NewService(authQueries)
+	userSvc := userauth.NewService(authQueries, tokenMaker, time.Minute)
 	// Email-to-expense: wire a real service with a FAKE HTML renderer (so HTML-body
 	// tests don't need a Gotenberg server) and a fixed signing key (so signature
 	// tests can compute a valid HMAC). Capture still flows through the real
@@ -286,6 +287,7 @@ func newTestServer(t *testing.T) *testServer {
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	payroll.NewHandler(payroll.NewService(pool, dbpayroll.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
 	organisation.NewHandler(organisationSvc).RegisterRoutes(server.Router(), tokenMaker)
+	platformadmin.NewHandler(platformadmin.NewService(pool, authQueries, organisationSvc)).RegisterRoutes(server.Router(), tokenMaker)
 	vat.NewHandler(vatSvc, vat.FraudConfig{}).RegisterRoutes(server.Router(), tokenMaker)
 	// Reports: read-only financial reports over the ledger (Trial Balance). Mirrors main.
 	reports.NewHandler(reports.NewService(dbledger.New(pool), dbcategories.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)

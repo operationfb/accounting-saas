@@ -8,6 +8,18 @@ _Last updated: 2026-06-24_
 
 ## Auth & authorization
 
+- **God-view: impersonation / act-as another org.** The platform superuser
+  (`users.is_superuser`, `internal/platformadmin`) is deliberately READ-ONLY — it
+  browses all orgs/users but cannot enter an org and act. A future "assume org"
+  mode would re-mint a token scoped to any org (not just the superuser's
+  memberships), likely with an audit trail. _Files: `internal/platformadmin`,
+  `internal/userauth` (switch endpoint could be generalised)._
+
+- **God-view: pagination on the admin lists.** `ListAllOrganisations` /
+  `ListAllUsers` return every row unbounded (fine at dev scale). Add LIMIT/OFFSET
+  (or keyset) + a search box before the platform grows. _Files:
+  `db/queries/auth.sql`, `internal/platformadmin`, `web/src/views/admin`._
+
 - **Widen org-wide read beyond owner/admin.** `isOrgAdmin` currently grants
   read-all to `owner` + `admin` only. The schema documents `accountant` and
   `read_only` as read-all financial roles — decide whether they should also see
@@ -332,6 +344,25 @@ module's to write. Tested in `bill_service_test.go` + `money/money_test.go` (`Ex
 
 ## Organisation / Company details
 
+- **Assign an owner / members to a superuser-created org.** The god-view "Create
+  Organisation" flow (`internal/platformadmin.CreateOrganisation` +
+  `POST /api/v1/admin/organisations`) makes an **empty** org (no members) plus its
+  chart of accounts. Nobody can log into it until a membership exists — add a
+  god-view "add/assign user to org" action (create `owner` membership, optionally
+  create the user). _Files: `internal/platformadmin`, `db/queries/auth.sql`
+  (`CreateMembership`), `web/src/views/admin/`._
+- **Set company_type / timezone / slug at org creation.** The create form collects
+  only name + country + currency; `company_type` and address are set afterward on
+  Company Details, `timezone` defaults to `Europe/London`, and `slug` is
+  auto-derived from the name (kebab-case, name clash → 409) and not user-editable.
+  Consider a timezone picker + an editable/validated slug. _Files:
+  `internal/platformadmin` (`slugify`, `CreateOrganisation`), `db/queries/auth.sql`._
+- **Self-service signup.** There is still no public registration flow; orgs are
+  created only by a superuser (above) or seeds. A real signup would create the
+  founding user + org + owner membership + CoA in one flow. Country + native
+  currency are chosen there; changing them afterwards stays disallowed (would
+  require re-denominating stored money). _Files: future signup handler,
+  `db/queries/auth.sql`, `internal/organisation`._
 - **Backfill + drop `registered_address`.** The structured address columns
   (`address_line_1..3`, `town`, `region`, `postcode`) supersede the legacy
   free-text `registered_address`, which is no longer written but kept for

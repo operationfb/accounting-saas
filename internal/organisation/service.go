@@ -99,11 +99,18 @@ func (s *Service) GetOrganisation(
 	if _, err := s.authorize(ctx, authUserID, authOrgID); err != nil {
 		return nil, err
 	}
+	return s.GetByID(ctx, authOrgID)
+}
 
-	org, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+// GetByID fetches an organisation's company details by id, with NO authorisation
+// — the CALLER is responsible for it. The self handler (GetOrganisation) checks
+// membership first; the platform-admin handler checks superuser first and then
+// calls this cross-tenant. Kept separate so the read logic isn't duplicated.
+func (s *Service) GetByID(ctx context.Context, orgID uuid.UUID) (*OrganisationDetailsResponse, error) {
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+			return nil, kernel.ErrNotFound("organisation", orgID.String())
 		}
 		return nil, kernel.ErrInternal(err)
 	}
@@ -136,17 +143,25 @@ func (s *Service) UpdateOrganisation(
 	if !kernel.IsOrgAdmin(role) {
 		return nil, kernel.ErrForbidden("only owners and admins can edit company details")
 	}
+	return s.UpdateByID(ctx, authOrgID, req)
+}
 
+// UpdateByID applies the company-details read-modify-write to an organisation by
+// id, with NO authorisation — the CALLER is responsible for it (the self handler
+// checks owner/admin membership; the platform-admin handler checks superuser and
+// calls this cross-tenant). country_code + native_currency (and slug/vrn/timezone)
+// are preserved from the stored row, so they stay immutable on either path.
+func (s *Service) UpdateByID(
+	ctx context.Context,
+	orgID uuid.UUID,
+	req UpdateOrganisationRequest,
+) (*OrganisationDetailsResponse, error) {
 	// Validate / normalise. name is the org's NOT NULL primary name, so it is
 	// required (the form's "Company name"). The binding `required` tag catches a
 	// missing value at the HTTP edge; this re-check covers direct/test callers.
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return nil, kernel.ErrValidation("name is required", nil)
-	}
-	countryCode, err := kernel.NormaliseCountryCode(req.CountryCode)
-	if err != nil {
-		return nil, err
 	}
 	companyType, err := normaliseCompanyType(req.CompanyType)
 	if err != nil {
@@ -155,23 +170,25 @@ func (s *Service) UpdateOrganisation(
 
 	// Read first so we can preserve the fields this form does not edit (and to
 	// 404 if the org was soft-deleted).
-	existing, err := s.authQueries.GetOrganisation(ctx, authOrgID)
+	existing, err := s.authQueries.GetOrganisation(ctx, orgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+			return nil, kernel.ErrNotFound("organisation", orgID.String())
 		}
 		return nil, kernel.ErrInternal(err)
 	}
 
 	updated, err := s.authQueries.UpdateOrganisation(ctx, auth.UpdateOrganisationParams{
-		ID:   authOrgID,
+		ID:   orgID,
 		Name: name,
 
-		// Preserved — not on the Company Details form.
+		// Preserved — not on the Company Details form, or fixed at creation and
+		// immutable here (country_code + native_currency).
 		Slug:           existing.Slug,
 		Vrn:            existing.Vrn,
 		NativeCurrency: existing.NativeCurrency,
 		Timezone:       existing.Timezone,
+		CountryCode:    existing.CountryCode,
 
 		// Identity & UK company/tax references.
 		LegalName:               kernel.NullText(req.LegalName),
@@ -191,7 +208,6 @@ func (s *Service) UpdateOrganisation(
 		Town:         kernel.NullText(req.Town),
 		Region:       kernel.NullText(req.Region),
 		Postcode:     kernel.NullText(req.Postcode),
-		CountryCode:  countryCode,
 
 		// Invoice contact details + business profile.
 		BusinessPhone:       kernel.NullText(req.BusinessPhone),
@@ -204,7 +220,7 @@ func (s *Service) UpdateOrganisation(
 	if err != nil {
 		// The row was live a moment ago; ErrNoRows means it was soft-deleted in between.
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, kernel.ErrNotFound("organisation", authOrgID.String())
+			return nil, kernel.ErrNotFound("organisation", orgID.String())
 		}
 		return nil, kernel.ErrInternal(err)
 	}

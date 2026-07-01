@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia'
 import type { Organisation, User } from '@/types/auth'
-import { login as loginRequest } from '@/services/auth.service'
+import {
+  login as loginRequest,
+  listMyOrganisations,
+  switchOrganisation as switchOrganisationRequest,
+} from '@/services/auth.service'
 import { resetFraudSignals } from '@/lib/fraudSignals'
 
 // One JSON blob persisted under this key, in local- OR sessionStorage.
@@ -18,6 +22,9 @@ interface AuthState {
   user: User | null
   // The organisation the session is scoped to (its name is shown in the top bar).
   organisation: Organisation | null
+  // Every organisation the user can switch to (populated on demand for the
+  // top-bar switcher). NOT persisted — it's cheap to re-fetch and can go stale.
+  organisations: Organisation[]
   // Epoch ms when the token expires; null when unknown (the backend doesn't
   // send an expiry today, and the encrypted token can't be read client-side).
   expiresAt: number | null
@@ -28,6 +35,7 @@ export const useAuthStore = defineStore('auth', {
     token: null,
     user: null,
     organisation: null,
+    organisations: [],
     expiresAt: null,
   }),
 
@@ -43,11 +51,40 @@ export const useAuthStore = defineStore('auth', {
     // (organisation.role), so it reads off the scoped organisation.
     isOrgAdmin: (state): boolean =>
       state.organisation?.role === 'owner' || state.organisation?.role === 'admin',
+
+    // The switcher is only worth showing when the user belongs to more than one
+    // organisation. (Reads the fetched list, so call loadMyOrganisations first.)
+    canSwitchOrganisation: (state): boolean => state.organisations.length > 1,
   },
 
   actions: {
     async login(email: string, password: string, keepLoggedIn: boolean): Promise<void> {
       const res = await loginRequest(email, password)
+      this.setSession(
+        res.access_token,
+        res.user,
+        res.organisation ?? null,
+        res.expires_in ?? null,
+        keepLoggedIn,
+      )
+    },
+
+    // Fetch the organisations the user can switch to (for the top-bar switcher).
+    // Cheap and always fresh — call it when the account menu opens.
+    async loadMyOrganisations(): Promise<void> {
+      this.organisations = await listMyOrganisations()
+    },
+
+    // Re-scope the session to another organisation the user belongs to. The
+    // backend re-mints the token (same body as login), which we store in place of
+    // the current session — preserving the user's "keep me logged in" choice by
+    // writing back to whichever storage currently holds the session.
+    //
+    // The caller is expected to force a full page reload afterwards so all
+    // org-scoped caches (TanStack Query) are dropped and refetched for the new org.
+    async switchOrganisation(organisationId: string): Promise<void> {
+      const res = await switchOrganisationRequest(organisationId)
+      const keepLoggedIn = localStorage.getItem(STORAGE_KEY) !== null
       this.setSession(
         res.access_token,
         res.user,
@@ -141,6 +178,7 @@ export const useAuthStore = defineStore('auth', {
       this.token = null
       this.user = null
       this.organisation = null
+      this.organisations = []
       this.expiresAt = null
       localStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(STORAGE_KEY)

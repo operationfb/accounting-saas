@@ -35,6 +35,10 @@ import PayslipView from '@/views/PayslipView.vue'
 import PayslipEditView from '@/views/PayslipEditView.vue'
 import TrialBalanceView from '@/views/TrialBalanceView.vue'
 import AccountTransactionsView from '@/views/AccountTransactionsView.vue'
+import AdminOrganisationsView from '@/views/admin/AdminOrganisationsView.vue'
+import AdminOrganisationDetailView from '@/views/admin/AdminOrganisationDetailView.vue'
+import AdminUsersView from '@/views/admin/AdminUsersView.vue'
+import AdminUserDetailView from '@/views/admin/AdminUserDetailView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -117,6 +121,19 @@ const router = createRouter({
     // backend OAuth callback redirects the browser to /settings/integrations with
     // ?freeagent=connected | ?freeagent=error&reason=… (integration_service.go).
     { path: '/settings/integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true, title: 'Settings' } },
+    // Platform admin ("god view") — read-only cross-tenant browse of all orgs/users.
+    // requiresSuperuser gates these to users.is_superuser (set manually in the DB);
+    // the guard below redirects anyone else to /overview. /admin redirects to the
+    // organisations tab. Detail routes are declared after their lists.
+    { path: '/admin', redirect: '/admin/organisations' },
+    { path: '/admin/organisations', name: 'admin-organisations', component: AdminOrganisationsView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
+    // company-details is declared BEFORE the bare :id so the literal segment isn't
+    // captured as an id. The company name links here; the "Users" link goes to the
+    // per-org user list (:id → AdminOrganisationDetailView).
+    { path: '/admin/organisations/:id/company-details', name: 'admin-organisation-company-details', component: CompanyDetailsView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
+    { path: '/admin/organisations/:id', name: 'admin-organisation-detail', component: AdminOrganisationDetailView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
+    { path: '/admin/users', name: 'admin-users', component: AdminUsersView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
+    { path: '/admin/users/:id', name: 'admin-user-detail', component: AdminUserDetailView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
   ],
 })
 
@@ -135,6 +152,12 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
+    return { name: 'overview' }
+  }
+  // Platform-admin routes are superuser-only. A non-superuser (or an old session
+  // whose user has no is_superuser flag) is bounced to /overview. The API is the
+  // real gate (403); this just avoids showing an empty, error-only page.
+  if (to.meta.requiresSuperuser && !auth.user?.is_superuser) {
     return { name: 'overview' }
   }
   return true

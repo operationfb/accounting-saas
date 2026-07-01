@@ -33,7 +33,10 @@ type UpdateOrganisationRequest struct {
 	Town         *string `json:"town"`
 	Region       *string `json:"region"`
 	Postcode     *string `json:"postcode"`
-	CountryCode  string  `json:"country_code" binding:"omitempty,len=2"` // ISO 3166-1 alpha-2; defaults to GB
+	// country_code and native_currency are deliberately ABSENT: both are fixed at
+	// organisation creation and immutable here. The service preserves the stored
+	// values (an old client that still sends country_code is simply ignored — that
+	// is the guard). They are still returned read-only on the GET response.
 
 	BusinessPhone *string `json:"business_phone"`
 	ContactEmail  *string `json:"contact_email" binding:"omitempty,email"`

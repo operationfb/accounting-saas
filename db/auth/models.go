@@ -197,6 +197,7 @@ type User struct {
 	LastLoginAt             pgtype.Timestamptz `json:"last_login_at"`
 	// Uses PostgreSQL native INET type — stores IPv4 and IPv6 without needing a string.
 	LastLoginIp *netip.Addr        `json:"last_login_ip"`
+	IsSuperuser bool               `json:"is_superuser"`
 	IsActive    bool               `json:"is_active"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`

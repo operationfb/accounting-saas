@@ -281,7 +281,7 @@ INSERT INTO users (
     $4,   -- last_name      VARCHAR
     $5    -- phone          VARCHAR  (nullable)
 )
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at
 `
 
 type CreateUserParams struct {
@@ -362,6 +362,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -678,7 +679,7 @@ func (q *Queries) GetOrganisationBySlug(ctx context.Context, slug pgtype.Text) (
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at FROM users
 WHERE id = $1
   AND deleted_at IS NULL
 `
@@ -715,6 +716,7 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -724,7 +726,7 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at FROM users
 WHERE email = $1
   AND deleted_at IS NULL
 `
@@ -764,6 +766,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -773,7 +776,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByPasswordResetToken = `-- name: GetUserByPasswordResetToken :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at FROM users
 WHERE password_reset_token = $1
   AND deleted_at IS NULL
 `
@@ -812,6 +815,7 @@ func (q *Queries) GetUserByPasswordResetToken(ctx context.Context, passwordReset
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -821,7 +825,7 @@ func (q *Queries) GetUserByPasswordResetToken(ctx context.Context, passwordReset
 }
 
 const getUserByVerificationToken = `-- name: GetUserByVerificationToken :one
-SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at FROM users
+SELECT id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at FROM users
 WHERE email_verification_token = $1
   AND deleted_at IS NULL
 `
@@ -858,6 +862,7 @@ func (q *Queries) GetUserByVerificationToken(ctx context.Context, emailVerificat
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -884,6 +889,121 @@ func (q *Queries) IncrementFailedLogin(ctx context.Context, id uuid.UUID) (int32
 	var failed_login_count int32
 	err := row.Scan(&failed_login_count)
 	return failed_login_count, err
+}
+
+const listAllOrganisations = `-- name: ListAllOrganisations :many
+
+SELECT
+    o.id,
+    o.name,
+    o.country_code,
+    o.plan,
+    o.created_at,
+    (SELECT count(*) FROM organisation_memberships m WHERE m.organisation_id = o.id) AS member_count
+FROM organisations o
+WHERE o.deleted_at IS NULL
+ORDER BY o.name
+`
+
+type ListAllOrganisationsRow struct {
+	ID          uuid.UUID          `json:"id"`
+	Name        string             `json:"name"`
+	CountryCode string             `json:"country_code"`
+	Plan        string             `json:"plan"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	MemberCount int64              `json:"member_count"`
+}
+
+// =============================================================================
+// PLATFORM ADMIN (superuser / "god view") — CROSS-TENANT READS
+// These three queries deliberately span ALL organisations/users (no
+// organisation_id filter). They are the ONLY queries in the codebase that are
+// not org-scoped, so they are gated by is_superuser in the platformadmin service
+// (a normal caller can never reach them). Read-only — no writes here.
+// =============================================================================
+// Every live organisation with a member count, for the god-view org list.
+func (q *Queries) ListAllOrganisations(ctx context.Context) ([]ListAllOrganisationsRow, error) {
+	rows, err := q.db.Query(ctx, listAllOrganisations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllOrganisationsRow
+	for rows.Next() {
+		var i ListAllOrganisationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.CountryCode,
+			&i.Plan,
+			&i.CreatedAt,
+			&i.MemberCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllUsers = `-- name: ListAllUsers :many
+SELECT
+    id,
+    email,
+    first_name,
+    last_name,
+    is_active,
+    is_superuser,
+    last_login_at,
+    created_at
+FROM users
+WHERE deleted_at IS NULL
+ORDER BY last_name, first_name
+`
+
+type ListAllUsersRow struct {
+	ID          uuid.UUID          `json:"id"`
+	Email       string             `json:"email"`
+	FirstName   string             `json:"first_name"`
+	LastName    string             `json:"last_name"`
+	IsActive    bool               `json:"is_active"`
+	IsSuperuser bool               `json:"is_superuser"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// Every live user, for the god-view user list. Exposes is_superuser so the UI can
+// badge other admins. No secrets (no password hash / tokens).
+func (q *Queries) ListAllUsers(ctx context.Context) ([]ListAllUsersRow, error) {
+	rows, err := q.db.Query(ctx, listAllUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllUsersRow
+	for rows.Next() {
+		var i ListAllUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.FirstName,
+			&i.LastName,
+			&i.IsActive,
+			&i.IsSuperuser,
+			&i.LastLoginAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listMembersByOrganisation = `-- name: ListMembersByOrganisation :many
@@ -943,6 +1063,57 @@ func (q *Queries) ListMembersByOrganisation(ctx context.Context, organisationID 
 			&i.LastName,
 			&i.AvatarUrl,
 			&i.LastLoginAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMembershipsForUser = `-- name: ListMembershipsForUser :many
+SELECT
+    o.id         AS organisation_id,
+    o.name       AS organisation_name,
+    m.role,
+    m.status,
+    m.created_at AS member_since
+FROM organisation_memberships m
+JOIN organisations o ON o.id = m.organisation_id
+WHERE m.user_id = $1
+  AND o.deleted_at IS NULL
+ORDER BY o.name
+`
+
+type ListMembershipsForUserRow struct {
+	OrganisationID   uuid.UUID          `json:"organisation_id"`
+	OrganisationName string             `json:"organisation_name"`
+	Role             OrganisationRole   `json:"role"`
+	Status           string             `json:"status"`
+	MemberSince      pgtype.Timestamptz `json:"member_since"`
+}
+
+// Every organisation a given user belongs to (ALL statuses, not just active), for
+// the god-view user drill-in. Distinct from ListOrganisationsForUser, which filters
+// to active memberships and powers the org switcher.
+func (q *Queries) ListMembershipsForUser(ctx context.Context, userID uuid.UUID) ([]ListMembershipsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listMembershipsForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMembershipsForUserRow
+	for rows.Next() {
+		var i ListMembershipsForUserRow
+		if err := rows.Scan(
+			&i.OrganisationID,
+			&i.OrganisationName,
+			&i.Role,
+			&i.Status,
+			&i.MemberSince,
 		); err != nil {
 			return nil, err
 		}
@@ -1227,7 +1398,7 @@ UPDATE users SET
     updated_at             = now()
 WHERE email = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at
 `
 
 type SetPasswordResetTokenParams struct {
@@ -1270,6 +1441,7 @@ func (q *Queries) SetPasswordResetToken(ctx context.Context, arg SetPasswordRese
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -1639,7 +1811,7 @@ UPDATE users SET
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at
 `
 
 type UpdateUserParams struct {
@@ -1709,6 +1881,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -1913,7 +2086,7 @@ UPDATE users SET
     updated_at               = now()
 WHERE email_verification_token = $1
   AND deleted_at IS NULL
-RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_active, created_at, updated_at, deleted_at
+RETURNING id, email, password_hash, first_name, last_name, phone, avatar_url, national_insurance_number, utr, date_of_birth, address_line_1, address_line_2, address_line_3, address_line_4, postcode, email_verified_at, email_verification_token, email_verification_sent_at, password_reset_token, password_reset_sent_at, failed_login_count, locked_until, last_login_at, last_login_ip, is_superuser, is_active, created_at, updated_at, deleted_at
 `
 
 // -----------------------------------------------------------------------------
@@ -1950,6 +2123,7 @@ func (q *Queries) VerifyUserEmail(ctx context.Context, emailVerificationToken pg
 		&i.LockedUntil,
 		&i.LastLoginAt,
 		&i.LastLoginIp,
+		&i.IsSuperuser,
 		&i.IsActive,
 		&i.CreatedAt,
 		&i.UpdatedAt,

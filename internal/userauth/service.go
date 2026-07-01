@@ -35,12 +35,14 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	auth "github.com/operationfb/accounting-saas/db/auth"
 	"github.com/operationfb/accounting-saas/internal/kernel"
+	"github.com/operationfb/accounting-saas/token"
 )
 
 // UpdateProfileRequest is the JSON body accepted by PUT /api/v1/profile (the
@@ -70,17 +72,31 @@ type UpdateProfileRequest struct {
 	Postcode     *string `json:"postcode"`
 }
 
-// Service holds only the auth query set: reading and updating the user are
-// single-table operations, so there is no pool/transaction to keep (same shape
-// as OrganisationService / MemberService).
+// Service holds the auth query set plus the token maker: reading/updating the
+// user are single-table operations, so there is no pool/transaction to keep
+// (same shape as OrganisationService / MemberService). The token maker +
+// accessTokenDuration are needed by SwitchOrganisation, which re-mints the
+// PASETO token scoped to a different organisation (the same mechanism login uses
+// in auth.go).
 type Service struct {
 	authQueries auth.Querier
+
+	// Token minting for the organisation switch. Mirrors AuthHandler: switching
+	// org just means issuing a fresh token carrying a different OrganisationID.
+	tokenMaker          token.Maker
+	accessTokenDuration time.Duration
 }
 
 // NewService is the constructor, called once in main.go. authQueries is the
-// same auth.Querier already shared with the other auth-backed services.
-func NewService(authQueries auth.Querier) *Service {
-	return &Service{authQueries: authQueries}
+// same auth.Querier already shared with the other auth-backed services;
+// tokenMaker + accessTokenDuration are the same values AuthHandler receives, so
+// a switched token is indistinguishable from a login token.
+func NewService(authQueries auth.Querier, tokenMaker token.Maker, accessTokenDuration time.Duration) *Service {
+	return &Service{
+		authQueries:         authQueries,
+		tokenMaker:          tokenMaker,
+		accessTokenDuration: accessTokenDuration,
+	}
 }
 
 // =============================================================================
@@ -185,4 +201,96 @@ func (s *Service) UpdateProfile(
 	}
 	resp := NewUserResponse(updated)
 	return &resp, nil
+}
+
+// =============================================================================
+// ORGANISATION SWITCHING
+// A user may belong to several organisations. Login (auth.go) scopes the session
+// to their first active membership; these two methods let the client (a) list
+// every org the user can switch to and (b) re-scope the session to another one.
+// =============================================================================
+
+// ListMyOrganisations returns every organisation the caller is an ACTIVE member
+// of, with their role at each — the data behind the top-bar org switcher. It
+// wraps the existing ListOrganisationsForUser query (also used at login) and
+// projects each row onto the same safe OrganisationResponse shape the login
+// response uses. An org-less user gets an empty list (not an error).
+func (s *Service) ListMyOrganisations(ctx context.Context, authUserID uuid.UUID) ([]OrganisationResponse, error) {
+	rows, err := s.authQueries.ListOrganisationsForUser(ctx, authUserID)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+	orgs := make([]OrganisationResponse, 0, len(rows))
+	for _, r := range rows {
+		orgs = append(orgs, OrganisationResponse{
+			ID:          r.ID.String(),
+			Name:        r.Name,
+			CountryCode: r.CountryCode,
+			Role:        string(r.Role),
+		})
+	}
+	return orgs, nil
+}
+
+// SwitchOrganisation re-mints the caller's session token, scoping it to a
+// DIFFERENT organisation they belong to. This is the whole mechanism for
+// switching org: the PASETO token carries a single OrganisationID, so switching
+// means issuing a fresh token with the target id.
+//
+// The caller must be an ACTIVE member of the target org — AuthorizeMember does
+// the GetMembership + status check and returns their role there (or a 403 for a
+// non-member / deactivated membership; a cross-tenant org id is simply one the
+// user has no membership at, so it 403s the same way). We then re-mint the token
+// and return the SAME shape login returns (token + user + organisation), so the
+// client can reuse its session-setting path.
+func (s *Service) SwitchOrganisation(ctx context.Context, authUserID, orgID uuid.UUID) (*LoginUserResponse, error) {
+	// Authorise: must be an active member of the target org. Returns the caller's
+	// role there, which we surface on the organisation response (role is per-org).
+	role, err := kernel.AuthorizeMember(ctx, s.authQueries, authUserID, orgID)
+	if err != nil {
+		return nil, err // already an AppError (403 for non-member/inactive, 500 otherwise)
+	}
+
+	// Load the org for its name + country_code — neither is inside the token, and
+	// the client needs both (name for the top bar, country_code for VAT scoping).
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A soft-deleted org: AuthorizeMember passed, but the org row is gone.
+			return nil, kernel.ErrNotFound("organisation", orgID.String())
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// country_code is NOT NULL in the schema; guard defensively (mirrors login) so
+	// a blank value fails loudly rather than issuing a session with no country.
+	if strings.TrimSpace(org.CountryCode) == "" {
+		return nil, kernel.ErrInternal(errors.New("switch: organisation has an empty country_code"))
+	}
+
+	// Load the user so the response carries the same safe user view login returns.
+	user, err := s.authQueries.GetUser(ctx, authUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, kernel.ErrNotFound("user", authUserID.String())
+		}
+		return nil, kernel.ErrInternal(err)
+	}
+
+	// Re-mint the token, now scoped to the target org.
+	accessToken, err := s.tokenMaker.CreateToken(authUserID, orgID, s.accessTokenDuration)
+	if err != nil {
+		return nil, kernel.ErrInternal(err)
+	}
+
+	return &LoginUserResponse{
+		AccessToken: accessToken,
+		User:        NewUserResponse(user),
+		Organisation: &OrganisationResponse{
+			ID:          org.ID.String(),
+			Name:        org.Name,
+			CountryCode: org.CountryCode,
+			Role:        string(role),
+		},
+	}, nil
 }

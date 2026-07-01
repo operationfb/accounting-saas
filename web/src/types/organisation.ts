@@ -78,7 +78,8 @@ export interface UpdateOrganisationRequest {
   town?: string
   region?: string
   postcode?: string
-  country_code?: string
+  // country_code + native_currency are intentionally omitted: both are fixed at
+  // organisation creation and immutable on this screen (the server preserves them).
 
   business_phone?: string
   contact_email?: string

@@ -66,6 +66,7 @@ import (
 	organisation "github.com/operationfb/accounting-saas/internal/organisation"
 	overview "github.com/operationfb/accounting-saas/internal/overview"
 	payroll "github.com/operationfb/accounting-saas/internal/payroll"
+	platformadmin "github.com/operationfb/accounting-saas/internal/platformadmin"
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	reports "github.com/operationfb/accounting-saas/internal/reports"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
@@ -233,12 +234,6 @@ func main() {
 	// both are available. The service works with hmrc=nil (hmrc_connected=false).
 	vatSvc := vat.NewService(authQueries, vatQueries, nil /* hmrc set below */)
 
-	// User profile: read/update the caller's own "My Details" (first/last name; the
-	// login email is read-only). Always self-scoped via the token, so no role check.
-	// Part of internal/userauth (alongside login + password reset); self-registers
-	// /api/v1/profile after NewServer.
-	userSvc := userauth.NewService(authQueries)
-
 	// -------------------------------------------------------------------------
 	// Auth wiring.
 	//
@@ -310,6 +305,14 @@ func main() {
 	// Login + password reset (internal/userauth). emailSender is the root concrete
 	// transport (smtpSender/logSender); it satisfies the userauth.EmailSender seam.
 	authHandler := userauth.NewAuthHandler(authQueries, tokenMaker, accessTokenDuration, emailSender, appBaseURL, passwordResetTTL)
+
+	// User profile + org switcher: read/update the caller's own "My Details", and
+	// list/switch the organisations they belong to. Always self-scoped via the
+	// token, so no role check. Part of internal/userauth (alongside login); it
+	// self-registers /api/v1/profile + /api/v1/me/organisations after NewServer.
+	// Needs tokenMaker + accessTokenDuration to re-mint the token on a switch, so
+	// it is built here (after both are wired) rather than up with the other svcs.
+	userSvc := userauth.NewService(authQueries, tokenMaker, accessTokenDuration)
 
 	// -------------------------------------------------------------------------
 	// Attachment storage (Google Cloud Storage).
@@ -561,6 +564,10 @@ func main() {
 	invoices.NewHandler(invoiceSvc).RegisterRoutes(server.Router(), tokenMaker)
 	members.NewHandler(memberSvc).RegisterRoutes(server.Router(), tokenMaker)
 	payroll.NewHandler(payrollSvc).RegisterRoutes(server.Router(), tokenMaker)
+	// Platform admin ("god view"): cross-tenant browse of all orgs/users, plus
+	// editing a chosen org's company details (delegated to organisationSvc).
+	// Superuser-gated in the service (users.is_superuser, set manually in the DB).
+	platformadmin.NewHandler(platformadmin.NewService(pool, authQueries, organisationSvc)).RegisterRoutes(server.Router(), tokenMaker)
 	organisationHandler := organisation.NewHandler(organisationSvc)
 	organisationHandler.RegisterRoutes(server.Router(), tokenMaker)
 	// HMRC fraud-prevention vendor identity (static half of the Gov-* headers; the

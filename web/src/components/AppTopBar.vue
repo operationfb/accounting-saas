@@ -2,7 +2,7 @@
 // Top navigation bar (the navy strip), mirroring FA's app chrome.
 // The company button on the right opens an account dropdown (Company Details,
 // Change Password, Logout).
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import Menu from 'primevue/menu'
 import type { MenuItem } from 'primevue/menuitem'
@@ -73,8 +73,43 @@ function isActive(item: NavItem): boolean {
 
 // Account / organisation dropdown. ref holds the PrimeVue popup Menu instance.
 const accountMenu = ref()
-// Computed so the owner/admin-only Integrations item can be included by role.
+
+// Populate the org switcher once on mount. Cheap, and it needs to be ready by the
+// time the account menu opens. Failures are non-fatal — the rest of the menu
+// still works, we just don't show the switcher.
+onMounted(() => {
+  if (auth.isAuthenticated) {
+    auth.loadMyOrganisations().catch(() => {
+      /* ignore — switcher just stays hidden */
+    })
+  }
+})
+
+// Switch the session to another org, then hard-reload so every org-scoped cache
+// (TanStack Query) is dropped and refetched for the new org. No-op if it's already
+// the current org.
+async function selectOrganisation(orgId: string) {
+  if (orgId === auth.organisation?.id) return
+  await auth.switchOrganisation(orgId)
+  window.location.assign('/overview')
+}
+
+// Computed so the owner/admin-only Integrations item can be included by role, and
+// the org switcher only appears for multi-org users.
 const accountItems = computed<MenuItem[]>(() => [
+  // Org switcher (only when the user belongs to >1 org): each org as a row, a
+  // check on the current one, then a divider before the account actions.
+  ...(auth.canSwitchOrganisation
+    ? [
+        ...auth.organisations.map((org) => ({
+          label: org.name,
+          icon: org.id === auth.organisation?.id ? 'pi pi-check' : 'pi pi-building',
+          disabled: org.id === auth.organisation?.id,
+          command: () => selectOrganisation(org.id),
+        })),
+        { separator: true },
+      ]
+    : []),
   { label: 'Company Details', icon: 'pi pi-building', command: () => router.push('/company-details') },
   { label: 'VAT Registration', icon: 'pi pi-percentage', command: () => router.push('/vat-registration') },
   // Owner/admin manage everyone via Users (and reach their own record by clicking
@@ -95,6 +130,11 @@ const accountItems = computed<MenuItem[]>(() => [
       ]
     : [{ label: 'My Details', icon: 'pi pi-user', command: () => router.push('/my-details') }]),
   { label: 'Change Password', icon: 'pi pi-key', command: () => changePassword() },
+  // Platform admin ("god view") — superuser only. Read-only browse of all
+  // orgs/users; the route guard + API both gate it.
+  ...(auth.user?.is_superuser
+    ? [{ label: 'Platform Admin', icon: 'pi pi-shield', command: () => router.push('/admin') }]
+    : []),
   // Set the destructive sign-out apart from the navigation items with a divider.
   { separator: true },
   { label: 'Logout', icon: 'pi pi-sign-out', command: () => logout() },

@@ -518,6 +518,60 @@ WHERE m.organisation_id = $1
 ORDER BY u.last_name, u.first_name;
 
 
+-- =============================================================================
+-- PLATFORM ADMIN (superuser / "god view") — CROSS-TENANT READS
+-- These three queries deliberately span ALL organisations/users (no
+-- organisation_id filter). They are the ONLY queries in the codebase that are
+-- not org-scoped, so they are gated by is_superuser in the platformadmin service
+-- (a normal caller can never reach them). Read-only — no writes here.
+-- =============================================================================
+
+-- name: ListAllOrganisations :many
+-- Every live organisation with a member count, for the god-view org list.
+SELECT
+    o.id,
+    o.name,
+    o.country_code,
+    o.plan,
+    o.created_at,
+    (SELECT count(*) FROM organisation_memberships m WHERE m.organisation_id = o.id) AS member_count
+FROM organisations o
+WHERE o.deleted_at IS NULL
+ORDER BY o.name;
+
+-- name: ListAllUsers :many
+-- Every live user, for the god-view user list. Exposes is_superuser so the UI can
+-- badge other admins. No secrets (no password hash / tokens).
+SELECT
+    id,
+    email,
+    first_name,
+    last_name,
+    is_active,
+    is_superuser,
+    last_login_at,
+    created_at
+FROM users
+WHERE deleted_at IS NULL
+ORDER BY last_name, first_name;
+
+-- name: ListMembershipsForUser :many
+-- Every organisation a given user belongs to (ALL statuses, not just active), for
+-- the god-view user drill-in. Distinct from ListOrganisationsForUser, which filters
+-- to active memberships and powers the org switcher.
+SELECT
+    o.id         AS organisation_id,
+    o.name       AS organisation_name,
+    m.role,
+    m.status,
+    m.created_at AS member_since
+FROM organisation_memberships m
+JOIN organisations o ON o.id = m.organisation_id
+WHERE m.user_id = $1
+  AND o.deleted_at IS NULL
+ORDER BY o.name;
+
+
 -- -----------------------------------------------------------------------------
 -- UpdateMembershipRole
 -- Changes a member's role (e.g. promote 'member' → 'admin').

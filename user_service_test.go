@@ -28,6 +28,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 )
 
@@ -409,6 +411,216 @@ func TestProfilePayrollFields(t *testing.T) {
 		}
 		if got = decodeProfile(t, rec.Body.Bytes()); got.AddressLine1 != nil {
 			t.Errorf("address_line_1 should be cleared, got %v", *got.AddressLine1)
+		}
+	})
+}
+
+// =============================================================================
+// ORGANISATION SWITCHER (GET /me/organisations + POST /me/organisations/switch)
+// =============================================================================
+//
+// A user who belongs to several organisations lists the ones they can switch to
+// and re-scopes their session to another. These hit the real DB via the shared
+// harness; the switch re-mints a PASETO token, so we decode it to prove the new
+// scope. Coverage: list returns every active membership with the right role; a
+// switch to a belonged org re-mints a token scoped to it (and is authorised as
+// non-owner too); a switch to an org the user does NOT actively belong to is 403
+// (non-member, cross-tenant, and a suspended membership); plus the 400/401 edges.
+
+// addMembershipTo attaches an EXISTING user to an org with the given role/status
+// (used to build multi-org scenarios) and registers cleanup for that row.
+func addMembershipTo(t *testing.T, ts *testServer, orgID, userID, role, status string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO organisation_memberships (organisation_id, user_id, role, status)
+		 VALUES ($1, $2, $3, $4)`, orgID, userID, role, status); err != nil {
+		t.Fatalf("addMembershipTo: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(ctx,
+			`DELETE FROM organisation_memberships WHERE organisation_id = $1 AND user_id = $2`, orgID, userID)
+	})
+}
+
+// newBareOrg creates an organisation with NO memberships (for the "not a member"
+// path) and registers cleanup.
+func newBareOrg(t *testing.T, ts *testServer) string {
+	t.Helper()
+	ctx := context.Background()
+	orgID := uuid.NewString()
+	if _, err := ts.pool.Exec(ctx,
+		`INSERT INTO organisations (id, name) VALUES ($1, $2)`, orgID, "Bare Org "+orgID); err != nil {
+		t.Fatalf("newBareOrg: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisation_memberships WHERE organisation_id = $1`, orgID)
+		_, _ = ts.pool.Exec(ctx, `DELETE FROM organisations WHERE id = $1`, orgID)
+	})
+	return orgID
+}
+
+// getMyOrgsReq sends GET /api/v1/me/organisations.
+func getMyOrgsReq(t *testing.T, ts *testServer, authHeader string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/me/organisations", nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// switchOrgReq sends POST /api/v1/me/organisations/switch with the given org id.
+func switchOrgReq(t *testing.T, ts *testServer, authHeader, orgID string) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(map[string]string{"organisation_id": orgID})
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/me/organisations/switch", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	ts.server.router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestListMyOrganisations covers GET /api/v1/me/organisations.
+func TestListMyOrganisations(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("returns every active membership with its role", func(t *testing.T) {
+		// The user owns orgA (via newOrgWithOwner) and is a plain member of orgB.
+		orgA, user := newOrgWithOwner(t, ts)
+		orgB := newBareOrg(t, ts)
+		addMembershipTo(t, ts, orgB, user, "member", "active")
+
+		// The token is scoped to orgA, but the list is by USER, so orgB shows too.
+		rec := getMyOrgsReq(t, ts, bearer(t, ts, user, orgA))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Organisations []userauth.OrganisationResponse `json:"organisations"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v — body: %s", err, rec.Body.String())
+		}
+		roleByOrg := map[string]string{}
+		for _, o := range resp.Organisations {
+			roleByOrg[o.ID] = o.Role
+		}
+		if roleByOrg[orgA] != "owner" {
+			t.Errorf("orgA role: got %q, want owner (present=%v)", roleByOrg[orgA], resp.Organisations)
+		}
+		if roleByOrg[orgB] != "member" {
+			t.Errorf("orgB role: got %q, want member", roleByOrg[orgB])
+		}
+	})
+
+	t.Run("excludes a suspended membership", func(t *testing.T) {
+		orgA, user := newOrgWithOwner(t, ts)
+		orgB := newBareOrg(t, ts)
+		addMembershipTo(t, ts, orgB, user, "member", "suspended")
+
+		rec := getMyOrgsReq(t, ts, bearer(t, ts, user, orgA))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Organisations []userauth.OrganisationResponse `json:"organisations"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		for _, o := range resp.Organisations {
+			if o.ID == orgB {
+				t.Errorf("suspended orgB should not be listed, got %v", resp.Organisations)
+			}
+		}
+	})
+
+	t.Run("unauthenticated → 401", func(t *testing.T) {
+		rec := getMyOrgsReq(t, ts, "")
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestSwitchOrganisation covers POST /api/v1/me/organisations/switch.
+func TestSwitchOrganisation(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	t.Run("switch to a belonged org re-mints a token scoped to it", func(t *testing.T) {
+		orgA, user := newOrgWithOwner(t, ts)
+		orgB := newBareOrg(t, ts)
+		addMembershipTo(t, ts, orgB, user, "member", "active")
+
+		// Signed in scoped to orgA; switch to orgB.
+		rec := switchOrgReq(t, ts, bearer(t, ts, user, orgA), orgB)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		var resp userauth.LoginUserResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v — body: %s", err, rec.Body.String())
+		}
+		if resp.Organisation == nil || resp.Organisation.ID != orgB {
+			t.Fatalf("organisation: got %+v, want id %s", resp.Organisation, orgB)
+		}
+		// Role in orgB is 'member' (per-org), not 'owner' as in orgA.
+		if resp.Organisation.Role != "member" {
+			t.Errorf("role: got %q, want member", resp.Organisation.Role)
+		}
+		// The new token must actually be scoped to orgB — decode it and check.
+		payload, err := ts.tokenMaker.VerifyToken(resp.AccessToken)
+		if err != nil {
+			t.Fatalf("verify re-minted token: %v", err)
+		}
+		if payload.OrganisationID.String() != orgB {
+			t.Errorf("token org: got %s, want %s", payload.OrganisationID, orgB)
+		}
+		if payload.UserID.String() != user {
+			t.Errorf("token user: got %s, want %s", payload.UserID, user)
+		}
+	})
+
+	t.Run("switch to an org the user is NOT a member of → 403", func(t *testing.T) {
+		orgA, user := newOrgWithOwner(t, ts)
+		other := newBareOrg(t, ts) // exists, but user has no membership
+
+		rec := switchOrgReq(t, ts, bearer(t, ts, user, orgA), other)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("switch to a suspended membership → 403", func(t *testing.T) {
+		orgA, user := newOrgWithOwner(t, ts)
+		orgB := newBareOrg(t, ts)
+		addMembershipTo(t, ts, orgB, user, "member", "suspended")
+
+		rec := switchOrgReq(t, ts, bearer(t, ts, user, orgA), orgB)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("malformed organisation_id → 400", func(t *testing.T) {
+		orgA, user := newOrgWithOwner(t, ts)
+		rec := switchOrgReq(t, ts, bearer(t, ts, user, orgA), "not-a-uuid")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("unauthenticated → 401", func(t *testing.T) {
+		orgB := newBareOrg(t, ts)
+		rec := switchOrgReq(t, ts, "", orgB)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
