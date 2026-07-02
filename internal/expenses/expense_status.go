@@ -39,6 +39,7 @@ import (
 
 	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
+	ledger "github.com/operationfb/accounting-saas/internal/ledger"
 )
 
 // Status constants for the expensesdb.status column. These finally replace the
@@ -117,7 +118,12 @@ func (s *Service) ChangeExpenseStatus(
 	}
 
 	var updated expensesdb.Expense
-	err = s.withTransaction(ctx, func(qtx *expensesdb.Queries) error {
+	// kernel.WithTx directly (not the withTransaction helper) so the raw pgx.Tx is in
+	// scope: on approval we hand it to the GL poster, so the journal entry commits in the
+	// SAME transaction as the status change. expensesdb.New(tx) is what withTransaction
+	// wraps for us, so every call below is unchanged.
+	err = kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := expensesdb.New(tx)
 		// Load the current row (org-scoped, so another tenant's id is simply not
 		// found → 404, never revealing its existence).
 		existing, err := qtx.GetExpense(ctx, expensesdb.GetExpenseParams{
@@ -192,6 +198,17 @@ func (s *Service) ChangeExpenseStatus(
 		}
 		if err != nil {
 			return kernel.ErrInternal(err)
+		}
+
+		// On APPROVAL, post the double-entry journal in the SAME transaction so the GL
+		// entry commits atomically with the status change. No reversal path exists for
+		// expenses: APPROVED is terminal and DRAFT/REJECTED are the only editable/
+		// deletable states, so this posts exactly once per expense. Nil-poster or an
+		// unprovisioned org → no-op (postExpenseApproved handles both).
+		if action == "approve" {
+			if perr := s.postExpenseApproved(ctx, tx, authUserID, authOrgID, updated); perr != nil {
+				return perr
+			}
 		}
 		return nil
 	})
@@ -280,4 +297,99 @@ func (s *Service) RepublishApprovedExpense(
 		return kernel.ErrInternal(err)
 	}
 	return nil
+}
+
+// =============================================================================
+// GENERAL LEDGER — posting an approved expense
+// =============================================================================
+
+// GL event/source codes for the expense approval journal.
+const (
+	ledgerEventExpenseApproved              = "EXPENSE_APPROVED"                // gl_posting_rules.event_code (domestic)
+	ledgerEventExpenseApprovedReverseCharge = "EXPENSE_APPROVED_REVERSE_CHARGE" // reverse charge / EC acquisition (self-accounted VAT)
+	ledgerSourceExpense                     = "EXPENSE"                         // gl_journal_entries.source_type
+)
+
+// postExpenseApproved posts the double-entry journal for an approved expense in the
+// org's base currency, on the caller's tx (so it commits with the approval):
+//
+//	domestic (EXPENSE_APPROVED)                Dr category (net) + Dr VAT reclaimed (input VAT)
+//	                                           Cr the claimant's user account (gross)
+//	reverse charge (EXPENSE_APPROVED_REVERSE_CHARGE)
+//	                                           Dr category (net) + Dr VAT reclaimed (818, notional input)
+//	                                           Cr VAT charged (819, notional output) + Cr user account (net)
+//
+// The transaction-currency amounts come off the expense; the base amounts are the
+// native_* the service computed on save (money.ConvertMinor). NET is derived (gross −
+// vat) — expenses store no net column. Nil-poster / unprovisioned org → no-op.
+func (s *Service) postExpenseApproved(ctx context.Context, tx pgx.Tx, authUserID, orgID uuid.UUID, exp expensesdb.Expense) error {
+	if s.poster == nil {
+		return nil
+	}
+
+	org, err := s.authQueries.GetOrganisation(ctx, orgID)
+	if err != nil {
+		return kernel.ErrInternal(err)
+	}
+
+	// NET = GROSS − VAT, in both the transaction and the base (native) currency. Deriving
+	// it this way makes the base legs balance to the cent by construction (native_net +
+	// native_vat == native_gross), so there is no FX rounding gap on the entry.
+	netTxn := int64(exp.GrossValueMinor) - int64(exp.VatValueMinor)
+	netBase := int64(exp.NativeGrossValueMinor) - int64(exp.NativeVatValueMinor)
+
+	// Resolver links (address of a local — the poster dereferences synchronously here).
+	categoryID := exp.CategoryID
+	claimantID := exp.UserID // the CLAIMANT — the user account credited (907-x per director)
+
+	narrative := "Expense"
+	switch {
+	case exp.SupplierName.Valid && strings.TrimSpace(exp.SupplierName.String) != "":
+		narrative = "Expense — " + strings.TrimSpace(exp.SupplierName.String)
+	case strings.TrimSpace(exp.Description) != "":
+		narrative = "Expense — " + strings.TrimSpace(exp.Description)
+	}
+
+	if err := s.poster.PostEntry(ctx, tx, ledger.EntryContext{
+		OrganisationID: orgID,
+		CompanyType:    org.CompanyType.String,
+		CountryCode:    org.CountryCode,
+		BaseCurrency:   org.NativeCurrency,
+		TxnCurrency:    exp.Currency,
+		ExchangeRate:   exp.ExchangeRate,
+		EventCode:      expenseEventCode(exp.VatStatus, exp.EcStatus),
+		SourceType:     ledgerSourceExpense,
+		SourceID:       exp.ID,
+		EntryDate:      exp.DatedOn,
+		Narrative:      narrative,
+		CreatedBy:      authUserID,
+		Amounts: map[string]ledger.Amount{
+			"GROSS": {Txn: int64(exp.GrossValueMinor), Base: int64(exp.NativeGrossValueMinor)},
+			"NET":   {Txn: netTxn, Base: netBase},
+			"VAT":   {Txn: int64(exp.VatValueMinor), Base: int64(exp.NativeVatValueMinor)},
+		},
+		CategoryID: &categoryID,
+		UserID:     &claimantID,
+	}); err != nil {
+		if errors.Is(err, ledger.ErrChartNotProvisioned) {
+			return nil // org has no chart of accounts — skip GL (feature-flagged rollout)
+		}
+		return err
+	}
+	return nil
+}
+
+// expenseEventCode selects the GL mapping for an approved expense. A TAXABLE reverse
+// charge / EC acquisition self-accounts VAT (notional input + output), so it uses the
+// reverse-charge event; everything else uses the plain domestic mapping. Mirrors the
+// ec_status branch in internal/vat's routeToBoxes, so the ledger and the VAT return
+// treat the same expense consistently.
+func expenseEventCode(vatStatus, ecStatus string) string {
+	if vatStatus == "TAXABLE" {
+		switch ecStatus {
+		case "REVERSE_CHARGE", "EC_SERVICES", "EC_GOODS":
+			return ledgerEventExpenseApprovedReverseCharge
+		}
+	}
+	return ledgerEventExpenseApproved
 }

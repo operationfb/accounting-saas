@@ -133,6 +133,17 @@ INSERT INTO gl_posting_rules (event_code, leg_no, account_role, amount_basis, di
   ('EXPENSE_APPROVED',        2, 'VAT_RECLAIMED',        'VAT',   'DR', 2),
   ('EXPENSE_APPROVED',        3, 'USER_ACCOUNT',         'GROSS', 'CR', 3),
 
+  -- Expense approved under REVERSE CHARGE / EC acquisition (EC goods/services): the
+  -- overseas supplier charges NO VAT, so the claimant is owed only the NET. VAT is
+  -- SELF-ACCOUNTED: notional input VAT reclaimed (818) AND notional output VAT charged
+  -- (819), which net to zero across the two accounts (the VAT return nets 818 + 819 into
+  -- 817). Selected by the poster when ec_status is REVERSE_CHARGE / EC_GOODS / EC_SERVICES;
+  -- zero-VAT drops legs 2+3, collapsing to the plain net-to-user pair.
+  ('EXPENSE_APPROVED_REVERSE_CHARGE', 1, 'SOURCE_CATEGORY', 'NET', 'DR', 1),
+  ('EXPENSE_APPROVED_REVERSE_CHARGE', 2, 'VAT_RECLAIMED',   'VAT', 'DR', 2),
+  ('EXPENSE_APPROVED_REVERSE_CHARGE', 3, 'VAT_CHARGED',     'VAT', 'CR', 3),
+  ('EXPENSE_APPROVED_REVERSE_CHARGE', 4, 'USER_ACCOUNT',    'NET', 'CR', 4),
+
   -- Invoice sent: receivable up (gross) against income (net) + output VAT.
   ('INVOICE_SENT',            1, 'DEBTORS',              'GROSS', 'DR', 1),
   ('INVOICE_SENT',            2, 'SALES_DEFAULT',        'NET',   'CR', 2),

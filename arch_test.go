@@ -56,6 +56,7 @@ var rootAllowlist = map[string]bool{
 	"gl_posting_rules_freeagent_test.go": true,
 	"gl_resolver_test.go":                true,
 	"gl_payroll_rules_test.go":           true,
+	"gl_poster_expense_test.go":          true,
 	"gl_poster_invoice_test.go":          true,
 	"gl_poster_lock_test.go":             true,
 	"gl_poster_receipt_test.go":          true,

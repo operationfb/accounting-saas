@@ -206,6 +206,7 @@ func newTestServer(t *testing.T) *testServer {
 	// seeded directly via seedRate where a test needs auto-fill.
 	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), dbcurrencies.New(pool), nil, "GBP", "ecb")
 	service := expenses.NewService(pool, queries, authQueries, dbcategories.New(pool), vatQueries, fxRateSvc)
+	service.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries)) // GL: approve → journal entry
 
 	// Build a real auth handler so the /auth/* routes work, and pass the token
 	// maker to the server so the expense routes' auth middleware can verify

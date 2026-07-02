@@ -37,6 +37,7 @@ import (
 	expensesdb "github.com/operationfb/accounting-saas/db/expenses"
 	vatdb "github.com/operationfb/accounting-saas/db/vat"
 	kernel "github.com/operationfb/accounting-saas/internal/kernel"
+	ledger "github.com/operationfb/accounting-saas/internal/ledger"
 	"github.com/operationfb/accounting-saas/money"
 )
 
@@ -82,6 +83,12 @@ type Service struct {
 	// main.go AFTER construction (the publisher is wired later), so it stays out of
 	// NewService — tests leave it nil.
 	publisher EventPublisher
+
+	// poster writes the GL journal entry when an expense is APPROVED (Dr expense
+	// category + input VAT / Cr the claimant's user account). Nil-guarded: with no
+	// poster wired, the GL is simply not posted. Set in main.go after construction
+	// (mirrors publisher / invoices.SetPoster), so tests leave it nil.
+	poster ledger.Poster
 }
 
 // RateLookup is the read seam over the exchange-rate service. Given a currency and a
@@ -134,6 +141,11 @@ func (s *Service) assertNotFiled(ctx context.Context, orgID uuid.UUID, dated pgt
 // inject a fake; nil leaves publishing disabled. This replaces main.go's old
 // direct field assignment now that the publisher field is package-private.
 func (s *Service) SetPublisher(p EventPublisher) { s.publisher = p }
+
+// SetPoster wires the general-ledger poster AFTER construction (mirrors SetPublisher
+// and invoices.SetPoster). main injects it; nil leaves GL posting disabled, so the
+// existing fresh-org / no-chart tests are unaffected.
+func (s *Service) SetPoster(p ledger.Poster) { s.poster = p }
 
 // =============================================================================
 // AUTHORIZATION

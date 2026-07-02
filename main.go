@@ -174,6 +174,10 @@ func main() {
 
 	// fxRateSvc auto-fills a foreign expense's exchange_rate from the stored daily rate.
 	service := expenses.NewService(pool, queries, authQueries, categoryQueries, vatQueries, fxRateSvc)
+	// General-ledger poster: approving an expense posts its double-entry journal
+	// (Dr category + input VAT / Cr the claimant's user account) atomically with the
+	// status change. Same construction as invoices/banking.
+	service.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 
 	// Contacts + Projects each have their own sqlc package + internal service and
 	// self-register routes after NewServer (per-domain pattern). They share

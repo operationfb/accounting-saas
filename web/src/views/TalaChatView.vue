@@ -5,12 +5,14 @@
 //
 // The conversation is stateless on the server, so we keep the running transcript
 // here and send it (as {role, content}) with every turn.
-import { ref, nextTick, computed } from 'vue'
+import { ref, nextTick, computed, watch } from 'vue'
 import { sendTalaChat } from '@/services/tala.service'
 import type { TalaChatMessage, TalaProposedAction } from '@/types/tala'
 import type { ApiError } from '@/lib/api'
 import AppLayout from '@/layouts/AppLayout.vue'
+import TalaComposer from '@/components/TalaComposer.vue'
 import TalaProposalCard from '@/components/TalaProposalCard.vue'
+import { useSpeechSynthesis } from '@/composables/useSpeechSynthesis'
 
 interface Turn {
   role: 'user' | 'assistant'
@@ -71,13 +73,26 @@ function useExample(text: string) {
   void send()
 }
 
-function onKeydown(e: KeyboardEvent) {
-  // Enter sends; Shift+Enter inserts a newline.
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
-    void send()
+// Read-aloud (text-to-speech) for Tala's replies. One synthesiser drives the
+// whole transcript; speakingIndex tracks which reply is currently being read so
+// only that message shows the "Stop" state.
+const { isSupported: ttsSupported, isSpeaking, speak, stop: stopSpeaking } = useSpeechSynthesis()
+const speakingIndex = ref<number | null>(null)
+
+function toggleSpeak(index: number, text: string) {
+  if (speakingIndex.value === index && isSpeaking.value) {
+    stopSpeaking()
+    speakingIndex.value = null
+  } else {
+    speak(text)
+    speakingIndex.value = index
   }
 }
+
+// When speech finishes on its own, drop the highlight.
+watch(isSpeaking, (speaking) => {
+  if (!speaking) speakingIndex.value = null
+})
 
 function dismissProposal(turn: Turn, index: number) {
   turn.proposals?.splice(index, 1)
@@ -111,33 +126,14 @@ function dismissProposal(turn: Turn, index: number) {
         </div>
 
         <div class="w-full max-w-2xl">
-          <!-- big prompt box; the send button sits inside, bottom-right -->
-          <div class="relative">
-            <textarea
-              v-model="input"
-              rows="3"
-              placeholder="Ask Tala anything about your books…"
-              class="w-full resize-none rounded-2xl border border-gray-300 bg-white px-5 py-4 pr-14 text-base shadow-sm focus:border-[#2d6a4f] focus:outline-none focus:ring-1 focus:ring-[#2d6a4f]"
-              @keydown="onKeydown"
-            ></textarea>
-            <button
-              type="button"
-              aria-label="Send"
-              class="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#2d6a4f] text-white transition hover:bg-[#245A42] disabled:cursor-not-allowed disabled:opacity-40"
-              :disabled="!canSend"
-              @click="send"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                class="h-5 w-5"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-              >
-                <path d="M12 19V5M5 12l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-          </div>
+          <!-- big prompt box (textarea + dictation mic + send arrow) -->
+          <TalaComposer
+            v-model="input"
+            :rows="3"
+            :can-send="canSend"
+            placeholder="Ask Tala anything about your books…"
+            @send="send"
+          />
 
           <!-- suggestion chips, under the prompt box -->
           <div class="mt-3 flex flex-wrap justify-center gap-2">
@@ -181,6 +177,29 @@ function dismissProposal(turn: Turn, index: number) {
             <p v-if="turn.toolCalls" class="mt-1 px-1 text-xs text-gray-400">
               Checked: {{ turn.toolCalls.join(', ') }}
             </p>
+            <button
+              v-if="turn.role === 'assistant' && ttsSupported"
+              type="button"
+              class="mt-1 flex items-center gap-1 px-1 text-xs text-gray-400 hover:text-[#2d6a4f]"
+              @click="toggleSpeak(i, turn.content)"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path d="M11 5 6 9H2v6h4l5 4V5z" stroke-linecap="round" stroke-linejoin="round" />
+                <path
+                  v-if="speakingIndex === i"
+                  d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              {{ speakingIndex === i ? 'Stop' : 'Read aloud' }}
+            </button>
             <div v-if="turn.proposals" class="w-full max-w-[85%]">
               <TalaProposalCard
                 v-for="(p, j) in turn.proposals"
@@ -203,32 +222,14 @@ function dismissProposal(turn: Turn, index: number) {
 
         <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
 
-        <div class="relative mt-3">
-          <textarea
-            v-model="input"
-            rows="2"
-            placeholder="Reply to Tala…"
-            class="w-full resize-none rounded-2xl border border-gray-300 bg-white px-5 py-3 pr-14 text-base shadow-sm focus:border-[#2d6a4f] focus:outline-none focus:ring-1 focus:ring-[#2d6a4f]"
-            @keydown="onKeydown"
-          ></textarea>
-          <button
-            type="button"
-            aria-label="Send"
-            class="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#2d6a4f] text-white transition hover:bg-[#245A42] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!canSend"
-            @click="send"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              class="h-5 w-5"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <path d="M12 19V5M5 12l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-        </div>
+        <TalaComposer
+          class="mt-3"
+          v-model="input"
+          :rows="2"
+          :can-send="canSend"
+          placeholder="Reply to Tala…"
+          @send="send"
+        />
       </template>
     </div>
   </AppLayout>
