@@ -195,8 +195,9 @@ func freeAgentServiceWithHost(ts *testServer, host string) *integrations.Service
 // =============================================================================
 
 func TestFreeAgentIntegration_Status(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("credentials configured → has_credentials true, not connected", func(t *testing.T) {
 		seedProviderCreds(t, ts)
@@ -255,8 +256,9 @@ func TestFreeAgentIntegration_Status(t *testing.T) {
 // =============================================================================
 
 func TestFreeAgentIntegration_Connect(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("credentials configured → authorize_url with the OAuth params", func(t *testing.T) {
 		seedProviderCreds(t, ts)
@@ -304,6 +306,7 @@ func TestFreeAgentIntegration_Connect(t *testing.T) {
 // =============================================================================
 
 func TestFreeAgentIntegration_Callback(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	t.Cleanup(func() { ts.pool.Close() })
 
@@ -386,6 +389,7 @@ func TestFreeAgentIntegration_Callback(t *testing.T) {
 // =============================================================================
 
 func TestFreeAgentIntegration_Disconnect(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	t.Cleanup(func() { ts.pool.Close() })
 
@@ -433,8 +437,9 @@ func TestFreeAgentIntegration_Disconnect(t *testing.T) {
 // =============================================================================
 
 func TestFreeAgentIntegration_PushStatus(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.integrationService
 
@@ -543,8 +548,9 @@ func TestFreeAgentIntegration_PushStatus(t *testing.T) {
 // =============================================================================
 
 func TestFreeAgentIntegration_TenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	org, _ := newOrgWithOwner(t, ts)
 	// devUserID is a member of the dev org, NOT org. A token scoped to org is

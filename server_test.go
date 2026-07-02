@@ -178,7 +178,18 @@ func newTestServer(t *testing.T) *testServer {
 		t.Skip("DATABASE_URL not set — skipping database integration test")
 	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	// Cap MaxConns so the suite can run tests in parallel (t.Parallel) without
+	// exhausting the SHARED dev DB's connection slots. Each test builds its own
+	// pool, so under -parallel=N there are N pools alive at once; the pgx default
+	// (max(4, NumCPU)) would let that balloon (e.g. 10 pools × 10 = 100 conns) and
+	// starve other devs/CI. A test rarely holds more than 1–2 conns at a time, so 4
+	// is ample headroom while keeping the aggregate bounded (N × 4).
+	poolCfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatalf("could not parse database URL: %v", err)
+	}
+	poolCfg.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		t.Fatalf("could not connect to database: %v", err)
 	}
@@ -473,8 +484,8 @@ func spendingCategoryForOrg(t *testing.T, ts *testServer, orgID string) string {
 	}
 	// Fresh test org with no CoA — seed one spending account (idempotent).
 	if _, err := ts.pool.Exec(ctx, `
-		INSERT INTO categories (organisation_id, nominal_code, name, account_type)
-		VALUES ($1, '251', 'Sundry Expenses', 'ADMIN_EXPENSE')
+		INSERT INTO categories (organisation_id, nominal_code, name, account_type, default_vat)
+		VALUES ($1, '251', 'Sundry Expenses', 'ADMIN_EXPENSE', 'STANDARD')
 		ON CONFLICT (organisation_id, nominal_code) DO NOTHING`, orgID); err != nil {
 		t.Fatalf("spendingCategoryForOrg: insert: %v", err)
 	}
@@ -582,7 +593,7 @@ func contains(ss []string, s string) bool {
 //   - A row actually exists in the database after the request
 func TestHandleCreateExpense(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	categoryID := randomCategoryUUID(t, ts.pool)
 
@@ -740,8 +751,11 @@ func TestHandleCreateExpense(t *testing.T) {
 // description returns 400 Bad Request, not 500.
 // This tests the validation layer in the handler, not the service.
 func TestHandleCreateExpense_MissingDescription(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	// Deliberately omit description — it is `binding:"required"` in the struct
 	body := map[string]string{
@@ -769,8 +783,11 @@ func TestHandleCreateExpense_MissingDescription(t *testing.T) {
 // returns 500 (service returns an error) rather than panicking.
 // Once we add proper error types this should return 422 Unprocessable Entity.
 func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	categoryID := randomCategoryUUID(t, ts.pool)
 
@@ -811,7 +828,7 @@ func TestHandleCreateExpense_InvalidGrossValue(t *testing.T) {
 //     security counters, ...)
 func TestHandleLoginUser(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	const (
 		devEmail    = "dev@example.com"
@@ -912,7 +929,7 @@ func TestHandleLoginUser(t *testing.T) {
 // 401 Unauthorized (no token issued).
 func TestHandleLoginUser_WrongPassword(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	bodyBytes, _ := json.Marshal(map[string]string{
 		"email":    "dev@example.com",
@@ -933,7 +950,7 @@ func TestHandleLoginUser_WrongPassword(t *testing.T) {
 // country_code can be resolved) is refused, and no token is issued.
 func TestHandleLoginUser_NoOrganisationFails(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	ctx := context.Background()
 
@@ -974,8 +991,11 @@ func TestHandleLoginUser_NoOrganisationFails(t *testing.T) {
 // TestExpenses_RequireAuth verifies the expense routes reject requests with no
 // (or a malformed) bearer token with 401, before any handler logic runs.
 func TestExpenses_RequireAuth(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, _ := newOrgWithOwner(t, ts)
 
 	cases := []struct {
 		name   string
@@ -1007,8 +1027,11 @@ func TestExpenses_RequireAuth(t *testing.T) {
 // TestHandleListExpenses_OwnerSeesAll verifies an owner/admin can list expenses
 // for the whole organisation. The dev user is an owner of the dev org.
 func TestHandleListExpenses_OwnerSeesAll(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	// Create an expense as the dev owner so the list is non-empty.
 	created := createExpenseAs(t, ts, devUserID, devOrgID)
@@ -1030,8 +1053,11 @@ func TestHandleListExpenses_OwnerSeesAll(t *testing.T) {
 // TestExpenseOwnership_MemberScoped verifies a plain member sees only their own
 // expenses and is refused (403) when reading another user's expense.
 func TestExpenseOwnership_MemberScoped(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	// Owner creates an expense the member must NOT be able to see.
 	ownerExpense := createExpenseAs(t, ts, devUserID, devOrgID)
@@ -1123,10 +1149,10 @@ func createdByUserID(t *testing.T, ts *testServer, expenseID string) string {
 }
 
 // onBehalfBody builds a minimal valid create body that claims for claimantID.
-func onBehalfBody(t *testing.T, ts *testServer, claimantID string) expenses.CreateExpenseRequest {
+func onBehalfBody(t *testing.T, ts *testServer, orgID, claimantID string) expenses.CreateExpenseRequest {
 	t.Helper()
 	return expenses.CreateExpenseRequest{
-		CategoryID:       randomCategoryUUID(t, ts.pool),
+		CategoryID:       spendingCategoryForOrg(t, ts, orgID), // a category that belongs to orgID
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
@@ -1136,13 +1162,16 @@ func onBehalfBody(t *testing.T, ts *testServer, claimantID string) expenses.Crea
 }
 
 func TestHandleCreateExpense_OnBehalf(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("owner records on behalf of a member", func(t *testing.T) {
 		member := newMemberUser(t, ts, devOrgID)
 
-		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, member))
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, devOrgID, member))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1161,7 +1190,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 		member := newMemberUser(t, ts, devOrgID)
 
 		// Member tries to claim it for the owner (someone else) → 403.
-		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, devUserID))
+		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, devOrgID, devUserID))
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("member on behalf of another: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1170,7 +1199,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 	t.Run("owner on behalf of a non-member is rejected", func(t *testing.T) {
 		stranger := uuid.NewString() // a user id with no membership in this org
 
-		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, stranger))
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, devOrgID, stranger))
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Errorf("non-member claimant: expected 422, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1179,14 +1208,14 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 	t.Run("owner on behalf of a deactivated member is rejected", func(t *testing.T) {
 		deactivated := newDeactivatedMemberUser(t, ts, devOrgID)
 
-		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, deactivated))
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, devOrgID, deactivated))
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Errorf("deactivated claimant: expected 422, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("omitted user_id defaults to the caller", func(t *testing.T) {
-		body := onBehalfBody(t, ts, "") // start from a valid body...
+		body := onBehalfBody(t, ts, devOrgID, "") // start from a valid body...
 		body.UserID = nil               // ...then omit the claimant entirely.
 
 		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), body)
@@ -1209,7 +1238,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 		member := newMemberUser(t, ts, devOrgID)
 
 		// Passing your own user_id is a no-op claimant-wise and must NOT require admin.
-		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, member))
+		rec := postExpense(t, ts, bearer(t, ts, member, devOrgID), onBehalfBody(t, ts, devOrgID, member))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("member self-claim: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1221,7 +1250,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 	t.Run("detail endpoint exposes the claimant", func(t *testing.T) {
 		member := newMemberUser(t, ts, devOrgID)
 
-		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, member))
+		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), onBehalfBody(t, ts, devOrgID, member))
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("setup create: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1247,7 +1276,7 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 	})
 
 	t.Run("malformed user_id is a 400", func(t *testing.T) {
-		body := onBehalfBody(t, ts, "")
+		body := onBehalfBody(t, ts, devOrgID, "")
 		body.UserID = strPtr("not-a-uuid") // fails the binding:"omitempty,uuid" tag
 
 		rec := postExpense(t, ts, bearer(t, ts, devUserID, devOrgID), body)
@@ -1265,8 +1294,11 @@ func TestHandleCreateExpense_OnBehalf(t *testing.T) {
 // before the auth middleware runs, the allowed origin is echoed on real
 // requests, and a disallowed origin is not echoed.
 func TestCORS(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("preflight bypasses auth", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
@@ -1327,8 +1359,13 @@ func TestCORS(t *testing.T) {
 //     placeholder and confirms income/control accounts are excluded.
 //   - no token → 401.
 func TestHandleListExpenseCategories(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
+	// A fresh org has no Chart of Accounts; seed one so the picker list isn't empty.
+	spendingCategoryForOrg(t, ts, devOrgID)
 
 	t.Run("authenticated lists active grouped categories", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
@@ -1398,10 +1435,10 @@ func TestHandleListExpenseCategories(t *testing.T) {
 
 // validUpdateBody builds a complete, valid PUT body (fresh random category +
 // fields); individual subtests tweak what they care about.
-func validUpdateBody(t *testing.T, ts *testServer) expenses.UpdateExpenseRequest {
+func validUpdateBody(t *testing.T, ts *testServer, orgID string) expenses.UpdateExpenseRequest {
 	t.Helper()
 	return expenses.UpdateExpenseRequest{
-		CategoryID:       randomCategoryUUID(t, ts.pool),
+		CategoryID:       spendingCategoryForOrg(t, ts, orgID), // a category that belongs to orgID
 		DatedOn:          testutil.RandomDatedOn(),
 		Description:      testutil.RandomExpenseDescription(),
 		CurrencyCode:     "GBP",
@@ -1429,13 +1466,16 @@ func putExpense(t *testing.T, ts *testServer, id, authHeader string, body expens
 // member edits another's (403), unknown id (404), no token (401), and the
 // DRAFT/REJECTED status guard (409).
 func TestHandleUpdateExpense(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("owner edits own expense", func(t *testing.T) {
 		id := createExpenseAs(t, ts, devUserID, devOrgID)
 
-		body := validUpdateBody(t, ts)
+		body := validUpdateBody(t, ts, devOrgID)
 		body.Description = "Updated " + testutil.RandomExpenseDescription()
 		body.GrossValuePounds = "99.99"
 
@@ -1473,7 +1513,7 @@ func TestHandleUpdateExpense(t *testing.T) {
 		memberID := newMemberUser(t, ts, devOrgID)
 		id := createExpenseAs(t, ts, memberID, devOrgID)
 
-		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts, devOrgID))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("admin editing member's expense: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1483,21 +1523,21 @@ func TestHandleUpdateExpense(t *testing.T) {
 		ownerExpense := createExpenseAs(t, ts, devUserID, devOrgID)
 		memberID := newMemberUser(t, ts, devOrgID)
 
-		rec := putExpense(t, ts, ownerExpense, bearer(t, ts, memberID, devOrgID), validUpdateBody(t, ts))
+		rec := putExpense(t, ts, ownerExpense, bearer(t, ts, memberID, devOrgID), validUpdateBody(t, ts, devOrgID))
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("member editing owner's expense: expected 403, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("unknown id returns 404", func(t *testing.T) {
-		rec := putExpense(t, ts, uuid.NewString(), bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		rec := putExpense(t, ts, uuid.NewString(), bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts, devOrgID))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("expected 404, got %d — body: %s", rec.Code, rec.Body.String())
 		}
 	})
 
 	t.Run("requires auth", func(t *testing.T) {
-		rec := putExpense(t, ts, uuid.NewString(), "", validUpdateBody(t, ts))
+		rec := putExpense(t, ts, uuid.NewString(), "", validUpdateBody(t, ts, devOrgID))
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1510,7 +1550,7 @@ func TestHandleUpdateExpense(t *testing.T) {
 			"UPDATE expenses SET status='APPROVED' WHERE id=$1", id); err != nil {
 			t.Fatalf("set status: %v", err)
 		}
-		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+		rec := putExpense(t, ts, id, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts, devOrgID))
 		if rec.Code != http.StatusConflict {
 			t.Errorf("expected 409, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -1538,8 +1578,14 @@ func deleteExpense(t *testing.T, ts *testServer, id, authHeader string) *httptes
 // DRAFT/REJECTED expense, its authorization, the status guard, and the motivating
 // case — removing an abandoned Smart Upload capture so it leaves the inbox.
 func TestHandleDeleteExpense(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
+	// A fresh org has no Chart of Accounts; seed '251' so the Smart-Upload capture
+	// subtest can resolve its placeholder category.
+	spendingCategoryForOrg(t, ts, devOrgID)
 
 	t.Run("owner deletes own DRAFT → 204, soft-deleted, then 404", func(t *testing.T) {
 		id := createExpenseAs(t, ts, devUserID, devOrgID)
@@ -1726,8 +1772,11 @@ func gbVatRateID(t *testing.T, ts *testServer, fixed bool, rateBps int32) string
 //   - a rate from another country is rejected (422)
 //   - update recomputes VAT for a fixed-ratio rate
 func TestExpenseVAT(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	devAuth := bearer(t, ts, devUserID, devOrgID)
 	fixedRateID := gbVatRateID(t, ts, true, 2000)     // Standard Rate 20%
@@ -1735,7 +1784,7 @@ func TestExpenseVAT(t *testing.T) {
 
 	baseBody := func() expenses.CreateExpenseRequest {
 		return expenses.CreateExpenseRequest{
-			CategoryID:       randomCategoryUUID(t, ts.pool),
+			CategoryID:       spendingCategoryForOrg(t, ts, devOrgID),
 			DatedOn:          testutil.RandomDatedOn(),
 			Description:      testutil.RandomExpenseDescription(),
 			CurrencyCode:     "GBP",
@@ -1814,7 +1863,7 @@ func TestExpenseVAT(t *testing.T) {
 
 	t.Run("update recomputes fixed-ratio VAT", func(t *testing.T) {
 		id := createExpenseAs(t, ts, devUserID, devOrgID) // created with no VAT rate → vat 0
-		body := validUpdateBody(t, ts)
+		body := validUpdateBody(t, ts, devOrgID)
 		body.GrossValuePounds = "60.00" // VAT-inclusive total (£50 net + £10 VAT)
 		body.VATRateID = &fixedRateID
 
@@ -1900,7 +1949,7 @@ func extractResetToken(t *testing.T, body string) string {
 // garbage token (400).
 func TestPasswordReset(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	const oldPassword = "oldpassword123"
 	const newPassword = "newpassword456"
@@ -2133,10 +2182,13 @@ func namedCategory(t *testing.T, ts *testServer, orgID string) (id, name string)
 		WHERE organisation_id = $1 AND is_active AND is_system_managed = FALSE
 		  AND account_type IN ('COST_OF_SALES','ADMIN_EXPENSE')
 		ORDER BY account_type, nominal_code LIMIT 1`, orgID).Scan(&id, &name)
-	if err != nil {
-		t.Fatalf("namedCategory: %v", err)
+	if err == nil {
+		return id, name
 	}
-	return id, name
+	// Fresh ephemeral org (no Chart of Accounts): seed one spending account so the
+	// caller has a category that belongs to THIS org. spendingCategoryForOrg seeds
+	// '251' Sundry Expenses (+ registers its own cleanup).
+	return spendingCategoryForOrg(t, ts, orgID), "Sundry Expenses"
 }
 
 // gbStandardVatRateID returns the id of a seeded GB 20% fixed-ratio VAT rate, or
@@ -2176,10 +2228,13 @@ func newCategory(t *testing.T, ts *testServer, orgID string) string {
 // visibility rule as the list: an owner exports the whole org (and each row shows
 // the right claimant email), a plain member exports only their own.
 func TestExportExpenses_OwnerAllMemberOwn(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
-	cat := randomCategoryUUID(t, ts.pool)
+	cat := spendingCategoryForOrg(t, ts, devOrgID)
 	ownerDesc := "EXPORT-OWNER-" + uuid.NewString()
 	memberDesc := "EXPORT-MEMBER-" + uuid.NewString()
 
@@ -2216,8 +2271,11 @@ func TestExportExpenses_OwnerAllMemberOwn(t *testing.T) {
 // email, category name, DD/MM/YYYY date, currency, pounds money, default EC
 // status, and (when the VAT seed is present) the VAT rate/value columns.
 func TestExportExpenses_Formatting(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	catID, catName := namedCategory(t, ts, devOrgID)
 	desc := "EXPORT-FMT-" + uuid.NewString()
@@ -2267,8 +2325,11 @@ func TestExportExpenses_Formatting(t *testing.T) {
 // TestExportExpenses_MultiTenantIsolation verifies one org's export never leaks
 // another org's expenses (the export query is organisation-scoped).
 func TestExportExpenses_MultiTenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	otherOrg, otherOwner := newOrgWithOwner(t, ts)
 	otherCat := newCategory(t, ts, otherOrg)
@@ -2290,10 +2351,13 @@ func TestExportExpenses_MultiTenantIsolation(t *testing.T) {
 // a formula trigger (=) is prefixed with a single quote so a spreadsheet won't
 // execute it.
 func TestExportExpenses_CSVInjectionGuard(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
-	cat := randomCategoryUUID(t, ts.pool)
+	cat := spendingCategoryForOrg(t, ts, devOrgID)
 	desc := "=SUM(A1:A9)+" + uuid.NewString() // leading '=' would be a formula
 	createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", desc, "1.00", "")
 
@@ -2315,10 +2379,13 @@ func TestExportExpenses_CSVInjectionGuard(t *testing.T) {
 // exactly those rows (the SPA's "export only the filtered list" path) and nothing
 // else — even for an admin who could otherwise see the whole org.
 func TestExportExpenses_FilteredByIDs(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
-	cat := randomCategoryUUID(t, ts.pool)
+	cat := spendingCategoryForOrg(t, ts, devOrgID)
 	descA := "EXPORT-IDS-A-" + uuid.NewString()
 	descB := "EXPORT-IDS-B-" + uuid.NewString()
 	idA := createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", descA, "10.00", "")
@@ -2341,8 +2408,11 @@ func TestExportExpenses_FilteredByIDs(t *testing.T) {
 // list (filters matched no rows) yields a header-only CSV — distinct from a
 // no-body export, which means "everything".
 func TestExportExpenses_EmptyIDsExportsNothing(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	recs := exportCSVIDs(t, ts, devUserID, devOrgID, []string{})
 	assertHeader(t, recs)
@@ -2356,10 +2426,13 @@ func TestExportExpenses_EmptyIDsExportsNothing(t *testing.T) {
 // id plus another org's id gets back only their own row (the owner's is dropped by
 // the member-sees-own rule, the other org's by org scoping).
 func TestExportExpenses_ByIDsOwnershipAndTenantScoped(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
-	cat := randomCategoryUUID(t, ts.pool)
+	cat := spendingCategoryForOrg(t, ts, devOrgID)
 	ownerDesc := "EXPORT-IDS-OWNER-" + uuid.NewString()
 	memberDesc := "EXPORT-IDS-MEMBER-" + uuid.NewString()
 	ownerExp := createExpenseWith(t, ts, devUserID, devOrgID, cat, "2026-06-17", ownerDesc, "5.00", "")
@@ -2409,8 +2482,11 @@ func trimZeros(s string) string {
 //
 // The dev org's native currency is GBP. Money conversion uses money.ConvertMinor (HALF-UP).
 func TestExpenseFX(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	authHeader := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryForOrg(t, ts, devOrgID)

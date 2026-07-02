@@ -35,8 +35,11 @@ func (f *fakeEventPublisher) PublishExpenseApproved(_ context.Context, e expense
 }
 
 func TestExpenseApproved_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	devAuth := bearer(t, ts, devUserID, devOrgID) // dev user is an owner/admin → may approve
 
@@ -44,7 +47,7 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 		fake := &fakeEventPublisher{}
 		ts.expenseService.SetPublisher(fake)
 
-		_, expenseID := submittedExpenseByMember(t, ts)
+		_, expenseID := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -88,7 +91,7 @@ func TestExpenseApproved_PublishesEvent(t *testing.T) {
 		fake := &fakeEventPublisher{err: errors.New("pubsub unavailable")}
 		ts.expenseService.SetPublisher(fake)
 
-		_, expenseID := submittedExpenseByMember(t, ts)
+		_, expenseID := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("approve with a failing publisher: expected 200 (best-effort), got %d — body: %s", rec.Code, rec.Body.String())
@@ -113,8 +116,11 @@ func postRepush(t *testing.T, ts *testServer, id, authHeader string) *httptest.R
 }
 
 func TestRepushApprovedExpense(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	devAuth := bearer(t, ts, devUserID, devOrgID) // owner/admin
 
@@ -122,7 +128,7 @@ func TestRepushApprovedExpense(t *testing.T) {
 		fake := &fakeEventPublisher{}
 		ts.expenseService.SetPublisher(fake)
 
-		_, expenseID := submittedExpenseByMember(t, ts)
+		_, expenseID := submittedExpenseByMember(t, ts, devOrgID)
 		if rec := postStatus(t, ts, expenseID, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
 			t.Fatalf("approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}

@@ -84,11 +84,11 @@ func readWorkflowCols(t *testing.T, ts *testServer, id string) workflowCols {
 // submittedExpenseByMember creates a fresh active member, has them create a
 // DRAFT and submit it, and returns (memberID, expenseID) sitting in SUBMITTED.
 // newMemberUser's t.Cleanup removes the expense afterwards.
-func submittedExpenseByMember(t *testing.T, ts *testServer) (memberID, expenseID string) {
+func submittedExpenseByMember(t *testing.T, ts *testServer, orgID string) (memberID, expenseID string) {
 	t.Helper()
-	memberID = newMemberUser(t, ts, devOrgID)
-	expenseID = createExpenseAs(t, ts, memberID, devOrgID)
-	rec := postStatus(t, ts, expenseID, bearer(t, ts, memberID, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
+	memberID = newMemberUser(t, ts, orgID)
+	expenseID = createExpenseAs(t, ts, memberID, orgID)
+	rec := postStatus(t, ts, expenseID, bearer(t, ts, memberID, orgID), expenses.ChangeExpenseStatusRequest{Action: "submit"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("arrange submit: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
@@ -126,8 +126,11 @@ func getExpenseDetail(t *testing.T, ts *testServer, id, authHeader string) expen
 // admin case), request validation (400 binding / 422 service guard), auth (401),
 // and multi-tenant isolation (404).
 func TestHandleChangeExpenseStatus(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	devAuth := bearer(t, ts, devUserID, devOrgID) // the dev user is an org owner (admin)
 
@@ -154,7 +157,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("approve: admin approves submitted → APPROVED, approver+time set, submitted_at preserved", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		before := readWorkflowCols(t, ts, id)
 		if before.submittedAt == nil {
 			t.Fatal("precondition: submitted_at should be set after submit")
@@ -188,7 +191,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("reject: admin rejects submitted with note → REJECTED, note stored, submitted_at preserved", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		before := readWorkflowCols(t, ts, id)
 
 		const note = "Missing VAT receipt — please attach and resubmit."
@@ -213,7 +216,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("reopen: rejected → DRAFT, workflow metadata cleared", func(t *testing.T) {
-		member, id := submittedExpenseByMember(t, ts)
+		member, id := submittedExpenseByMember(t, ts, devOrgID)
 		// Walk to REJECTED first (admin rejects).
 		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "fix it"}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange reject: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -273,7 +276,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	// ---- Authorization → 403 (and a positive admin case) ------------------
 
 	t.Run("non-admin claimant cannot approve own submitted → 403", func(t *testing.T) {
-		member, id := submittedExpenseByMember(t, ts)
+		member, id := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
@@ -281,7 +284,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("non-admin claimant cannot reject own submitted → 403", func(t *testing.T) {
-		member, id := submittedExpenseByMember(t, ts)
+		member, id := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, id, bearer(t, ts, member, devOrgID), expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: "self-reject?"})
 		if rec.Code != http.StatusForbidden {
 			t.Errorf("expected 403, got %d — body: %s", rec.Code, rec.Body.String())
@@ -298,7 +301,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("owner/admin can approve a member's submitted expense → 200", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"})
 		if rec.Code != http.StatusOK {
 			t.Errorf("expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -308,7 +311,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	// ---- Validation: binding (400) and service guard (422) ----------------
 
 	t.Run("reject without note → 400 (binding)", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject"})
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("expected 400, got %d — body: %s", rec.Code, rec.Body.String())
@@ -316,7 +319,7 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 	})
 
 	t.Run("reject with whitespace-only note → 422 (service guard)", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		// A single space passes the `required_if` binding (it's non-empty) but the
 		// service trims it and rejects → 422, exercising the service-layer guard
 		// that exists independently of the HTTP binding.
@@ -370,8 +373,11 @@ func TestHandleChangeExpenseStatus(t *testing.T) {
 // guards on the id, the action, and the rejection note are checked here too.
 // These return before any DB work, so the placeholder ids need not exist.
 func TestChangeExpenseStatusServiceGuards(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	ctx := context.Background()
 	caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
@@ -397,13 +403,16 @@ func TestChangeExpenseStatusServiceGuards(t *testing.T) {
 // detail endpoint (GET /api/v1/expenses/:id, via v_expenses_full), and read as
 // nil when they don't apply.
 func TestExpenseDetailExposesApprovalFields(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	devAuth := bearer(t, ts, devUserID, devOrgID) // the dev user is an org owner (admin)
 
 	t.Run("rejected: rejection_note set, approved_by_user_id nil", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		const note = "Receipt is illegible — please re-upload."
 		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "reject", RejectionNote: note}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange reject: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
@@ -422,7 +431,7 @@ func TestExpenseDetailExposesApprovalFields(t *testing.T) {
 	})
 
 	t.Run("approved: approved_by_user_id set to approver, rejection_note nil", func(t *testing.T) {
-		_, id := submittedExpenseByMember(t, ts)
+		_, id := submittedExpenseByMember(t, ts, devOrgID)
 		if rec := postStatus(t, ts, id, devAuth, expenses.ChangeExpenseStatusRequest{Action: "approve"}); rec.Code != http.StatusOK {
 			t.Fatalf("arrange approve: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 		}
@@ -456,8 +465,9 @@ func TestExpenseDetailExposesApprovalFields(t *testing.T) {
 // un-counted states and are unaffected. The period is "filed" by inserting a
 // marked_as_filed vat_returns row — all the IsDateInFiledPeriod guard reads.
 func TestExpenseApproveFiledPeriodLock(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)

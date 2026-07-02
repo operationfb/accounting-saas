@@ -171,8 +171,9 @@ func vatSeedExplanation(t *testing.T, ts *testServer, orgID, txnID, datedOn, ety
 }
 
 func TestHandleGetVatReturn(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)
@@ -278,8 +279,9 @@ func TestHandleGetVatReturn(t *testing.T) {
 // by document date. Using PARTIAL payments makes the cash figures differ from what
 // the full documents would give — proving the documents themselves are excluded.
 func TestHandleGetVatReturnCash(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)
@@ -366,8 +368,9 @@ func markFiledReq(t *testing.T, ts *testServer, authHeader, periodKey string) *h
 // is marked filed, a bill dated inside that period can no longer be created, edited or
 // deleted (409), while bills in other periods are unaffected.
 func TestVatFiledPeriodLock(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)
@@ -452,8 +455,9 @@ func TestVatFiledPeriodLock(t *testing.T) {
 // expense into the period DIRECTLY (bypassing the service lock) — a live recompute
 // would change Box 4, but the snapshot must hold the figure that was filed.
 func TestFiledReturnShowsSnapshotNotLiveRecompute(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)

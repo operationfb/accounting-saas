@@ -100,12 +100,16 @@ func createBankTxn(t *testing.T, q *banking.Queries, orgID string, accID uuid.UU
 // =============================================================================
 
 func TestBankingDataLayer(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	// t.Cleanup (not defer): parallel subtests resume AFTER this parent returns, so a
+	// defer would close the pool out from under them.
+	t.Cleanup(func() { ts.pool.Close() })
 	q := banking.New(ts.pool)
 	ctx := context.Background()
 
 	t.Run("create round-trips; balance holds values above int32", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		// £90,000,000 in pence. int32 maxes at ~£21.4m, so this only fits int64 —
 		// proving the BIGINT/int64 money path (the reason these columns aren't INTEGER).
@@ -134,6 +138,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("derived balance = opening + signed sum of transactions", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, org, user, func(p *banking.CreateBankAccountParams) {
 			p.OpeningBalanceMinor = 100_000 // £1,000.00
@@ -163,6 +168,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("a soft-deleted transaction drops out of the derived balance", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, org, user, func(p *banking.CreateBankAccountParams) { p.OpeningBalanceMinor = 0 })
 		createBankTxn(t, q, org, acc.ID, mkdate(2026, 6, 1), 7_000, nil) // kept
@@ -183,6 +189,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("at most one primary account per org", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		primary := func(p *banking.CreateBankAccountParams) { p.IsPrimary = true }
 		createBankAccount(t, ts, q, org, user, primary) // first primary: ok
@@ -206,6 +213,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("a soft-deleted account disappears from get and list", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, org, user, nil)
 		if err := q.SoftDeleteBankAccount(ctx, banking.SoftDeleteBankAccountParams{ID: acc.ID, OrganisationID: mustUUID(t, org)}); err != nil {
@@ -224,6 +232,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("queries are organisation-scoped", func(t *testing.T) {
+		t.Parallel()
 		orgA, userA := newOrgWithOwner(t, ts)
 		orgB, _ := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, orgA, userA, nil)
@@ -243,6 +252,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("feed external_id dedupes per account; manual NULLs don't", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, org, user, nil)
 
@@ -270,6 +280,7 @@ func TestBankingDataLayer(t *testing.T) {
 	})
 
 	t.Run("transactions list newest-first and paginated", func(t *testing.T) {
+		t.Parallel()
 		org, user := newOrgWithOwner(t, ts)
 		acc := createBankAccount(t, ts, q, org, user, nil)
 		createBankTxn(t, q, org, acc.ID, mkdate(2026, 6, 1), 100, nil)

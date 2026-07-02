@@ -76,7 +76,7 @@ func getAdmin(t *testing.T, ts *testServer, path, authHeader string) *httptest.R
 // TestPlatformAdminAuthorization asserts every /admin route is superuser-gated.
 func TestPlatformAdminAuthorization(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	// A normal org owner (not a superuser) and a valid org id for their token.
 	orgA, owner := newOrgWithOwner(t, ts)
@@ -112,7 +112,7 @@ func TestPlatformAdminAuthorization(t *testing.T) {
 // the superuser sees orgs across tenants.
 func TestPlatformAdminListOrganisations(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, _ := newOrgWithOwner(t, ts) // has one member (the owner)
@@ -152,7 +152,7 @@ func TestPlatformAdminListOrganisations(t *testing.T) {
 // is_superuser badge.
 func TestPlatformAdminListUsers(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	_, owner := newOrgWithOwner(t, ts)
@@ -186,7 +186,7 @@ func TestPlatformAdminListUsers(t *testing.T) {
 // TestPlatformAdminGetOrganisation covers the org drill-in (members list).
 func TestPlatformAdminGetOrganisation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, owner := newOrgWithOwner(t, ts)
@@ -234,7 +234,7 @@ func TestPlatformAdminGetOrganisation(t *testing.T) {
 // to, across tenants.
 func TestPlatformAdminGetUser(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, user := newOrgWithOwner(t, ts) // owner of orgA
@@ -295,7 +295,7 @@ func decodeAdminOrgDetails(t *testing.T, body []byte) organisation.OrganisationD
 // GET/PUT /api/v1/admin/organisations/:id/company-details.
 func TestPlatformAdminCompanyDetails(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, owner := newOrgWithOwner(t, ts) // a throwaway target org (GB / GBP)
@@ -408,7 +408,7 @@ func decodeAdminOrg(t *testing.T, body []byte) platformadmin.AdminOrganisationRe
 // creating an org AND provisioning its chart of accounts in one transaction.
 func TestPlatformAdminCreateOrganisation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	path := "/api/v1/admin/organisations"
@@ -522,7 +522,7 @@ func orgDetailMemberRoles(t *testing.T, body []byte) map[string]string {
 // an EXISTING user to an org.
 func TestPlatformAdminAddMember(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, _ := newOrgWithOwner(t, ts)
@@ -588,7 +588,7 @@ func TestPlatformAdminAddMember(t *testing.T) {
 // a NEW user under an org.
 func TestPlatformAdminCreateUser(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	super := newSuperuser(t, ts)
 	orgA, _ := newOrgWithOwner(t, ts)

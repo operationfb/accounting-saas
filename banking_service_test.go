@@ -936,7 +936,7 @@ VERSION:102
 // transaction_type_categories mapping already exists for every org).
 func TestExplainService(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.bankingService
 
@@ -1167,7 +1167,7 @@ func TestExplainService(t *testing.T) {
 // =============================================================================
 func TestInvoiceReceiptExplain(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.bankingService
 
@@ -1424,7 +1424,7 @@ func TestInvoiceReceiptExplain(t *testing.T) {
 // magnitudes. Real Postgres via the harness.
 func TestBillPaymentExplain(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.bankingService
 
@@ -1589,7 +1589,7 @@ func TestBillPaymentExplain(t *testing.T) {
 // is "filed" by inserting a marked_as_filed vat_returns row — all the guard reads.
 func TestExplanationFiledPeriodLock(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	svc := ts.bankingService
 

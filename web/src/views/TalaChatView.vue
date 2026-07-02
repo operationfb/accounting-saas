@@ -86,97 +86,150 @@ function dismissProposal(turn: Turn, index: number) {
 
 <template>
   <AppLayout>
-    <div class="mx-auto flex h-[calc(100vh-13rem)] min-h-[28rem] max-w-3xl flex-col">
-    <header class="mb-3">
-      <h1 class="text-xl font-semibold text-gray-800">Tala</h1>
-      <p class="text-sm text-gray-500">Your AI accountant assistant</p>
-    </header>
-
-    <div
-      ref="scroller"
-      class="flex-1 space-y-4 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4"
-    >
-      <!-- empty state -->
-      <div v-if="transcript.length === 0" class="mx-auto max-w-md pt-8 text-center">
-        <div
-          class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#2d6a4f] text-lg font-bold text-white"
-        >
-          T
-        </div>
-        <h2 class="text-lg font-semibold text-gray-800">Hi, I'm Tala 👋</h2>
-        <p class="mt-1 text-sm text-gray-500">
-          Ask about your expenses, invoices, VAT or cash — or ask me to help you get something done.
-        </p>
-        <div class="mt-4 flex flex-wrap justify-center gap-2">
-          <button
-            v-for="ex in examples"
-            :key="ex"
-            class="rounded-full border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:border-[#2d6a4f] hover:text-[#2d6a4f]"
-            @click="useExample(ex)"
+    <!-- The root width sizes the ACTIVE conversation (transcript + composer, both
+         full-width here). The empty state stays narrow via its own inner max-w-2xl. -->
+    <div class="mx-auto flex h-[calc(100vh-12rem)] min-h-[30rem] max-w-5xl flex-col">
+      <!-- ================================================================ -->
+      <!-- EMPTY STATE — Claude-style first screen: a centred greeting, a    -->
+      <!-- big prompt box with the send arrow INSIDE it, and the suggestion  -->
+      <!-- chips underneath.                                                 -->
+      <!-- ================================================================ -->
+      <div
+        v-if="transcript.length === 0"
+        class="flex flex-1 flex-col items-center justify-center px-2"
+      >
+        <div class="mb-6 flex flex-col items-center text-center">
+          <div
+            class="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#2d6a4f] text-2xl font-bold text-white"
           >
-            {{ ex }}
+            T
+          </div>
+          <h1 class="text-2xl font-semibold text-gray-800">Hi, I'm Tala 👋</h1>
+          <p class="mt-1 text-gray-500">
+            Your AI accountant — ask about your expenses, invoices, VAT or cash.
+          </p>
+        </div>
+
+        <div class="w-full max-w-2xl">
+          <!-- big prompt box; the send button sits inside, bottom-right -->
+          <div class="relative">
+            <textarea
+              v-model="input"
+              rows="3"
+              placeholder="Ask Tala anything about your books…"
+              class="w-full resize-none rounded-2xl border border-gray-300 bg-white px-5 py-4 pr-14 text-base shadow-sm focus:border-[#2d6a4f] focus:outline-none focus:ring-1 focus:ring-[#2d6a4f]"
+              @keydown="onKeydown"
+            ></textarea>
+            <button
+              type="button"
+              aria-label="Send"
+              class="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#2d6a4f] text-white transition hover:bg-[#245A42] disabled:cursor-not-allowed disabled:opacity-40"
+              :disabled="!canSend"
+              @click="send"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="M12 19V5M5 12l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- suggestion chips, under the prompt box -->
+          <div class="mt-3 flex flex-wrap justify-center gap-2">
+            <button
+              v-for="ex in examples"
+              :key="ex"
+              class="rounded-full border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 hover:border-[#2d6a4f] hover:text-[#2d6a4f]"
+              @click="useExample(ex)"
+            >
+              {{ ex }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================================================================ -->
+      <!-- ACTIVE CONVERSATION — the transcript, then a bottom composer that -->
+      <!-- reuses the same arrow-in-box prompt style.                        -->
+      <!-- ================================================================ -->
+      <template v-else>
+        <div
+          ref="scroller"
+          class="flex-1 space-y-4 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-4"
+        >
+          <div
+            v-for="(turn, i) in transcript"
+            :key="i"
+            class="flex flex-col"
+            :class="turn.role === 'user' ? 'items-end' : 'items-start'"
+          >
+            <div
+              class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm"
+              :class="
+                turn.role === 'user'
+                  ? 'bg-[#2d6a4f] text-white'
+                  : 'bg-white text-gray-800 shadow-sm ring-1 ring-gray-200'
+              "
+            >
+              {{ turn.content }}
+            </div>
+            <p v-if="turn.toolCalls" class="mt-1 px-1 text-xs text-gray-400">
+              Checked: {{ turn.toolCalls.join(', ') }}
+            </p>
+            <div v-if="turn.proposals" class="w-full max-w-[85%]">
+              <TalaProposalCard
+                v-for="(p, j) in turn.proposals"
+                :key="j"
+                :proposal="p"
+                @dismissed="dismissProposal(turn, j)"
+              />
+            </div>
+          </div>
+
+          <!-- thinking indicator -->
+          <div v-if="loading" class="flex items-start">
+            <div
+              class="rounded-2xl bg-white px-4 py-3 text-sm text-gray-400 shadow-sm ring-1 ring-gray-200"
+            >
+              Tala is thinking…
+            </div>
+          </div>
+        </div>
+
+        <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
+
+        <div class="relative mt-3">
+          <textarea
+            v-model="input"
+            rows="2"
+            placeholder="Reply to Tala…"
+            class="w-full resize-none rounded-2xl border border-gray-300 bg-white px-5 py-3 pr-14 text-base shadow-sm focus:border-[#2d6a4f] focus:outline-none focus:ring-1 focus:ring-[#2d6a4f]"
+            @keydown="onKeydown"
+          ></textarea>
+          <button
+            type="button"
+            aria-label="Send"
+            class="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#2d6a4f] text-white transition hover:bg-[#245A42] disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!canSend"
+            @click="send"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              class="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+            >
+              <path d="M12 19V5M5 12l7-7 7 7" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
           </button>
         </div>
-      </div>
-
-      <!-- transcript -->
-      <div
-        v-for="(turn, i) in transcript"
-        :key="i"
-        class="flex flex-col"
-        :class="turn.role === 'user' ? 'items-end' : 'items-start'"
-      >
-        <div
-          class="max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm"
-          :class="
-            turn.role === 'user'
-              ? 'bg-[#2d6a4f] text-white'
-              : 'bg-white text-gray-800 shadow-sm ring-1 ring-gray-200'
-          "
-        >
-          {{ turn.content }}
-        </div>
-        <p v-if="turn.toolCalls" class="mt-1 px-1 text-xs text-gray-400">
-          Checked: {{ turn.toolCalls.join(', ') }}
-        </p>
-        <div v-if="turn.proposals" class="w-full max-w-[85%]">
-          <TalaProposalCard
-            v-for="(p, j) in turn.proposals"
-            :key="j"
-            :proposal="p"
-            @dismissed="dismissProposal(turn, j)"
-          />
-        </div>
-      </div>
-
-      <!-- thinking indicator -->
-      <div v-if="loading" class="flex items-start">
-        <div
-          class="rounded-2xl bg-white px-4 py-3 text-sm text-gray-400 shadow-sm ring-1 ring-gray-200"
-        >
-          Tala is thinking…
-        </div>
-      </div>
-    </div>
-
-    <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
-
-    <form class="mt-3 flex items-end gap-2" @submit.prevent="send">
-      <textarea
-        v-model="input"
-        rows="1"
-        placeholder="Ask Tala anything about your books…"
-        class="max-h-40 min-h-[44px] flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#2d6a4f] focus:outline-none focus:ring-1 focus:ring-[#2d6a4f]"
-        @keydown="onKeydown"
-      ></textarea>
-      <button
-        type="submit"
-        class="h-[44px] rounded-lg bg-[#2d6a4f] px-4 text-sm font-medium text-white hover:bg-[#245A42] disabled:opacity-50"
-        :disabled="!canSend"
-      >
-        Send
-      </button>
-    </form>
+      </template>
     </div>
   </AppLayout>
 </template>

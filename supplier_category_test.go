@@ -106,7 +106,7 @@ func cleanupMapKeys(t *testing.T, ts *testServer, orgID string, keys ...string) 
 
 func TestSupplierCategoryLearnTrigger(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	travel := categoryUUID(t, ts, devOrgID, "254")   // Travel and Subsistence
 	sundries := categoryUUID(t, ts, devOrgID, "251") // Sundry Expenses (also the Smart Upload placeholder)
@@ -231,7 +231,7 @@ func TestSupplierCategoryLearnTrigger(t *testing.T) {
 func TestSupplierCategoryAutoCategorise(t *testing.T) {
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	devOrg := mustUUID(t, devOrgID)
 	travel := categoryUUID(t, ts, devOrgID, "254")

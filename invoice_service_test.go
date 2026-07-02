@@ -194,8 +194,11 @@ func seedRate(t *testing.T, ts *testServer, code, day, rate string) {
 // rate for its date (and the native_* totals are converted with it); an explicit
 // rate still wins; and with no stored rate it's a clean 422, not a 500.
 func TestInvoiceForeignCurrencyAutoFillsRate(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
 
 	t.Run("auto-fills from the stored rate for the invoice date", func(t *testing.T) {
@@ -294,8 +297,11 @@ func assertEq(t *testing.T, field, got, want string) {
 }
 
 func TestInvoiceFXSummary(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
 
 	t.Run("unrealised loss on an open foreign invoice", func(t *testing.T) {
@@ -401,8 +407,11 @@ func TestInvoiceFXSummary(t *testing.T) {
 // =============================================================================
 
 func TestHandleCreateInvoice(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("two lines: totals + VAT correct and persisted", func(t *testing.T) {
 		contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -599,8 +608,11 @@ func TestHandleCreateInvoice(t *testing.T) {
 // 422, independent of the HTTP boundary. A valid reference is supplied so the
 // reference guard (which runs first) doesn't mask the contact check.
 func TestInvoiceService_BadContact_Direct(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	_, err := ts.invoiceService.CreateInvoice(
 		context.Background(), mustUUID(t, devUserID), mustUUID(t, devOrgID),
@@ -614,8 +626,11 @@ func TestInvoiceService_BadContact_Direct(t *testing.T) {
 // =============================================================================
 
 func TestHandleGetAndListInvoice(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("get found with items, then appears in list", func(t *testing.T) {
 		contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -668,8 +683,9 @@ func TestHandleGetAndListInvoice(t *testing.T) {
 // the next-reference endpoint + the "advance only when the suggested number is
 // used" rule, plus the duplicate-reference 409.
 func TestInvoiceAutoNumber(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgB, userB := newOrgWithOwner(t, ts)
 	authB := bearer(t, ts, userB, orgB)
@@ -741,8 +757,9 @@ func TestInvoiceAutoNumber(t *testing.T) {
 // The suggestion must jump to one PAST the highest used number, never re-suggesting
 // a taken one.
 func TestInvoiceAutoNumber_SelfHeals(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgB, userB := newOrgWithOwner(t, ts)
 	authB := bearer(t, ts, userB, orgB)
@@ -782,8 +799,11 @@ func TestInvoiceAutoNumber_SelfHeals(t *testing.T) {
 // =============================================================================
 
 func TestHandleUpdateInvoice(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("creator updates DRAFT: lines rebuilt, totals recomputed", func(t *testing.T) {
 		contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -874,8 +894,11 @@ func TestHandleUpdateInvoice(t *testing.T) {
 // =============================================================================
 
 func TestHandleDeleteInvoice(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("creator deletes DRAFT → 204, soft-deleted, then 404 + absent from list", func(t *testing.T) {
 		contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -930,8 +953,11 @@ func TestHandleDeleteInvoice(t *testing.T) {
 // =============================================================================
 
 func TestHandleInvoiceStatus(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("issue DRAFT→SENT (display Open), schedule/send, write_off, refund, reopen", func(t *testing.T) {
 		contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -1000,8 +1026,11 @@ func TestHandleInvoiceStatus(t *testing.T) {
 // =============================================================================
 
 func TestInvoiceDisplayStatus(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 
 	// setPaid sets paid_value_minor directly (there is no payments API yet).
@@ -1073,8 +1102,11 @@ func TestInvoiceDisplayStatus(t *testing.T) {
 // =============================================================================
 
 func TestInvoices_TenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
 	invoiceA := createInvoiceAs(t, ts, devUserID, devOrgID, contactID)
@@ -1109,8 +1141,9 @@ func TestInvoices_TenantIsolation(t *testing.T) {
 // Receipt explanation: only SENT, not-fully-paid invoices, org-scoped. Invoices are
 // seeded directly so total/paid/status are exact.
 func TestListOutstandingInvoices(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	org, user := newOrgWithOwner(t, ts)
@@ -1169,8 +1202,9 @@ func TestListOutstandingInvoices(t *testing.T) {
 // values; the end-to-end path (a real bank receipt blocks reopen) is in
 // TestInvoiceReceiptExplain.
 func TestReopenGuardWithPayments(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	org, user := newOrgWithOwner(t, ts)
@@ -1224,8 +1258,9 @@ func TestReopenGuardWithPayments(t *testing.T) {
 // (schedule), and any transition outside the filed period, is unaffected. The period
 // is "filed" by inserting a marked_as_filed vat_returns row.
 func TestInvoiceStatusFiledPeriodLock(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)

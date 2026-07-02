@@ -217,7 +217,10 @@ func setBillPaid(t *testing.T, ts *testServer, id string, paidMinor int64) {
 // =============================================================================
 
 func TestCreateBill(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 
@@ -329,7 +332,10 @@ func TestCreateBill(t *testing.T) {
 // =============================================================================
 
 func TestBillValidation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -412,7 +418,10 @@ func TestBillValidation(t *testing.T) {
 // =============================================================================
 
 func TestGetAndListBill(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -447,7 +456,10 @@ func TestGetAndListBill(t *testing.T) {
 }
 
 func TestUpdateBill(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -498,7 +510,10 @@ func TestUpdateBill(t *testing.T) {
 // =============================================================================
 
 func TestDeleteBill(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
@@ -539,7 +554,10 @@ func TestDeleteBill(t *testing.T) {
 // =============================================================================
 
 func TestBillAuthz(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
 
@@ -567,7 +585,10 @@ func TestBillAuthz(t *testing.T) {
 }
 
 func TestBillIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)
 	id := createBillAs(t, ts, devUserID, devOrgID, contactID, categoryID)
@@ -612,7 +633,13 @@ func TestBillIsolation(t *testing.T) {
 // =============================================================================
 
 func TestBillCategoriesEndpoint(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
+	// A fresh org has no Chart of Accounts; seed one spending account so the picker isn't empty.
+	spendingCategoryForOrg(t, ts, devOrgID)
 	rec := billCategoriesReq(t, ts, bearer(t, ts, devUserID, devOrgID))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200 — body: %s", rec.Code, rec.Body.String())
@@ -650,7 +677,10 @@ func assertMoney(t *testing.T, field, got, want string) {
 // =============================================================================
 
 func TestListOutstandingBills(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	auth := bearer(t, ts, devUserID, devOrgID)
 	categoryID := spendingCategoryID(t, ts, devOrgID)
 	contactID := createContactAs(t, ts, devUserID, devOrgID)

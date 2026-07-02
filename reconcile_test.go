@@ -30,7 +30,7 @@ import (
 
 func TestExplanationRecomputeTrigger(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	q := banking.New(ts.pool)
 	ctx := context.Background()
 
@@ -128,7 +128,7 @@ func TestExplanationRecomputeTrigger(t *testing.T) {
 
 func TestListCategoriesForType(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	cq := categories.New(ts.pool)
 	ctx := context.Background()
 	// The seeded dev org (db/seeds/categories.sql targets it). Read-only test.

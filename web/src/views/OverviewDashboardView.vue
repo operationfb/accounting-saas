@@ -22,7 +22,7 @@ const tab = ref<'overview' | 'vat'>('overview')
   <AppLayout>
     <!-- Header -->
     <div class="mb-[18px]">
-      <h1 class="text-[22px] font-bold">Overview</h1>
+      <h1 class="text-[22px] font-bold">Dashboards</h1>
     </div>
 
     <!-- Tabs -->

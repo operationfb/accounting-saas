@@ -33,8 +33,9 @@ import (
 )
 
 func TestListVatRatesByCountry(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	ctx := context.Background()
 	// The query lives in the expenses package (vat_rates is defined in
@@ -143,8 +144,11 @@ func TestListVatRatesByCountry(t *testing.T) {
 // rates valid today (with rate_bps, the "20%" display form, and is_fixed_ratio),
 // excludes the expired temporary rate, and requires a valid login.
 func TestHandleListVATRates(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("authenticated lists the caller org's country rates", func(t *testing.T) {
 		recorder := httptest.NewRecorder()

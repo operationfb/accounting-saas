@@ -164,8 +164,9 @@ func rowByCode(t *testing.T, tb reports.TrialBalanceResponse, code string) repor
 // into the correct Debit/Credit column, includes the zero-net account, lists rows
 // ordered by nominal code, and balances (total_debit == total_credit).
 func TestTrialBalanceHappyPath(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 
@@ -230,8 +231,9 @@ func TestTrialBalanceHappyPath(t *testing.T) {
 // balances (a reversal is a real journal entry; excluding it would unbalance the
 // report). The reversal halves Debtors and Sales back down.
 func TestTrialBalanceReversalIncluded(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
@@ -263,8 +265,9 @@ func TestTrialBalanceReversalIncluded(t *testing.T) {
 
 // TestTrialBalanceDateFilter confirms ?date excludes entries dated after it.
 func TestTrialBalanceDateFilter(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
@@ -290,8 +293,9 @@ func TestTrialBalanceDateFilter(t *testing.T) {
 // TestTrialBalanceMultiTenant confirms one org's ledger never leaks into another's
 // trial balance.
 func TestTrialBalanceMultiTenant(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgA, ownerA := newOrgWithOwner(t, ts)
 	orgB, _ := newOrgWithOwner(t, ts)
@@ -321,8 +325,9 @@ func TestTrialBalanceMultiTenant(t *testing.T) {
 
 // TestTrialBalanceRequiresAuth confirms an unauthenticated request is rejected.
 func TestTrialBalanceRequiresAuth(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	rec := getTrialBalance(t, ts, "", "")
 	if rec.Code != http.StatusUnauthorized {
@@ -332,8 +337,9 @@ func TestTrialBalanceRequiresAuth(t *testing.T) {
 
 // TestTrialBalanceBadDate confirms a malformed ?date is a 400 bad_request.
 func TestTrialBalanceBadDate(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	rec := getTrialBalance(t, ts, bearer(t, ts, ownerID, orgID), "29-06-2026")
@@ -443,8 +449,9 @@ func decodeAccountTransactions(t *testing.T, body []byte) reports.AccountTransac
 // with the right Credit amounts, narratives as Description, source linkage, and a
 // Total that sums the credit column (reconciling with the account's balance).
 func TestAccountTransactionsHappyPath(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
@@ -495,8 +502,9 @@ func TestAccountTransactionsHappyPath(t *testing.T) {
 
 // TestAccountTransactionsDateFilter confirms from/to bounds exclude out-of-range entries.
 func TestAccountTransactionsDateFilter(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
@@ -523,8 +531,9 @@ func TestAccountTransactionsDateFilter(t *testing.T) {
 
 // TestAccountTransactionsUnknownAccount confirms a bad/inactive nominal code is 404.
 func TestAccountTransactionsUnknownAccount(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	rec := getAccountTransactions(t, ts, bearer(t, ts, ownerID, orgID), "999", "", "")
@@ -535,8 +544,9 @@ func TestAccountTransactionsUnknownAccount(t *testing.T) {
 
 // TestAccountTransactionsMissingAccount confirms the account param is required (400).
 func TestAccountTransactionsMissingAccount(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	rec := getAccountTransactions(t, ts, bearer(t, ts, ownerID, orgID), "", "", "")
@@ -548,8 +558,9 @@ func TestAccountTransactionsMissingAccount(t *testing.T) {
 // TestAccountTransactionsMultiTenant confirms one org's account never returns another
 // org's lines (even for the same nominal code).
 func TestAccountTransactionsMultiTenant(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgA, ownerA := newOrgWithOwner(t, ts)
 	orgB, _ := newOrgWithOwner(t, ts)
@@ -659,8 +670,9 @@ func getAccountTransactionsInc(t *testing.T, ts *testServer, authHeader, account
 // (original + reversal) pair nets to zero, hiding them leaves the account's NET balance
 // unchanged; the column totals differ (showing a pair inflates both columns equally).
 func TestAccountTransactionsHidesSuperseded(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	debtors := seedCategory(t, ts, orgID, "681", "Trade Debtors", "CURRENT_ASSET")
@@ -723,8 +735,9 @@ func TestAccountTransactionsHidesSuperseded(t *testing.T) {
 // TestReportAccountsList confirms GET /reports/accounts returns the org's active
 // accounts and requires auth.
 func TestReportAccountsList(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	seedCategory(t, ts, orgID, "001", "Sales", "INCOME")

@@ -34,6 +34,7 @@ func orgCategoryCount(t *testing.T, ts *testServer, orgID string) (total, subdiv
 }
 
 func TestProvisionChartForNewOrg(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ctx := context.Background()
 	org, _ := newOrgWithOwner(t, ts)
@@ -90,6 +91,7 @@ func TestProvisionChartForNewOrg(t *testing.T) {
 }
 
 func TestProvisionChartCountryFallback(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ctx := context.Background()
 	org, _ := newOrgWithOwner(t, ts)

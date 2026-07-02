@@ -166,8 +166,11 @@ func insertProjectForContact(t *testing.T, ts *testServer, orgID, contactID stri
 // and persists, defaults are applied, the payment-terms 0-vs-NULL units rule
 // holds, bad input is rejected, and auth is required.
 func TestHandleCreateContact(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("full body round-trips and persists", func(t *testing.T) {
 		orgName := testutil.RandomContactOrgName()
@@ -335,8 +338,11 @@ func TestHandleCreateContact(t *testing.T) {
 // directly (bypassing the handler's `oneof` binding) to prove an invalid
 // charge_vat is a validation error (422), independent of the HTTP boundary.
 func TestContactService_InvalidChargeVAT_Direct(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	orgName := testutil.RandomContactOrgName()
 	_, err := ts.contactService.CreateContact(
@@ -352,8 +358,11 @@ func TestContactService_InvalidChargeVAT_Direct(t *testing.T) {
 
 // TestHandleGetContactAndList covers GET /api/v1/contacts/:id and the list.
 func TestHandleGetContactAndList(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("get found, then appears in list", func(t *testing.T) {
 		id := createContactAs(t, ts, devUserID, devOrgID)
@@ -399,8 +408,11 @@ func TestHandleGetContactAndList(t *testing.T) {
 
 // TestHandleUpdateContact covers PUT /api/v1/contacts/:id and its authorization.
 func TestHandleUpdateContact(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("creator updates own → 200, persisted", func(t *testing.T) {
 		id := createContactAs(t, ts, devUserID, devOrgID)
@@ -478,8 +490,11 @@ func TestHandleUpdateContact(t *testing.T) {
 // TestHandleDeleteContact covers DELETE /api/v1/contacts/:id: a soft-delete of a
 // contact, its authorization, and multi-tenant isolation.
 func TestHandleDeleteContact(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	t.Run("creator deletes own → 204, soft-deleted, then 404 + absent from list", func(t *testing.T) {
 		id := createContactAs(t, ts, devUserID, devOrgID)
@@ -575,8 +590,11 @@ func TestHandleDeleteContact(t *testing.T) {
 // entity references the contact, true once a project does. The frontend uses
 // this flag to hide the Delete button on the contact edit page.
 func TestContactInUseFlag(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	id := createContactAs(t, ts, devUserID, devOrgID)
 
@@ -608,8 +626,11 @@ func TestContactInUseFlag(t *testing.T) {
 // another org's contact: existence is not revealed across tenants (404), and the
 // row never leaks into the other org's list.
 func TestContacts_TenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	// A contact owned by the dev org.
 	contactA := createContactAs(t, ts, devUserID, devOrgID)

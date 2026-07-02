@@ -30,8 +30,11 @@ import (
 // =============================================================================
 
 func TestIntegrationInternal_ExpenseForPush(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, _ := newOrgWithOwner(t, ts)
 	ctx := context.Background()
 	svc := ts.integrationService
 
@@ -90,12 +93,15 @@ func TestIntegrationInternal_ExpenseForPush(t *testing.T) {
 // =============================================================================
 
 func TestIntegrationInternal_PushResultAndAlreadyPushed(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	// Close the pool via t.Cleanup (registered FIRST so it runs LAST), NOT defer:
 	// deferred calls run before t.Cleanup functions, so a `defer ts.pool.Close()`
 	// would shut the pool before the row-cleanup below could run, leaking the
 	// dev-org row each test run (its provider key is unique per run).
 	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, _ := newOrgWithOwner(t, ts)
 	ctx := context.Background()
 
 	svc := ts.integrationService
@@ -165,6 +171,7 @@ func TestIntegrationInternal_PushResultAndAlreadyPushed(t *testing.T) {
 // =============================================================================
 
 func TestIntegrationInternal_TokenForOrg(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
@@ -242,8 +249,11 @@ func TestIntegrationInternal_TokenForOrg(t *testing.T) {
 // harness sets testWorkflowServiceAccount), a call with no bearer token is 401 —
 // proving the /internal routes are gated. Exercised through the real router.
 func TestInternalEndpoints_RejectNoToken(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, _ := newOrgWithOwner(t, ts)
 
 	paths := []struct {
 		method, path string

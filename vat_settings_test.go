@@ -132,8 +132,9 @@ func decodeVatPeriods(t *testing.T, body []byte) []vat.VatPeriodResponse {
 
 // TestHandleGetVatSettings covers GET /api/v1/vat/settings.
 func TestHandleGetVatSettings(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("fresh org returns defaults", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -169,8 +170,9 @@ func TestHandleGetVatSettings(t *testing.T) {
 
 // TestHandleUpdateVatSettings covers the PUT happy paths + persistence.
 func TestHandleUpdateVatSettings(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("registered round-trip: normalises VRN, persists, re-GET reflects", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -288,8 +290,9 @@ func TestHandleUpdateVatSettings(t *testing.T) {
 // =============================================================================
 
 func TestHandleUpdateVatSettingsValidation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("registered + bad VRN → 422", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -335,8 +338,9 @@ func TestHandleUpdateVatSettingsValidation(t *testing.T) {
 // =============================================================================
 
 func TestVatSettingsAuthorization(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("plain member may GET but not PUT (403)", func(t *testing.T) {
 		orgID, _ := newOrgWithOwner(t, ts)
@@ -369,8 +373,9 @@ func TestVatSettingsAuthorization(t *testing.T) {
 // token) never touches org B's row. Isolation is inherent — the org comes from the
 // token, with no id to pass — but this guards it explicitly.
 func TestVatSettingsMultiTenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgA, ownerA := newOrgWithOwner(t, ts)
 	orgB, ownerB := newOrgWithOwner(t, ts)
@@ -404,8 +409,9 @@ func TestVatSettingsMultiTenantIsolation(t *testing.T) {
 // it checks the OLDEST period — the first return, always present once today is past
 // the effective date — and the ended↔status invariant, rather than a fixed count.
 func TestHandleListVatPeriods(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("registered org generates periods, newest-first, with deadlines", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
