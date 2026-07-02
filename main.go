@@ -70,6 +70,7 @@ import (
 	projects "github.com/operationfb/accounting-saas/internal/projects"
 	reports "github.com/operationfb/accounting-saas/internal/reports"
 	storage "github.com/operationfb/accounting-saas/internal/storage"
+	tala "github.com/operationfb/accounting-saas/internal/tala"
 	userauth "github.com/operationfb/accounting-saas/internal/userauth"
 	vat "github.com/operationfb/accounting-saas/internal/vat"
 	"github.com/operationfb/accounting-saas/token"
@@ -540,12 +541,14 @@ func main() {
 	// cross-domain summary like the VAT module — its service takes the shared
 	// authQueries (authorisation) + its own db/overview read queries. First card is
 	// Cashflow (from bank_transactions); more cards add sibling GET routes.
-	overview.NewHandler(overview.NewService(authQueries, dboverview.New(pool))).RegisterRoutes(server.Router(), tokenMaker)
+	overviewSvc := overview.NewService(authQueries, dboverview.New(pool))
+	overview.NewHandler(overviewSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Reports: read-only financial reports over the posted general ledger. The first
 	// is the Trial Balance (a today snapshot). Service takes the ledger read queries
 	// (db/ledger, the same set the poster writes) + the shared authQueries.
-	reports.NewHandler(reports.NewService(dbledger.New(pool), dbcategories.New(pool), authQueries)).RegisterRoutes(server.Router(), tokenMaker)
+	reportsSvc := reports.NewService(dbledger.New(pool), dbcategories.New(pool), authQueries)
+	reports.NewHandler(reportsSvc).RegisterRoutes(server.Router(), tokenMaker)
 
 	// Categories: the reconcile reference endpoints (the explain Type dropdown + its
 	// per-type category picker), a thin read-only service over the categories queries.
@@ -584,6 +587,24 @@ func main() {
 		ConnectionMethod: envOr("HMRC_CONNECTION_METHOD", "WEB_APP_VIA_SERVER"),
 	}
 	vat.NewHandler(vatSvc, fraudConfig).RegisterRoutes(server.Router(), tokenMaker)
+
+	// Tala — the in-app AI accountant assistant (POST /api/v1/tala/chat). It runs a
+	// tool-use loop over the Anthropic API; its tools are org-scoped wrappers around
+	// the existing read services (expenses/invoices/bills/banking/vat/reports/overview),
+	// and guarded writes are proposals the user confirms via the normal endpoints.
+	// Optional, gated on ANTHROPIC_API_KEY like the other external integrations —
+	// without a key the assistant is simply not mounted.
+	if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
+		talaModel := envOr("TALA_MODEL", "claude-opus-4-8")
+		talaSvc := tala.NewService(
+			tala.NewAnthropicClient(anthropicKey, talaModel),
+			service, invoiceSvc, billSvc, bankingSvc, vatSvc, reportsSvc, overviewSvc,
+		)
+		tala.NewHandler(talaSvc).RegisterRoutes(server.Router(), tokenMaker)
+		log.Printf("tala: AI assistant enabled (model %s)", talaModel)
+	} else {
+		log.Println("tala: ANTHROPIC_API_KEY not set — AI assistant disabled")
+	}
 
 	// Serve the built Vue SPA from the same origin as the API when WEB_DIST_DIR is
 	// set. The container image bakes WEB_DIST_DIR=/web (the copied web/dist); locally

@@ -33,7 +33,7 @@ interface NavItem {
   children?: NavChild[] // dropdown group (Money In, Money Out)
 }
 const navItems: NavItem[] = [
-  { label: 'Overview', to: '/overview' },
+  { label: 'Tala', to: '/tala' },
   { label: 'Contacts', to: '/contacts' },
   {
     label: 'Money In',
@@ -55,6 +55,7 @@ const navItems: NavItem[] = [
   {
     label: 'Reports',
     children: [
+      { label: 'Dashboard', to: '/dashboards' },
       { label: 'Trial Balance', to: '/reports/trial-balance' },
       { label: 'Account Transactions', to: '/reports/account-transactions' },
     ],
@@ -91,7 +92,7 @@ onMounted(() => {
 async function selectOrganisation(orgId: string) {
   if (orgId === auth.organisation?.id) return
   await auth.switchOrganisation(orgId)
-  window.location.assign('/overview')
+  window.location.assign('/dashboards')
 }
 
 // Computed so the owner/admin-only Integrations item can be included by role, and

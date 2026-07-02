@@ -31,7 +31,7 @@ function formatLastLogin(iso?: string | null): string {
 
 async function load() {
   if (!auth.user?.is_superuser) {
-    router.replace('/overview')
+    router.replace('/dashboards')
     return
   }
   loading.value = true

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The "Overview" page — the first item in the top nav (routed at /overview).
+// The "Dashboard" page — reached from the Reports menu (routed at /dashboards).
 //
 // A tabbed container holding two dashboards:
 //   - Overview     → the new FreeAgent-style financial dashboard (OverviewPanel).

@@ -4,7 +4,31 @@ A running list of work that was intentionally deferred, plus notable TODOs found
 in the code. Add to this file whenever you defer something so it isn't lost in a
 commit message or chat. Remove items as they're completed.
 
-_Last updated: 2026-06-24_
+_Last updated: 2026-07-02_
+
+## Tala (AI assistant)
+
+The in-app AI accountant (`internal/tala`, `POST /api/v1/tala/chat`,
+`web/src/views/TalaChatView.vue`) shipped as a read + guarded-write assistant.
+Deferred:
+
+- **Stream responses (SSE).** The chat is request/response — the turn is a single
+  JSON reply. Stream tokens (and tool-call status) over SSE for a live-typing UX
+  and to avoid long waits on hard questions. _Files: `internal/tala/service.go`
+  (a streaming `RunTurn`), `handler.go`, `web/src/views/TalaChatView.vue`._
+- **Persisted chat threads + history.** The conversation is stateless (the SPA
+  holds the history and re-sends it each turn). Persist threads per user/org for
+  continuity across reloads and an audit trail. _New table + `internal/tala`._
+- **In-loop write execution (human-in-the-loop).** Guarded writes are propose →
+  confirm through the existing endpoints; the agent never mutates. A future mode
+  could execute a confirmed action inside the loop (pause/resume) so Tala can chain
+  multi-step changes. _Files: `internal/tala/propose.go`, `service.go`._
+- **More propose tools + domains.** v1 proposes create/approve expense only, and
+  reads expenses/invoices/bills/banking/VAT/reports/overview. Add contacts/projects/
+  payroll reads and invoice/bill create + more actions. _Files:
+  `internal/tala/tools.go`, `propose.go`._
+- **Cost & abuse controls.** Per-org rate limiting, a 1h prompt-cache TTL, and
+  model tiering via `TALA_MODEL` for cost. _Files: `internal/tala`._
 
 ## Auth & authorization
 

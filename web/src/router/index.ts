@@ -25,6 +25,7 @@ import VatSettingsView from '@/views/VatSettingsView.vue'
 import VatReturnListView from '@/views/VatReturnListView.vue'
 import VatReturnDetailView from '@/views/VatReturnDetailView.vue'
 import OverviewDashboardView from '@/views/OverviewDashboardView.vue'
+import TalaChatView from '@/views/TalaChatView.vue'
 import MyDetailsView from '@/views/MyDetailsView.vue'
 import UsersListView from '@/views/UsersListView.vue'
 import UserEntryView from '@/views/UserEntryView.vue'
@@ -44,17 +45,21 @@ import { useAuthStore } from '@/stores/auth'
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: '/', redirect: '/overview' },
+    { path: '/', redirect: '/tala' },
     { path: '/login', name: 'login', component: LoginView },
     { path: '/forgot', name: 'forgot', component: ForgotPasswordView },
     // Reached from the reset email link, which carries the one-time token as a
     // PATH segment (the backend builds {APP_BASE_URL}/reset-password/<token>).
     // ResetPasswordView reads it from route.params.token.
     { path: '/reset-password/:token', name: 'reset-password', component: ResetPasswordView },
-    // The "Overview" landing — a tabbed dashboard: the new financial Overview
-    // (placeholder for now) + the existing HMRC MTD VAT dashboard as a 2nd tab.
-    // First item in the top nav.
-    { path: '/overview', name: 'overview', component: OverviewDashboardView, meta: { requiresAuth: true, title: 'Overview' } },
+    // The Dashboard landing — a tabbed dashboard: the financial Overview + the
+    // existing HMRC MTD VAT dashboard as a 2nd tab. Now lives under the Reports
+    // menu (routed at /dashboards).
+    // Tala — the AI accountant assistant. First item in the top nav and the app's
+    // default landing page (see the '/' redirect above); a simple full-screen
+    // prompt page. Any authenticated member may use it.
+    { path: '/tala', name: 'tala', component: TalaChatView, meta: { requiresAuth: true, title: 'Tala' } },
+    { path: '/dashboards', name: 'dashboards', component: OverviewDashboardView, meta: { requiresAuth: true, title: 'Dashboard' } },
     { path: '/contacts', name: 'contacts', component: ContactListView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/new', name: 'contact-new', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
     { path: '/contacts/:id/edit', name: 'contact-edit', component: ContactEntryView, meta: { requiresAuth: true, title: 'Contacts' } },
@@ -123,7 +128,7 @@ const router = createRouter({
     { path: '/settings/integrations', name: 'integrations', component: IntegrationsView, meta: { requiresAuth: true, title: 'Settings' } },
     // Platform admin ("god view") — read-only cross-tenant browse of all orgs/users.
     // requiresSuperuser gates these to users.is_superuser (set manually in the DB);
-    // the guard below redirects anyone else to /overview. /admin redirects to the
+    // the guard below redirects anyone else to /dashboards. /admin redirects to the
     // organisations tab. Detail routes are declared after their lists.
     { path: '/admin', redirect: '/admin/organisations' },
     { path: '/admin/organisations', name: 'admin-organisations', component: AdminOrganisationsView, meta: { requiresAuth: true, requiresSuperuser: true, title: 'Platform Admin' } },
@@ -152,13 +157,13 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.isAuthenticated) {
-    return { name: 'overview' }
+    return { name: 'tala' }
   }
   // Platform-admin routes are superuser-only. A non-superuser (or an old session
-  // whose user has no is_superuser flag) is bounced to /overview. The API is the
+  // whose user has no is_superuser flag) is bounced to /dashboards. The API is the
   // real gate (403); this just avoids showing an empty, error-only page.
   if (to.meta.requiresSuperuser && !auth.user?.is_superuser) {
-    return { name: 'overview' }
+    return { name: 'dashboards' }
   }
   return true
 })
