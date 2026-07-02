@@ -19,15 +19,16 @@ package fxrevaluation
 //   - OnInvoiceReceiptChanged(...)    — called by the banking explain flow inside
 //                                       the receipt transaction, so 391/681 are never
 //                                       stale after a payment: partial ⇒ re-revalue the
-//                                       reduced due; full settlement ⇒ crystallise with
-//                                       an EXPLICIT reversing journal.
+//                                       reduced due; full settlement ⇒ crystallise with a
+//                                       delta-to-zero append (target U = 0).
 //
 // No double-count with realised (390): 391 (unrealised) and 390 (realised) are
 // SEPARATE nominals. The receipt crystallises each paid portion's realised gain in
-// 390; 391 only ever carries the still-open portion and is cleared/reversed once
-// settled — by ITS OWN balance, never the 390 figure. Cumulative-supersede: the
-// poster's delete-then-insert means each run REPLACES the single live revaluation
-// entry per invoice (keyed on source), so re-runs never double up.
+// 390; 391 only ever carries the still-open portion and is walked back to zero once
+// settled — by ITS OWN balance, never the 390 figure. INCREMENTAL DELTA model
+// (append-only): each run reads the invoice's current 391 balance and posts ONLY the
+// movement to today's target (ΔU = targetU − U_booked). No reversals, and a zero delta
+// posts nothing — so re-runs never double up and an unchanged rate is a no-op (no churn).
 // =============================================================================
 
 import (
@@ -117,7 +118,8 @@ func (s *Service) RunRevaluation(ctx context.Context, asOf time.Time) error {
 			nativeTotal:  r.Invoice.NativeTotalValueMinor,
 		}
 		if err := kernel.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-			return s.revalueOpen(ctx, tx, in, asOf)
+			// The daily job has no acting user — attribute the entry to the system (Nil).
+			return s.revalueOpen(ctx, tx, in, asOf, uuid.Nil)
 		}); err != nil {
 			// Best-effort: log and carry on; the next run (or a manual re-run) replaces it.
 			slog.Error("fx revaluation failed for invoice; skipping", "invoice_id", in.id, "err", err)
@@ -129,8 +131,8 @@ func (s *Service) RunRevaluation(ctx context.Context, asOf time.Time) error {
 // OnInvoiceReceiptChanged keeps an invoice's unrealised revaluation correct in the
 // SAME transaction as a receipt, so 391/681 are never stale after a payment. Foreign,
 // SENT invoices only: a partial receipt re-revalues the reduced due; a full settlement
-// (due → 0) crystallises with an explicit reversing journal (the realised gain already
-// sits in 390 from the receipt). A no-op for home-currency or non-SENT invoices.
+// (due → 0) crystallises with a delta-to-zero append (the realised gain already sits in
+// 390 from the receipt). A no-op for home-currency or non-SENT invoices.
 func (s *Service) OnInvoiceReceiptChanged(ctx context.Context, tx pgx.Tx, orgID, invoiceID uuid.UUID, asOf time.Time, createdBy uuid.UUID) error {
 	if s.rates == nil {
 		return nil
@@ -151,15 +153,7 @@ func (s *Service) OnInvoiceReceiptChanged(ctx context.Context, tx pgx.Tx, orgID,
 		return nil // home-currency or no-longer-SENT: nothing to revalue here
 	}
 
-	if inv.DueValueMinor.Int64 <= 0 {
-		// Fully settled → crystallise: explicit reversing journal zeroes 391/681 by 391's
-		// own standing balance (audit trail), leaving the full realised gain in 390.
-		return s.poster.ReverseEntry(ctx, tx, orgID, sourceInvoiceRevaluation, invoiceID,
-			pgtype.Date{Time: asOf, Valid: true}, "FX revaluation reversal "+inv.Reference.String, createdBy)
-	}
-
-	// Partial settlement → re-revalue the remaining open portion.
-	return s.revalueOpen(ctx, tx, openInput{
+	in := openInput{
 		id:           inv.ID,
 		orgID:        orgID,
 		reference:    inv.Reference.String,
@@ -170,13 +164,23 @@ func (s *Service) OnInvoiceReceiptChanged(ctx context.Context, tx pgx.Tx, orgID,
 		dueMinor:     inv.DueValueMinor.Int64,
 		totalMinor:   inv.TotalValueMinor,
 		nativeTotal:  inv.NativeTotalValueMinor,
-	}, asOf)
+	}
+
+	if inv.DueValueMinor.Int64 <= 0 {
+		// Fully settled → crystallise: walk the unrealised 391/681 back to zero with a
+		// delta-to-zero append (target U = 0), so the whole standing balance is removed in one
+		// entry — no rate lookup, no reversal, and correct for any number of prior runs. The
+		// realised gain already sits in 390 from the receipt.
+		return s.applyRevaluationDelta(ctx, tx, in, 0, asOf, createdBy)
+	}
+
+	// Partial settlement → re-revalue the remaining open portion.
+	return s.revalueOpen(ctx, tx, in, asOf, createdBy)
 }
 
-// revalueOpen is the core: compute U on the CURRENT due portion and post/replace the
-// live revaluation entry (or remove it when U is zero). Used by the daily job and the
-// partial-payment path.
-func (s *Service) revalueOpen(ctx context.Context, tx pgx.Tx, in openInput, asOf time.Time) error {
+// revalueOpen computes today's TARGET unrealised U on the invoice's CURRENT open (due) portion,
+// then applies the delta. Used by the daily job and the partial-payment re-revaluation.
+func (s *Service) revalueOpen(ctx context.Context, tx pgx.Tx, in openInput, asOf time.Time, createdBy uuid.UUID) error {
 	if in.dueMinor <= 0 || in.totalMinor <= 0 {
 		return nil
 	}
@@ -201,22 +205,47 @@ func (s *Service) revalueOpen(ctx context.Context, tx pgx.Tx, in openInput, asOf
 	// home value of the OUTSTANDING foreign amount, at the booking rate vs today's rate.
 	homeAtBooking := money.Apportion(in.nativeTotal, in.dueMinor, in.totalMinor)
 	homeAtToday := money.ConvertMinor(in.dueMinor, foreignExp, homeExp, rate)
-	u := homeAtToday - homeAtBooking
+	targetU := homeAtToday - homeAtBooking
+	return s.applyRevaluationDelta(ctx, tx, in, targetU, asOf, createdBy)
+}
 
-	if u == 0 {
-		// No unrealised swing on the open portion → reverse any prior live revaluation
-		// entry (append-only, never deleted).
-		return s.poster.ReverseEntry(ctx, tx, in.orgID, sourceInvoiceRevaluation, in.id, pgtype.Date{Time: asOf, Valid: true}, "FX revaluation cleared", uuid.Nil)
+// nominalFXUnrealised is the FX-unrealised gain/loss control account (391). BOTH the gain and
+// loss revaluation legs post their FX side here, so an invoice's net 391 base across its
+// INVOICE_REVALUATION entries is exactly −(unrealised U already booked). That's the anchor the
+// delta model reads to decide how much still to post.
+const nominalFXUnrealised = "391"
+
+// applyRevaluationDelta walks an invoice's unrealised revaluation to targetU by posting ONLY the
+// movement since the last run — append-only, never a reversal, so re-runs never double up and an
+// unchanged rate posts nothing (no churn). It:
+//  1. LOCKS the source, THEN reads its 391 balance, THEN appends — so two concurrent
+//     revaluations of the same invoice can't both read the same stale balance and double-post.
+//  2. bal391 = −(U already booked), so ΔU = targetU + bal391 = targetU − U_booked.
+//  3. A zero delta posts nothing; otherwise the DELTA is sign-split across FX_GAIN/FX_LOSS.
+//
+// Full settlement passes targetU = 0, which walks the whole standing 391/681 balance back to
+// zero in a single append (the realised gain already lives in 390 from the receipt).
+func (s *Service) applyRevaluationDelta(ctx context.Context, tx pgx.Tx, in openInput, targetU int64, asOf time.Time, createdBy uuid.UUID) error {
+	if err := s.poster.LockSource(ctx, tx, in.orgID, sourceInvoiceRevaluation, in.id); err != nil {
+		return err
+	}
+	bal391, err := s.poster.SourceAccountBase(ctx, tx, in.orgID, sourceInvoiceRevaluation, in.id, nominalFXUnrealised)
+	if err != nil {
+		return err
+	}
+	delta := targetU + bal391
+	if delta == 0 {
+		return nil // no movement → post nothing (append-only, no churn)
 	}
 
-	// Sign-split: the poster drops the zero leg, so exactly two legs fire. All home-ccy.
+	// Sign-split the DELTA: the poster drops the zero leg, so exactly two legs fire. All home-ccy.
 	var gain, loss int64
-	if u > 0 {
-		gain = u
+	if delta > 0 {
+		gain = delta
 	} else {
-		loss = -u
+		loss = -delta
 	}
-	return s.poster.PostEntry(ctx, tx, ledger.EntryContext{
+	return s.poster.AppendEntry(ctx, tx, ledger.EntryContext{
 		OrganisationID: in.orgID,
 		CompanyType:    in.companyType,
 		CountryCode:    in.countryCode,
@@ -227,6 +256,7 @@ func (s *Service) revalueOpen(ctx context.Context, tx pgx.Tx, in openInput, asOf
 		SourceID:       in.id,
 		EntryDate:      pgtype.Date{Time: asOf, Valid: true},
 		Narrative:      "FX revaluation " + in.reference,
+		CreatedBy:      createdBy,
 		Amounts: map[string]ledger.Amount{
 			basisFXGain: {Txn: gain, Base: gain},
 			basisFXLoss: {Txn: loss, Base: loss},

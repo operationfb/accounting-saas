@@ -4,8 +4,9 @@ package main
 // =============================================================================
 // Integration tests for the unrealised-FX revaluation (Phase 3): retranslating an
 // OPEN foreign invoice's receivable to today's rate posts the swing to 391 so the
-// Trial Balance reflects today's value, and a settlement crystallises it (explicit
-// reversal) leaving the realised gain in 390 — never double-counted.
+// Trial Balance reflects today's value, and a settlement crystallises it (a delta-to-zero
+// APPEND, no reversal) leaving the realised gain in 390 — never double-counted. The model is
+// append-only and incremental: each run posts only the MOVEMENT to today's target U.
 //
 // These reuse the dev-org GL helpers (issueInvoice / seedRate / glAccountBalance /
 // glLinesForSource) and drive ts.fxRevalService.RunRevaluation directly. Each test
@@ -51,7 +52,7 @@ func (s *spyRevaluer) RunRevaluation(ctx context.Context, asOf time.Time) error 
 // that doesn't re-run revaluation is exactly what left 391 stale after the rate moved.
 func TestRateRefreshChainsRevaluation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() }) // registered first ⇒ runs LAST, after the reval/GL purges
 
 	spy := &spyRevaluer{}
 	svc := fxrates.NewService(dbfxrates.New(ts.pool), dbcurrencies.New(ts.pool), emptyRateProvider{}, "GBP", "ecb")
@@ -70,8 +71,9 @@ func TestRateRefreshChainsRevaluation(t *testing.T) {
 	}
 }
 
-// revalLines returns the LIVE (non-reversal) INVOICE_REVALUATION entry's lines for an
-// invoice, keyed by nominal code (reuses glLinesForSource's filter).
+// revalLines returns the LIVE (non-reversal) INVOICE_REVALUATION lines for an invoice, keyed by
+// nominal code (reuses glLinesForSource's filter). Assumes a SINGLE appended entry (one run) —
+// after multiple runs the source has several delta entries, so use the summing revalNetForInvoice.
 func revalLines(t *testing.T, ts *testServer, invID string) map[string]glLine {
 	t.Helper()
 	return glLinesForSource(t, ts, "INVOICE_REVALUATION", invID)
@@ -107,6 +109,20 @@ func reversalCount(t *testing.T, ts *testServer, invID string) int {
 	return n
 }
 
+// revalEntryCount returns how many INVOICE_REVALUATION entries (of any kind) exist for an
+// invoice — used to prove an unchanged rate posts NO new entry (the anti-churn assertion).
+func revalEntryCount(t *testing.T, ts *testServer, invID string) int {
+	t.Helper()
+	var n int
+	if err := ts.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM gl_journal_entries
+		  WHERE organisation_id = $1 AND source_type = 'INVOICE_REVALUATION'
+		    AND source_id = $2`, devOrgID, invID).Scan(&n); err != nil {
+		t.Fatalf("reval entry count: %v", err)
+	}
+	return n
+}
+
 // cleanupReval removes an invoice's revaluation entries + a seeded rate.
 func cleanupReval(t *testing.T, ts *testServer, invID, currency, day string) {
 	t.Cleanup(func() {
@@ -120,7 +136,7 @@ func cleanupReval(t *testing.T, ts *testServer, invID, currency, day string) {
 // 0.86 → 0.90): the receivable (681) rises and the swing posts to 391, balanced.
 func TestUnrealisedRevaluation_Gain(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() }) // registered first ⇒ runs LAST, after the reval/GL purges
 	ctx := context.Background()
 
 	invID := issueInvoice(t, ts, "EUR", "0.86") // native receivable 10320p, due 12000p EUR
@@ -142,11 +158,13 @@ func TestUnrealisedRevaluation_Gain(t *testing.T) {
 	assertLine(t, lines, "391", "GBP", -480, -480) // unrealised gain (credit)
 }
 
-// TestUnrealisedRevaluation_ReplacesNotDoubles confirms a second run REPLACES the live
-// entry (cumulative-supersede) rather than stacking a second one.
+// TestUnrealisedRevaluation_ReplacesNotDoubles confirms the INCREMENTAL DELTA model: a second
+// run at a moved rate posts only the MOVEMENT, so the cumulative 391/681 lands on today's U
+// (replaced, not doubled) with NO reversal — and a third run at an UNCHANGED rate posts nothing
+// (the anti-churn proof).
 func TestUnrealisedRevaluation_ReplacesNotDoubles(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() }) // registered first ⇒ runs LAST, after the reval/GL purges
 	ctx := context.Background()
 
 	invID := issueInvoice(t, ts, "EUR", "0.86")
@@ -156,26 +174,44 @@ func TestUnrealisedRevaluation_ReplacesNotDoubles(t *testing.T) {
 	if err := ts.fxRevalService.RunRevaluation(ctx, time.Now()); err != nil {
 		t.Fatalf("RunRevaluation #1: %v", err)
 	}
-	// Rate moves again; rerun. U = 12000·0.95 − 10320 = +1080 (not 480+1080).
+	// Rate moves again; rerun. Cumulative U = 12000·0.95 − 10320 = +1080 (a +600 delta appended
+	// on top of the first +480), NOT 480+1080 doubled.
 	seedRate(t, ts, "EUR", today(), "0.95")
 	if err := ts.fxRevalService.RunRevaluation(ctx, time.Now()); err != nil {
 		t.Fatalf("RunRevaluation #2: %v", err)
 	}
 
-	lines := revalLines(t, ts, invID)
-	assertLine(t, lines, "391", "GBP", -1080, -1080) // latest U, replaced not doubled
-	assertLine(t, lines, "681", "GBP", 1080, 1080)
+	// Cumulative position across the appended delta entries = today's U (replaced, not doubled).
+	if got := revalNetForInvoice(t, ts, invID, "391"); got != -1080 {
+		t.Errorf("391 net = %d, want -1080 (cumulative U, not doubled)", got)
+	}
+	if got := revalNetForInvoice(t, ts, invID, "681"); got != 1080 {
+		t.Errorf("681 net = %d, want 1080", got)
+	}
+	// Append-only: an OPEN invoice never gets a reversal.
 	if n := reversalCount(t, ts, invID); n != 0 {
 		t.Errorf("an open invoice should have no reversal entries, got %d", n)
 	}
+
+	// Anti-churn: a third run at the SAME rate is a zero delta → it must post NOTHING.
+	before := revalEntryCount(t, ts, invID)
+	if err := ts.fxRevalService.RunRevaluation(ctx, time.Now()); err != nil {
+		t.Fatalf("RunRevaluation #3 (unchanged rate): %v", err)
+	}
+	if after := revalEntryCount(t, ts, invID); after != before {
+		t.Errorf("unchanged rate posted a new entry: %d → %d entries (want no churn)", before, after)
+	}
+	if got := revalNetForInvoice(t, ts, invID, "391"); got != -1080 {
+		t.Errorf("391 net after no-op run = %d, want -1080 (unchanged)", got)
+	}
 }
 
-// TestUnrealisedRevaluation_FullSettlementReverses settles the invoice in full and
-// asserts the unrealised 391 is crystallised by an EXPLICIT reversal (audit trail),
-// nets to zero, and the realised gain lives independently in 390 (no double-count).
-func TestUnrealisedRevaluation_FullSettlementReverses(t *testing.T) {
+// TestUnrealisedRevaluation_FullSettlementCrystallises settles the invoice in full and asserts
+// the unrealised 391/681 is crystallised by a delta-to-zero APPEND (no reversal): it nets to
+// zero for the invoice, and the realised gain lives independently in 390 (no double-count).
+func TestUnrealisedRevaluation_FullSettlementCrystallises(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() }) // registered first ⇒ runs LAST, after the reval/GL purges
 	ctx := context.Background()
 	userID, orgID := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 
@@ -212,9 +248,10 @@ func TestUnrealisedRevaluation_FullSettlementReverses(t *testing.T) {
 		t.Fatalf("explain full receipt: %v", err)
 	}
 
-	// Crystallised: an explicit reversal exists, and 391's net for this invoice is zero.
-	if n := reversalCount(t, ts, invID); n != 1 {
-		t.Errorf("expected exactly 1 reversal entry on full settlement, got %d", n)
+	// Crystallised by an APPEND (delta-to-zero), not a reversal: no reversal entries, and 391's
+	// net for this invoice is zero.
+	if n := reversalCount(t, ts, invID); n != 0 {
+		t.Errorf("full settlement should crystallise via an append, not a reversal; got %d reversals", n)
 	}
 	if got := revalNetForInvoice(t, ts, invID, "391"); got != 0 {
 		t.Errorf("391 net after settlement = %d, want 0 (crystallised)", got)

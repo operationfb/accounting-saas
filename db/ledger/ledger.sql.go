@@ -121,9 +121,10 @@ type CreateReversalEntryParams struct {
 }
 
 // Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
-// crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
-// idempotency unique index excludes reversals, so this never collides with the live
-// (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+// crystallise/back out a prior entry with a full audit trail (vs a silent delete). There is
+// deliberately NO source-uniqueness index (a source accumulates a chain as history); the
+// single live (non-reversal) entry is a poster convention, not a DB constraint. Lines
+// (negated) are written via CreateJournalLine.
 func (q *Queries) CreateReversalEntry(ctx context.Context, arg CreateReversalEntryParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, createReversalEntry,
 		arg.OrganisationID,
@@ -546,4 +547,40 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockSource(ctx context.Context, sourceKey string) error {
 	_, err := q.db.Exec(ctx, lockSource, sourceKey)
 	return err
+}
+
+const sumSourceAccountBase = `-- name: SumSourceAccountBase :one
+SELECT COALESCE(SUM(l.base_amount_minor), 0)::bigint AS base_minor
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE e.organisation_id = $1
+  AND e.source_type     = $2
+  AND e.source_id       = $3
+  AND c.nominal_code    = $4
+`
+
+type SumSourceAccountBaseParams struct {
+	OrganisationID uuid.UUID   `json:"organisation_id"`
+	SourceType     string      `json:"source_type"`
+	SourceID       pgtype.UUID `json:"source_id"`
+	NominalCode    string      `json:"nominal_code"`
+}
+
+// The net base-currency balance a single SOURCE has posted to ONE account (by nominal_code),
+// summed across ALL of that source's journal lines. Backs the FX-revaluation delta model: the
+// reval reads its own cumulative movement on the FX-unrealised control (391) for an invoice and
+// posts only the delta to today's target — so re-runs never double up (append-only, no churn).
+// Includes every entry the source has (there are no reversals on the reval path any more), so it
+// is the source's TRUE current position on that account.
+func (q *Queries) SumSourceAccountBase(ctx context.Context, arg SumSourceAccountBaseParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumSourceAccountBase,
+		arg.OrganisationID,
+		arg.SourceType,
+		arg.SourceID,
+		arg.NominalCode,
+	)
+	var base_minor int64
+	err := row.Scan(&base_minor)
+	return base_minor, err
 }

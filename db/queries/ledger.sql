@@ -66,9 +66,10 @@ RETURNING id;
 
 -- name: CreateReversalEntry :one
 -- Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
--- crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
--- idempotency unique index excludes reversals, so this never collides with the live
--- (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+-- crystallise/back out a prior entry with a full audit trail (vs a silent delete). There is
+-- deliberately NO source-uniqueness index (a source accumulates a chain as history); the
+-- single live (non-reversal) entry is a poster convention, not a DB constraint. Lines
+-- (negated) are written via CreateJournalLine.
 INSERT INTO gl_journal_entries (
     organisation_id, entry_date, base_currency, narrative,
     source_type, source_id, created_by_user_id, is_reversal, reverses_entry_id
@@ -110,6 +111,22 @@ WHERE e.organisation_id = $1
   AND e.source_id       = sqlc.arg(source_id)
   AND NOT e.is_reversal
   AND NOT EXISTS (SELECT 1 FROM gl_journal_entries r WHERE r.reverses_entry_id = e.id);
+
+-- name: SumSourceAccountBase :one
+-- The net base-currency balance a single SOURCE has posted to ONE account (by nominal_code),
+-- summed across ALL of that source's journal lines. Backs the FX-revaluation delta model: the
+-- reval reads its own cumulative movement on the FX-unrealised control (391) for an invoice and
+-- posts only the delta to today's target — so re-runs never double up (append-only, no churn).
+-- Includes every entry the source has (there are no reversals on the reval path any more), so it
+-- is the source's TRUE current position on that account.
+SELECT COALESCE(SUM(l.base_amount_minor), 0)::bigint AS base_minor
+FROM gl_journal_lines l
+JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+JOIN categories c ON c.id = l.account_id
+WHERE e.organisation_id = $1
+  AND e.source_type     = sqlc.arg(source_type)
+  AND e.source_id       = sqlc.arg(source_id)
+  AND c.nominal_code    = sqlc.arg(nominal_code);
 
 
 -- -----------------------------------------------------------------------------
