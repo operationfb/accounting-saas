@@ -141,6 +141,11 @@ type OrganisationResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	CountryCode string `json:"country_code"` // ISO 3166-1 alpha-2, e.g. 'GB'
+	// NativeCurrency is the org's home currency (ISO 4217, e.g. 'GBP'). Surfaced so the
+	// SPA is currency-aware without a second fetch — e.g. the expense form shows an
+	// exchange-rate field only when the chosen currency differs from this. Fixed at org
+	// creation; not inside the PASETO token, so we return it alongside name/country.
+	NativeCurrency string `json:"native_currency"`
 	// Role is the caller's membership role IN this organisation (owner/admin/
 	// member/accountant/read_only). It is per-membership, not a property of the
 	// org itself, but it is scoped to this org and comes from the same
@@ -290,9 +295,10 @@ func (h *AuthHandler) LoginUser(c *gin.Context) {
 	// The org name + country are already loaded here, so include them in the
 	// response — the client can't read them from the encrypted token.
 	org := &OrganisationResponse{
-		ID:          defaultOrg.ID.String(),
-		Name:        defaultOrg.Name,
-		CountryCode: defaultOrg.CountryCode,
+		ID:             defaultOrg.ID.String(),
+		Name:           defaultOrg.Name,
+		CountryCode:    defaultOrg.CountryCode,
+		NativeCurrency: defaultOrg.NativeCurrency,
 		// OrganisationRole is a string-backed enum; convert it to a plain string
 		// ("owner"/"admin"/...) for the JSON response.
 		Role: string(defaultOrg.Role),

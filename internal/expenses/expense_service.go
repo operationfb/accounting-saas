@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,11 +70,26 @@ type Service struct {
 	// already-filed period can no longer be approved (assertNotFiled). Optional/nil-safe.
 	vatQueries *vatdb.Queries
 
+	// rates is the cross-domain FX-rate read seam (internal/fxrates): when a foreign
+	// expense arrives WITHOUT an explicit exchange_rate, nativeAmounts auto-fills it
+	// from the stored daily rate for the expense date. Nil-guarded — with no rate
+	// service wired, a foreign expense without an explicit rate is a 422 (same as
+	// invoices). A native-currency expense never touches it.
+	rates RateLookup
+
 	// publisher emits domain events (currently "expense.approved", which drives the
 	// external FreeAgent push). Optional: nil = publishing disabled. It is set in
 	// main.go AFTER construction (the publisher is wired later), so it stays out of
 	// NewService — tests leave it nil.
 	publisher EventPublisher
+}
+
+// RateLookup is the read seam over the exchange-rate service. Given a currency and a
+// date it returns the rate (HOME units per 1 unit of currency) effective on or before
+// that date; the bool is false when no rate is stored. fxrates.Service satisfies this.
+// (Copied from the invoices domain, which uses the identical seam.)
+type RateLookup interface {
+	RateOnOrBefore(ctx context.Context, currency string, on time.Time) (decimal.Decimal, bool, error)
 }
 
 // NewService is the constructor. Called once in main.go.
@@ -82,13 +98,16 @@ type Service struct {
 // categoryQueries reads the shared Chart of Accounts (the expense category picker
 // + the spending-account write guard).
 // vatQueries powers the filed-period lock; pass nil to disable it (the lock is then off).
-func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, categoryQueries categoriesdb.Querier, vatQueries *vatdb.Queries) *Service {
+// rates auto-fills a foreign expense's exchange_rate from the stored daily rate; pass
+// nil to disable auto-fill (a foreign expense then requires an explicit exchange_rate).
+func NewService(pool *pgxpool.Pool, queries *expensesdb.Queries, authQueries auth.Querier, categoryQueries categoriesdb.Querier, vatQueries *vatdb.Queries, rates RateLookup) *Service {
 	return &Service{
 		pool:            pool,
 		queries:         queries,
 		authQueries:     authQueries,
 		categoryQueries: categoryQueries,
 		vatQueries:      vatQueries,
+		rates:           rates,
 	}
 }
 
@@ -276,6 +295,118 @@ func (s *Service) resolveVAT(
 }
 
 // =============================================================================
+// NATIVE-CURRENCY CONVERSION (FX — prep for the general ledger)
+//
+// An expense stores its money twice: in the transaction currency (gross_value_minor,
+// vat_value_minor) and in the organisation's native/home currency (native_*_minor),
+// plus the exchange_rate used. The GL posts in the base (native) currency, so these
+// must be populated on write. This mirrors the invoices domain's nativeAmounts.
+// =============================================================================
+
+// normaliseCurrency upper-cases the currency and defaults a blank to GBP. The DB
+// requires upper-cased ISO 4217 codes (currencies.code CHECK), and the same-currency
+// comparison below must be case-insensitive. Mirrors invoices.normaliseCurrency.
+func normaliseCurrency(c string) string {
+	c = strings.ToUpper(strings.TrimSpace(c))
+	if c == "" {
+		return "GBP"
+	}
+	return c
+}
+
+// nativeAmounts converts an expense's gross + VAT (in the transaction currency `cur`)
+// into the organisation's native (home) currency, and returns the exchange_rate to
+// store. `cur` must already be normalised (upper-cased / defaulted).
+//
+//   - Same currency as the org's home currency → native == transaction, rate NULL
+//     ("native_* stored unconverted, rate NULL" — the common GBP-in-a-GBP-org case).
+//   - Foreign → the caller may supply an explicit rate; otherwise we AUTO-FILL it from
+//     the stored daily rate for the expense date (so the user needn't hand-type it).
+//     Only when neither is available is it a 422. The amounts are converted via
+//     money.ConvertMinor using each currency's minor_unit, then clamped back to the
+//     INTEGER (int32) column range.
+//
+// VAT is extracted in the transaction currency BEFORE this call (see resolveVAT /
+// money.ComputeFixedVAT) and converted here — the same order invoices uses.
+func (s *Service) nativeAmounts(
+	ctx context.Context, orgID uuid.UUID,
+	cur, rateInput string, datedOn time.Time, grossMinor, vatMinor int32,
+) (rate pgtype.Numeric, nativeCurrency string, nativeGross, nativeVat int32, err error) {
+	org, gerr := s.authQueries.GetOrganisation(ctx, orgID)
+	if gerr != nil {
+		return rate, "", 0, 0, kernel.ErrInternal(gerr)
+	}
+	nativeCurrency = org.NativeCurrency
+
+	// Same currency as the org's home currency: native == transaction, no rate.
+	if strings.EqualFold(cur, nativeCurrency) {
+		return pgtype.Numeric{}, nativeCurrency, grossMinor, vatMinor, nil
+	}
+
+	// A foreign expense needs a rate: an explicit one, else the stored daily rate.
+	rateStr := strings.TrimSpace(rateInput)
+	if rateStr == "" {
+		filled, ferr := s.autoFillRate(ctx, cur, datedOn)
+		if ferr != nil {
+			return rate, nativeCurrency, 0, 0, ferr
+		}
+		rateStr = filled
+	}
+	rateDec, derr := decimal.NewFromString(rateStr)
+	if derr != nil || !rateDec.IsPositive() {
+		return rate, nativeCurrency, 0, 0, kernel.ErrValidation("exchange_rate must be a positive number", derr)
+	}
+
+	fromExp, ferr := s.currencyExp(ctx, cur)
+	if ferr != nil {
+		return rate, nativeCurrency, 0, 0, ferr
+	}
+	toExp, terr := s.currencyExp(ctx, nativeCurrency)
+	if terr != nil {
+		return rate, nativeCurrency, 0, 0, terr
+	}
+
+	// Expense money columns are INTEGER (int32); money.ConvertMinor is int64-based, so
+	// widen, convert, then clamp back (guards the ±£21.4m int32 ceiling defensively).
+	nativeGross = money.ClampToInt32(money.ConvertMinor(int64(grossMinor), fromExp, toExp, rateDec))
+	nativeVat = money.ClampToInt32(money.ConvertMinor(int64(vatMinor), fromExp, toExp, rateDec))
+	if serr := rate.Scan(rateStr); serr != nil {
+		return rate, nativeCurrency, 0, 0, kernel.ErrInternal(serr)
+	}
+	return rate, nativeCurrency, nativeGross, nativeVat, nil
+}
+
+// autoFillRate looks up the stored daily rate for a foreign expense when the request
+// omitted an explicit exchange_rate. Returns the rate as a decimal string (for the
+// NUMERIC scan path) or a 422 when no rate source is wired or none is stored for the
+// currency on/before the expense date.
+func (s *Service) autoFillRate(ctx context.Context, cur string, datedOn time.Time) (string, error) {
+	if s.rates == nil {
+		return "", kernel.ErrValidation("exchange_rate is required for an expense not in the organisation's native currency", nil)
+	}
+	rateDec, ok, err := s.rates.RateOnOrBefore(ctx, cur, datedOn)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", kernel.ErrValidation("no exchange rate is available for "+cur+" on the expense date — please enter one", nil)
+	}
+	return rateDec.String(), nil
+}
+
+// currencyExp returns a currency's minor_unit (decimal places) for money.ConvertMinor.
+func (s *Service) currencyExp(ctx context.Context, code string) (int, error) {
+	c, err := s.queries.GetCurrency(ctx, code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, kernel.ErrValidation("unknown currency "+code, nil)
+		}
+		return 0, kernel.ErrInternal(err)
+	}
+	return int(c.MinorUnit), nil
+}
+
+// =============================================================================
 // CREATEEXPENSE
 // =============================================================================
 
@@ -387,11 +518,9 @@ func (s *Service) CreateExpense(
 	}
 	grossMinor := int32(grossMinorInt64)
 
-	// Default currency to GBP if not provided
-	currency := req.CurrencyCode
-	if currency == "" {
-		currency = "GBP"
-	}
+	// Normalise the currency (upper-case; blank → GBP). Upper-casing matters: the
+	// currencies.code FK/CHECK stores only upper-cased ISO codes.
+	currency := normaliseCurrency(req.CurrencyCode)
 
 	// -------------------------------------------------------------------------
 	// Step 3: Resolve VAT.
@@ -400,6 +529,15 @@ func (s *Service) CreateExpense(
 	// client-supplied vat_amount. See resolveVAT.
 	// -------------------------------------------------------------------------
 	vat, err := s.resolveVAT(ctx, authOrgID, grossMinor, req.VATRateID, req.VATAmount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert gross + VAT to the org's native (home) currency for the GL. A
+	// same-currency expense passes through with a NULL rate; a foreign one resolves
+	// (or auto-fills) an exchange_rate and converts. See nativeAmounts.
+	exchangeRate, nativeCurrency, nativeGross, nativeVat, err := s.nativeAmounts(
+		ctx, authOrgID, currency, req.ExchangeRate, datedOn, grossMinor, vat.ValueMinor)
 	if err != nil {
 		return nil, err
 	}
@@ -419,15 +557,16 @@ func (s *Service) CreateExpense(
 		DatedOn:               PgDateFromTime(datedOn), // helper below converts time.Time → pgx date
 		Description:           req.Description,
 		Currency:              currency,
-		NativeCurrency:        "GBP", // hardcoded for UK MVP
+		NativeCurrency:        nativeCurrency, // the org's home currency
+		ExchangeRate:          exchangeRate,   // NULL when same currency; the FX rate otherwise
 		GrossValueMinor:       grossMinor,
-		NativeGrossValueMinor: grossMinor, // same as gross for GBP; FX conversion added later
+		NativeGrossValueMinor: nativeGross, // == gross when same currency; converted otherwise
 		VatRateID:             vat.RateID,
 		VatRateBps:            vat.RateBps,
 		VatValueMinor:         vat.ValueMinor,
-		NativeVatValueMinor:   vat.ValueMinor, // GBP: native VAT == expense-currency VAT
-		VatStatus:             "TAXABLE",      // TODO: derive EXEMPT/OUT_OF_SCOPE from the rate
-		EcStatus:              "UK_NON_EC",    // correct default for post-2021 UK expenses
+		NativeVatValueMinor:   nativeVat,   // == VAT when same currency; converted otherwise
+		VatStatus:             "TAXABLE",   // TODO: derive EXEMPT/OUT_OF_SCOPE from the rate
+		EcStatus:              "UK_NON_EC", // correct default for post-2021 UK expenses
 
 		// Optional string fields: convert *string to pgtype.Text
 		// kernel.NullText is a small helper defined at the bottom of this file.
@@ -528,14 +667,19 @@ func (s *Service) UpdateExpense(
 	}
 	grossMinor := int32(grossMinorInt64)
 
-	currency := req.CurrencyCode
-	if currency == "" {
-		currency = "GBP"
-	}
+	currency := normaliseCurrency(req.CurrencyCode)
 
 	// Resolve VAT (extract from the inclusive total for fixed-ratio, accept the
 	// client amount for custom) — same rule as CreateExpense, via resolveVAT.
 	vat, err := s.resolveVAT(ctx, authOrgID, grossMinor, req.VATRateID, req.VATAmount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to the org's native currency (same rule as CreateExpense). A currency
+	// or amount change on edit re-derives native_* and the exchange_rate.
+	exchangeRate, nativeCurrency, nativeGross, nativeVat, err := s.nativeAmounts(
+		ctx, authOrgID, currency, req.ExchangeRate, datedOn, grossMinor, vat.ValueMinor)
 	if err != nil {
 		return nil, err
 	}
@@ -572,13 +716,14 @@ func (s *Service) UpdateExpense(
 			DatedOn:               PgDateFromTime(datedOn),
 			Description:           req.Description,
 			Currency:              currency,
-			NativeCurrency:        "GBP",
+			NativeCurrency:        nativeCurrency,
+			ExchangeRate:          exchangeRate,
 			GrossValueMinor:       grossMinor,
-			NativeGrossValueMinor: grossMinor,
+			NativeGrossValueMinor: nativeGross,
 			VatRateID:             vat.RateID,
 			VatRateBps:            vat.RateBps,
 			VatValueMinor:         vat.ValueMinor,
-			NativeVatValueMinor:   vat.ValueMinor, // GBP: native VAT == expense-currency VAT
+			NativeVatValueMinor:   nativeVat,
 			VatStatus:             "TAXABLE",
 			EcStatus:              "UK_NON_EC",
 			ReceiptReference:      kernel.NullText(req.ReceiptReference),

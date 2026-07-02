@@ -459,6 +459,18 @@ Full plan: `~/.claude/plans/in-order-to-create-binary-manatee.md` (4 phases).
 - **Phase 4 — foreign-currency bank-balance revaluation** (750-x vs 390) — NOT STARTED.
   Account-scheme decision pending: invoice realised FX uses 218 + a sibling loss
   account; bank-cash uses a single combined 390 — confirm whether to unify on 390.
+- **Expenses multi-currency — LANDED (2026-07-02).** The expense write path now fills the
+  dual-currency columns (mirrors invoices `nativeAmounts`): a native-currency expense stores
+  `native_*` == transaction with a NULL `exchange_rate`; a foreign expense converts gross +
+  VAT to the org's home currency via `money.ConvertMinor`, auto-filling the rate from the
+  stored daily rate (`fxrates.RateOnOrBefore`) or taking an explicit `exchange_rate` (422 if
+  neither). SPA: the expense form shows an exchange-rate field for a foreign currency (login
+  now returns the org's `native_currency`); the detail view already showed native + rate.
+  Tested in `server_test.go` `TestExpenseFX`. _Deferred: `expenses.manual_vat_amount_minor`
+  (reclaimable-VAT override for foreign expenses where the rate-based calc doesn't apply) is
+  still unused; **GL posting of `EXPENSE_APPROVED`** (the rule already exists in
+  `gl_posting_rules`) is the next step — this change makes the row postable; minor cleanup:
+  `resolveVAT` + `nativeAmounts` each fetch the org (dedupe into one fetch later)._
 
 ## Currencies
 

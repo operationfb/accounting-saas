@@ -157,7 +157,22 @@ func main() {
 	// lock (the read-only IsDateInFiledPeriod check that expenses/invoices/bills/banking
 	// each call before mutating a record dated in an already-submitted VAT return).
 	vatQueries := dbvat.New(pool)
-	service := expenses.NewService(pool, queries, authQueries, categoryQueries, vatQueries)
+
+	// Exchange rates: the GLOBAL daily FX reference table. Built here (before the
+	// services that consume it) because the expenses AND invoices services take it to
+	// auto-fill a foreign document's exchange_rate. The provider (ECB via Frankfurter —
+	// free, no key) is opt-out via FXRATES_PROVIDER_URL="none"; an empty value uses the
+	// default public host, a URL points at a custom/self-hosted instance. With no
+	// provider the module still SERVES stored rates (refresh no-ops).
+	currencyQueries := dbcurrencies.New(pool)
+	var fxProvider fxrates.Provider
+	if url := os.Getenv("FXRATES_PROVIDER_URL"); url != "none" {
+		fxProvider = fxrates.NewFrankfurterProvider(url) // url == "" → default host
+	}
+	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), currencyQueries, fxProvider, "GBP", "ecb")
+
+	// fxRateSvc auto-fills a foreign expense's exchange_rate from the stored daily rate.
+	service := expenses.NewService(pool, queries, authQueries, categoryQueries, vatQueries, fxRateSvc)
 
 	// Contacts + Projects each have their own sqlc package + internal service and
 	// self-register routes after NewServer (per-domain pattern). They share
@@ -172,18 +187,6 @@ func main() {
 
 	contactSvc := contacts.NewService(pool, contactQueries, authQueries, projectQueries)
 	projectSvc := projects.NewService(pool, projectQueries, authQueries, contactQueries)
-
-	// Exchange rates: the GLOBAL daily FX reference table. Built early because the
-	// invoices service takes it (to auto-fill a foreign invoice's rate). The provider
-	// (ECB via Frankfurter — free, no key) is opt-out via FXRATES_PROVIDER_URL="none";
-	// an empty value uses the default public host, a URL points at a custom/self-hosted
-	// instance. With no provider the module still SERVES stored rates (refresh no-ops).
-	currencyQueries := dbcurrencies.New(pool)
-	var fxProvider fxrates.Provider
-	if url := os.Getenv("FXRATES_PROVIDER_URL"); url != "none" {
-		fxProvider = fxrates.NewFrankfurterProvider(url) // url == "" → default host
-	}
-	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), currencyQueries, fxProvider, "GBP", "ecb")
 
 	// Unrealised-FX revaluation (Phase 3): retranslates open foreign invoices to today's
 	// stored rate, posting the swing to 391 so the Trial Balance reflects today's value.

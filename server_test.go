@@ -190,7 +190,11 @@ func newTestServer(t *testing.T) *testServer {
 	queries := dbexpenses.New(pool)
 	authQueries := auth.New(pool)
 	vatQueries := dbvat.New(pool) // shared: VAT screens + the filed-period lock guard
-	service := expenses.NewService(pool, queries, authQueries, dbcategories.New(pool), vatQueries)
+	// fxRateSvc serves stored daily rates to the expense + invoice FX auto-fill. Provider
+	// is nil in tests (no network) — the only-mock-external-services rule; rate rows are
+	// seeded directly via seedRate where a test needs auto-fill.
+	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), dbcurrencies.New(pool), nil, "GBP", "ecb")
+	service := expenses.NewService(pool, queries, authQueries, dbcategories.New(pool), vatQueries, fxRateSvc)
 
 	// Build a real auth handler so the /auth/* routes work, and pass the token
 	// maker to the server so the expense routes' auth middleware can verify
@@ -218,10 +222,6 @@ func newTestServer(t *testing.T) *testServer {
 	attachmentService := attachments.NewService(pool, queries, authQueries, dbcategories.New(pool), store, nil, 0, 0)
 	contactSvc := contacts.NewService(pool, dbcontacts.New(pool), authQueries, projectsdb.New(pool))
 	projectSvc := projects.NewService(pool, projectsdb.New(pool), authQueries, dbcontacts.New(pool))
-	// fxRateSvc serves stored daily rates to the invoice auto-fill. Provider is nil in
-	// tests (no network) — the only-mock-external-services rule; rate rows are seeded
-	// directly via the fxrates queries where a test needs auto-fill.
-	fxRateSvc := fxrates.NewService(dbfxrates.New(pool), dbcurrencies.New(pool), nil, "GBP", "ecb")
 	invoiceSvc := invoices.NewService(pool, dbinvoices.New(pool), authQueries, dbcontacts.New(pool), vatQueries, fxRateSvc)
 	invoiceSvc.SetPoster(ledger.NewPoster(dbledger.New(pool), dbcategories.New(pool), authQueries))
 	memberSvc := members.NewService(pool, authQueries)
@@ -2385,4 +2385,176 @@ func TestExportExpenses_ByIDsOwnershipAndTenantScoped(t *testing.T) {
 	if n := len(recs) - 1; n != 1 {
 		t.Errorf("member id-export should have exactly 1 data row, got %d", n)
 	}
+}
+
+// =============================================================================
+// FX / MULTI-CURRENCY  (native-currency conversion + exchange_rate)
+// =============================================================================
+
+// trimZeros normalises a stored NUMERIC string ("0.800000" → "0.8", "43.00" → "43") so
+// an exchange-rate assertion doesn't depend on the column's stored scale (NUMERIC(18,6)).
+func trimZeros(s string) string {
+	if !strings.Contains(s, ".") {
+		return s
+	}
+	return strings.TrimRight(strings.TrimRight(s, "0"), ".")
+}
+
+// TestExpenseFX covers the multi-currency write path (create + update):
+//   - a NATIVE-currency expense stores native_* == transaction and a NULL exchange_rate
+//     ("native_* stored unconverted, rate NULL" — the common GBP-in-a-GBP-org case);
+//   - a FOREIGN expense converts to the org's native currency via an EXPLICIT rate;
+//   - a FOREIGN expense with no rate AUTO-FILLS it from the stored daily rate;
+//   - a FOREIGN expense with no rate available is a 422.
+//
+// The dev org's native currency is GBP. Money conversion uses money.ConvertMinor (HALF-UP).
+func TestExpenseFX(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.pool.Close()
+
+	authHeader := bearer(t, ts, devUserID, devOrgID)
+	categoryID := spendingCategoryForOrg(t, ts, devOrgID)
+	vatRateID := gbVatRateID(t, ts, true, 2000) // fixed-ratio 20% GB rate
+
+	// Tidy up: hard-delete the DRAFT expenses these subtests create. They never reach
+	// APPROVED, so there are no GL entries — a plain DELETE keeps the shared dev DB clean.
+	var createdIDs []string
+	t.Cleanup(func() {
+		for _, id := range createdIDs {
+			_, _ = ts.pool.Exec(context.Background(), "DELETE FROM expenses WHERE id = $1", id)
+		}
+	})
+	track := func(id string) string { createdIDs = append(createdIDs, id); return id }
+
+	t.Run("same currency (GBP): native == transaction, rate NULL", func(t *testing.T) {
+		rec := postExpense(t, ts, authHeader, expenses.CreateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "2026-01-15",
+			Description:      "GBP lunch",
+			CurrencyCode:     "GBP",
+			GrossValuePounds: "120.00",
+			VATRateID:        &vatRateID,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		d := getExpenseDetail(t, ts, track(decodeExpense(t, rec).ID), authHeader)
+		if d.Currency != "GBP" || d.NativeCurrency != "GBP" {
+			t.Errorf("currency/native: got %q/%q, want GBP/GBP", d.Currency, d.NativeCurrency)
+		}
+		if d.ExchangeRate != nil {
+			t.Errorf("exchange_rate: got %q, want NULL for a native-currency expense", *d.ExchangeRate)
+		}
+		if d.NativeGrossValue != d.GrossValue {
+			t.Errorf("native_gross %q != gross %q (should be unconverted)", d.NativeGrossValue, d.GrossValue)
+		}
+		if d.NativeVATValue != d.VATValue {
+			t.Errorf("native_vat %q != vat %q (should be unconverted)", d.NativeVATValue, d.VATValue)
+		}
+	})
+
+	t.Run("foreign (USD) + explicit rate: converted", func(t *testing.T) {
+		rec := postExpense(t, ts, authHeader, expenses.CreateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "2026-01-15",
+			Description:      "USD hotel",
+			CurrencyCode:     "USD",
+			GrossValuePounds: "100.00",
+			ExchangeRate:     "0.80", // £0.80 per $1
+			VATRateID:        &vatRateID,
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		d := getExpenseDetail(t, ts, track(decodeExpense(t, rec).ID), authHeader)
+		if d.Currency != "USD" || d.NativeCurrency != "GBP" {
+			t.Fatalf("currency/native: got %q/%q, want USD/GBP", d.Currency, d.NativeCurrency)
+		}
+		// gross 100.00 USD × 0.80 = 80.00 GBP.
+		if d.GrossValue != "100.00" || d.NativeGrossValue != "80.00" {
+			t.Errorf("gross/native_gross: got %q/%q, want 100.00/80.00", d.GrossValue, d.NativeGrossValue)
+		}
+		// VAT extracted at 20% of the inclusive USD total = 16.67 USD; × 0.80 = 13.34 GBP.
+		if d.VATValue != "16.67" || d.NativeVATValue != "13.34" {
+			t.Errorf("vat/native_vat: got %q/%q, want 16.67/13.34", d.VATValue, d.NativeVATValue)
+		}
+		if d.ExchangeRate == nil {
+			t.Fatalf("exchange_rate: got NULL, want the stored rate")
+		}
+		if got := trimZeros(*d.ExchangeRate); got != "0.8" {
+			t.Errorf("exchange_rate: got %q (normalised %q), want 0.8", *d.ExchangeRate, got)
+		}
+	})
+
+	t.Run("foreign (EUR) + auto-fill from stored daily rate", func(t *testing.T) {
+		seedRate(t, ts, "EUR", "2026-01-15", "0.86") // £0.86 per €1
+		rec := postExpense(t, ts, authHeader, expenses.CreateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "2026-01-15",
+			Description:      "EUR taxi",
+			CurrencyCode:     "EUR",
+			GrossValuePounds: "50.00",
+			// no ExchangeRate → auto-filled from the seeded rate for dated_on
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		d := getExpenseDetail(t, ts, track(decodeExpense(t, rec).ID), authHeader)
+		if d.NativeGrossValue != "43.00" { // 50.00 × 0.86
+			t.Errorf("native_gross: got %q, want 43.00 (50 × 0.86 auto-filled)", d.NativeGrossValue)
+		}
+		if d.ExchangeRate == nil || trimZeros(*d.ExchangeRate) != "0.86" {
+			t.Errorf("exchange_rate: got %v, want 0.86 (auto-filled)", d.ExchangeRate)
+		}
+	})
+
+	t.Run("foreign with no rate available → 422", func(t *testing.T) {
+		// A far-past date has no stored rate on/before it and no explicit rate is given,
+		// so the auto-fill misses regardless of what's in the shared exchange_rates table.
+		rec := postExpense(t, ts, authHeader, expenses.CreateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "1990-01-01",
+			Description:      "EUR with no rate",
+			CurrencyCode:     "EUR",
+			GrossValuePounds: "20.00",
+		})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("expected 422, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("update re-derives native on currency change", func(t *testing.T) {
+		rec := postExpense(t, ts, authHeader, expenses.CreateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "2026-01-15",
+			Description:      "starts GBP",
+			CurrencyCode:     "GBP",
+			GrossValuePounds: "10.00",
+		})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create: expected 201, got %d — body: %s", rec.Code, rec.Body.String())
+		}
+		id := track(decodeExpense(t, rec).ID)
+
+		body, _ := json.Marshal(expenses.UpdateExpenseRequest{
+			CategoryID:       categoryID,
+			DatedOn:          "2026-01-15",
+			Description:      "now USD",
+			CurrencyCode:     "USD",
+			GrossValuePounds: "200.00",
+			ExchangeRate:     "0.75",
+		})
+		putRec := httptest.NewRecorder()
+		putReq, _ := http.NewRequest(http.MethodPut, "/api/v1/expenses/"+id, bytes.NewReader(body))
+		putReq.Header.Set("Content-Type", "application/json")
+		putReq.Header.Set("Authorization", authHeader)
+		ts.server.router.ServeHTTP(putRec, putReq)
+		if putRec.Code != http.StatusOK {
+			t.Fatalf("update: expected 200, got %d — body: %s", putRec.Code, putRec.Body.String())
+		}
+		d := getExpenseDetail(t, ts, id, authHeader)
+		if d.Currency != "USD" || d.NativeGrossValue != "150.00" { // 200.00 × 0.75
+			t.Errorf("after update: currency %q native_gross %q, want USD 150.00", d.Currency, d.NativeGrossValue)
+		}
+	})
 }

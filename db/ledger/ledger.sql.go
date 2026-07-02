@@ -225,10 +225,11 @@ type GetAccountTransactionsRow struct {
 // By DEFAULT (include_superseded = FALSE) this hides superseded/reversed activity: both
 // a reversal entry (is_reversal) AND the entry a reversal points at are dropped, leaving
 // only the EFFECTIVE (live) entries — the same predicate as GetJournalEntryForSource.
-// Every such (original + reversal) pair nets to zero on every account, so hiding them
-// does NOT change total_debit/total_credit or the agreement with the Trial Balance
-// (which, unlike this drill-down, keeps reversals in to stay balanced). Pass
-// include_superseded = TRUE to reveal the full reversal chain for auditing.
+// Every such (original + reversal) pair nets to zero on the account, so hiding it leaves
+// the account's NET balance unchanged — and makes the report's Debit/Credit column
+// totals reconcile with the Trial Balance figure. (Showing the pair instead inflates
+// both columns by the same amount: the net is preserved but the column totals grow.)
+// Pass include_superseded = TRUE to reveal the full reversal chain for auditing.
 func (q *Queries) GetAccountTransactions(ctx context.Context, arg GetAccountTransactionsParams) ([]GetAccountTransactionsRow, error) {
 	rows, err := q.db.Query(ctx, getAccountTransactions,
 		arg.OrganisationID,

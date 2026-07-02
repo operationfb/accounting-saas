@@ -1002,3 +1002,16 @@ SELECT id, name, rate_bps, country_code, is_fixed_ratio, effective_from, effecti
 FROM vat_rates
 WHERE id = $1;
 
+
+-- -----------------------------------------------------------------------------
+-- GetCurrency
+-- Fetch a single currency by ISO 4217 code. Used by the FX conversion path to
+-- read minor_unit (the number of decimal places) so money.ConvertMinor can scale
+-- correctly when converting a foreign expense's amounts to the org's home
+-- currency. Mirrors the invoices domain's own GetCurrency.
+-- -----------------------------------------------------------------------------
+-- name: GetCurrency :one
+SELECT code, name, symbol, minor_unit
+FROM currencies
+WHERE code = $1;
+

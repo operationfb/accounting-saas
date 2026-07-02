@@ -174,6 +174,14 @@ type Querier interface {
 	// -----------------------------------------------------------------------------
 	FindDuplicateReceipt(ctx context.Context, arg FindDuplicateReceiptParams) (uuid.UUID, error)
 	// -----------------------------------------------------------------------------
+	// GetCurrency
+	// Fetch a single currency by ISO 4217 code. Used by the FX conversion path to
+	// read minor_unit (the number of decimal places) so money.ConvertMinor can scale
+	// correctly when converting a foreign expense's amounts to the org's home
+	// currency. Mirrors the invoices domain's own GetCurrency.
+	// -----------------------------------------------------------------------------
+	GetCurrency(ctx context.Context, code string) (GetCurrencyRow, error)
+	// -----------------------------------------------------------------------------
 	// GetExpense
 	// Fetch a single expense by its UUID, scoped to the organisation.
 	// We ALWAYS scope by organisation_id — never fetch by id alone.

@@ -971,6 +971,38 @@ func (q *Queries) FindDuplicateReceipt(ctx context.Context, arg FindDuplicateRec
 	return expense_id, err
 }
 
+const getCurrency = `-- name: GetCurrency :one
+SELECT code, name, symbol, minor_unit
+FROM currencies
+WHERE code = $1
+`
+
+type GetCurrencyRow struct {
+	Code      string      `json:"code"`
+	Name      string      `json:"name"`
+	Symbol    pgtype.Text `json:"symbol"`
+	MinorUnit int16       `json:"minor_unit"`
+}
+
+// -----------------------------------------------------------------------------
+// GetCurrency
+// Fetch a single currency by ISO 4217 code. Used by the FX conversion path to
+// read minor_unit (the number of decimal places) so money.ConvertMinor can scale
+// correctly when converting a foreign expense's amounts to the org's home
+// currency. Mirrors the invoices domain's own GetCurrency.
+// -----------------------------------------------------------------------------
+func (q *Queries) GetCurrency(ctx context.Context, code string) (GetCurrencyRow, error) {
+	row := q.db.QueryRow(ctx, getCurrency, code)
+	var i GetCurrencyRow
+	err := row.Scan(
+		&i.Code,
+		&i.Name,
+		&i.Symbol,
+		&i.MinorUnit,
+	)
+	return i, err
+}
+
 const getExpense = `-- name: GetExpense :one
 SELECT id, organisation_id, user_id, created_by_user_id, category_id, dated_on, description, receipt_reference, currency, native_currency, exchange_rate, gross_value_minor, native_gross_value_minor, vat_rate_id, vat_rate_bps, vat_value_minor, native_vat_value_minor, manual_vat_amount_minor, vat_status, ec_status, project_id, rebill_type, rebill_factor, rebilled_invoice_id, stock_item_id, stock_item_description, stock_quantity, capital_asset_id, property_id, status, submitted_at, approved_at, approved_by_user_id, paid_at, rejection_note, ocr_confidence, ocr_processed_at, supplier_name, supplier_vat_number, invoice_number, needs_review, deleted_at, created_at, updated_at FROM expenses
 WHERE id              = $1   -- expense UUID

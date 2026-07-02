@@ -46,6 +46,10 @@ export const OrganisationSchema = z.object({
   id: z.string(),
   name: z.string(),
   country_code: z.string(),
+  // The org's home currency (ISO 4217, e.g. 'GBP'). Used to make the SPA
+  // currency-aware — e.g. the expense form only shows an exchange-rate field when the
+  // chosen currency differs from this. Nullish for defensive parsing of older tokens.
+  native_currency: z.string().nullish(),
   role: RoleSchema,
 })
 export type Organisation = z.infer<typeof OrganisationSchema>

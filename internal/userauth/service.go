@@ -223,10 +223,11 @@ func (s *Service) ListMyOrganisations(ctx context.Context, authUserID uuid.UUID)
 	orgs := make([]OrganisationResponse, 0, len(rows))
 	for _, r := range rows {
 		orgs = append(orgs, OrganisationResponse{
-			ID:          r.ID.String(),
-			Name:        r.Name,
-			CountryCode: r.CountryCode,
-			Role:        string(r.Role),
+			ID:             r.ID.String(),
+			Name:           r.Name,
+			CountryCode:    r.CountryCode,
+			NativeCurrency: r.NativeCurrency,
+			Role:           string(r.Role),
 		})
 	}
 	return orgs, nil
@@ -287,10 +288,11 @@ func (s *Service) SwitchOrganisation(ctx context.Context, authUserID, orgID uuid
 		AccessToken: accessToken,
 		User:        NewUserResponse(user),
 		Organisation: &OrganisationResponse{
-			ID:          org.ID.String(),
-			Name:        org.Name,
-			CountryCode: org.CountryCode,
-			Role:        string(role),
+			ID:             org.ID.String(),
+			Name:           org.Name,
+			CountryCode:    org.CountryCode,
+			NativeCurrency: org.NativeCurrency,
+			Role:           string(role),
 		},
 	}, nil
 }

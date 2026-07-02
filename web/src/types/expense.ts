@@ -115,6 +115,10 @@ export interface CreateExpenseRequest {
   description: string
   gross_value: string
   currency?: string
+  // Exchange rate to the org's native currency (native per 1 unit of currency, e.g.
+  // "0.80"). Only relevant for a foreign-currency expense; omitted → the backend
+  // auto-fills it from the stored daily rate for the expense date.
+  exchange_rate?: string
   vat_rate_id?: string
   vat_amount?: string
   supplier_name?: string

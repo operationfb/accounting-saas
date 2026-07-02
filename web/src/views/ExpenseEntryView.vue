@@ -228,6 +228,7 @@ const form = reactive({
   category: '',
   datedOn: new Date() as Date | null, // default to today (create)
   currency: 'GBP',
+  exchangeRate: '', // FX rate to the org's home currency; only for a foreign currency
   totalValue: '',
   vatRate: '',
   vatAmount: '',
@@ -244,6 +245,12 @@ const currencyOptions = computed(() => buildCurrencyOptions(currencies.value))
 // The amount-input symbol (£/€/¥) is derived from the fetched list, so it works
 // for any of the currencies — not just the old hardcoded three.
 const currencySymbol = computed(() => currencySymbolMap(currencies.value)[form.currency] ?? '')
+
+// The org's home currency (fixed at org creation; falls back to GBP if the login
+// response predates the field). An expense in any other currency is "foreign" and
+// needs an exchange rate — so we reveal the rate field only then.
+const homeCurrency = computed(() => auth.organisation?.native_currency ?? 'GBP')
+const isForeignCurrency = computed(() => form.currency !== homeCurrency.value)
 
 async function loadCurrencies() {
   try {
@@ -357,6 +364,7 @@ async function loadForEdit() {
     form.category = exp.category_id
     form.datedOn = new Date(`${exp.dated_on}T00:00:00`) // local midnight, no tz shift
     form.currency = exp.currency
+    form.exchangeRate = exp.exchange_rate ?? '' // preserve the stored FX rate on edit
     form.totalValue = exp.gross_value
     form.vatRate = exp.vat_rate_id ?? ''
     form.vatAmount = exp.vat_value
@@ -480,6 +488,9 @@ function buildPayload(): CreateExpenseRequest {
     description: form.description.trim(),
     gross_value: form.totalValue.trim(),
     currency: form.currency,
+    // FX rate — only meaningful for a foreign currency. Blank → the backend auto-fills
+    // it from the stored daily rate for the expense date; a value overrides that.
+    exchange_rate: isForeignCurrency.value ? opt(form.exchangeRate) : undefined,
     // VAT rate is the "type"; the amount is auto for fixed-ratio (backend
     // recomputes + ignores it) or the user's value for a custom rate.
     vat_rate_id: form.vatRate || undefined,
@@ -501,6 +512,7 @@ function resetForm() {
   form.category = ''
   form.datedOn = new Date()
   form.currency = 'GBP'
+  form.exchangeRate = ''
   form.totalValue = ''
   form.vatRate = ''
   form.vatAmount = ''
@@ -940,6 +952,21 @@ async function onSmartFilePicked(e: Event) {
             option-disabled="disabled"
             class="w-full sm:w-72"
           />
+        </FormRow>
+
+        <!-- Exchange rate: only shown for a foreign currency. Blank → the backend
+             auto-fills the stored daily rate for the expense date. -->
+        <FormRow v-if="isForeignCurrency" label="Exchange rate" label-for="exchangeRate">
+          <InputText
+            id="exchangeRate"
+            v-model="form.exchangeRate"
+            inputmode="decimal"
+            placeholder="Auto (stored daily rate)"
+            class="w-full sm:w-56"
+          />
+          <span class="mt-1 block text-xs text-fa-muted">
+            {{ homeCurrency }} per 1 {{ form.currency }} — leave blank to use the stored daily rate.
+          </span>
         </FormRow>
 
         <FormRow label="Total value" label-for="total" required>

@@ -28,6 +28,12 @@ type CreateExpenseRequest struct {
 	CurrencyCode     string `json:"currency"          binding:"omitempty,len=3"` // defaults to GBP
 	GrossValuePounds string `json:"gross_value"     binding:"required"`          // e.g. "42.50"
 
+	// Exchange rate to the org's native currency (native per 1 unit of the expense
+	// currency, e.g. "0.80"). Required only when the currency differs from the org's
+	// native currency AND no daily rate is stored for the expense date; otherwise
+	// auto-filled server-side. Ignored for a native-currency expense.
+	ExchangeRate string `json:"exchange_rate" binding:"omitempty"`
+
 	// Optional fields — pointer types so we can distinguish "not provided"
 	// from "provided as empty string / zero". A nil pointer means absent.
 	ReceiptReference *string `json:"receipt_reference"`
@@ -60,6 +66,10 @@ type UpdateExpenseRequest struct {
 	Description      string `json:"description"       binding:"required,min=1"`
 	CurrencyCode     string `json:"currency"          binding:"omitempty,len=3"` // defaults to GBP
 	GrossValuePounds string `json:"gross_value"     binding:"required"`          // e.g. "42.50"
+
+	// Exchange rate to the org's native currency (see CreateExpenseRequest). On edit,
+	// a currency/amount change re-derives the native amounts; blank re-auto-fills.
+	ExchangeRate string `json:"exchange_rate" binding:"omitempty"`
 
 	// Optional fields — nil pointer means absent (omitted from the update body).
 	ReceiptReference *string `json:"receipt_reference"`
