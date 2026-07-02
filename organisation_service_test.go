@@ -89,8 +89,9 @@ func assertOrgStrPtr(t *testing.T, field string, got *string, want string) {
 // TestHandleUpdateOrganisation covers PUT /api/v1/organisation and its
 // owner/admin-only authorization plus input validation.
 func TestHandleUpdateOrganisation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("owner updates → 200, round-trips, persists, re-GET reflects", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
@@ -215,6 +216,7 @@ func TestHandleUpdateOrganisation(t *testing.T) {
 // directly (bypassing the handler's `oneof`/`len` bindings) to prove invalid
 // input is a validation error (422), independent of the HTTP boundary.
 func TestOrganisationService_Validation_Direct(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
 	// cleanup — a deferred Close would shut the pool before the fixtures clean up,
@@ -245,6 +247,7 @@ func TestOrganisationService_Validation_Direct(t *testing.T) {
 // immutable here — while still applying the fields it does. A PUT from this form
 // must not wipe or change any of them.
 func TestOrganisationService_FieldPreservation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
 	// cleanup — a deferred Close would shut the pool before the fixtures clean up,
@@ -312,8 +315,9 @@ func TestOrganisationService_FieldPreservation(t *testing.T) {
 // TestHandleGetOrganisation covers GET /api/v1/organisation: any active member
 // may read; non-members get 403; auth is required.
 func TestHandleGetOrganisation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("active member can view → 200", func(t *testing.T) {
 		orgB, _ := newOrgWithOwner(t, ts)
@@ -356,6 +360,7 @@ func TestHandleGetOrganisation(t *testing.T) {
 // can neither read nor edit it (the membership check is the guard), and that a
 // rejected cross-tenant PUT leaves the target org's row untouched.
 func TestOrganisation_TenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	// Close the pool via Cleanup (LIFO) so it runs AFTER newOrgWithOwner's row
 	// cleanup — a deferred Close would shut the pool before the fixtures clean up,

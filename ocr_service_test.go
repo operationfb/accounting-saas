@@ -133,7 +133,7 @@ func containsExpense(list []*expenses.ExpenseResponse, id string) bool {
 func TestSmartUploadCapture(t *testing.T) {
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("creates a needs_review skeleton and enqueues OCR", func(t *testing.T) {
 		spy := &spyEnqueuer{}
@@ -216,7 +216,7 @@ func TestSmartUploadCapture(t *testing.T) {
 func TestOCRProcessFillsExpense(t *testing.T) {
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	devUser, devOrg := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 
@@ -419,7 +419,7 @@ func TestOCRProcessFillsExpense(t *testing.T) {
 func TestOCRInboxAndConfirm(t *testing.T) {
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	draft := captureAs(t, ts, &spyEnqueuer{}, devUserID, devOrgID, DocumentTypeReceipt, "r.pdf", samplePDF())
 
@@ -443,7 +443,7 @@ func TestOCRInboxAndConfirm(t *testing.T) {
 	}
 
 	// 3) Confirm by saving the reviewed expense (PUT) → needs_review clears.
-	rec := putExpense(t, ts, draft.ID, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts))
+	rec := putExpense(t, ts, draft.ID, bearer(t, ts, devUserID, devOrgID), validUpdateBody(t, ts, devOrgID))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("confirm update: expected 200, got %d — body: %s", rec.Code, rec.Body.String())
 	}
@@ -480,7 +480,7 @@ func TestDocumentAILive(t *testing.T) {
 	requireGCS(t)
 	requireDocAILive(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	// Build the REAL extractor from the .env config — this is the connection
 	// (auth + API + processor ids + region) under test.

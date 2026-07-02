@@ -132,8 +132,9 @@ func newVatDashboardService(ts *testServer, hmrcBase string) *vat.Service {
 }
 
 func TestHMRCDashboard(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	authHeader := bearer(t, ts, ownerID, orgID)
@@ -284,8 +285,9 @@ func TestHMRCDashboard(t *testing.T) {
 
 // TestHMRCDashboardGuards covers the two pre-flight guards in hmrcAccess.
 func TestHMRCDashboardGuards(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	org := uuid.MustParse(orgID)
@@ -317,8 +319,9 @@ func TestHMRCDashboardGuards(t *testing.T) {
 // TestHMRCDashboardRoutesRequireAuth proves the dashboard routes are registered on
 // the real router and sit behind the bearer-token middleware (no token → 401).
 func TestHMRCDashboardRoutesRequireAuth(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	paths := []string{
 		"/api/v1/vat/hmrc/obligations",

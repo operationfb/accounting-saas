@@ -191,8 +191,9 @@ func newCaptureOrg(t *testing.T, ts *testServer) (orgID, ownerID, localPart stri
 // =============================================================================
 
 func TestEmailInboxRouting(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	t.Run("unknown address is ignored", func(t *testing.T) {
@@ -307,9 +308,10 @@ func TestEmailInboxRouting(t *testing.T) {
 // =============================================================================
 
 func TestEmailInboxCapture(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	t.Run("happy path: member emails their own inbox", func(t *testing.T) {
@@ -597,9 +599,10 @@ func mailgunWebhookRequestFiles(t *testing.T, fields map[string]string, files ma
 }
 
 func TestEmailInboxWebhookSignature(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid signature is rejected with 401 (no work done)", func(t *testing.T) {
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		req := mailgunWebhookRequest(t, map[string]string{
 			"timestamp":  "1700000000",
@@ -620,7 +623,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 	t.Run("valid signature is accepted and creates a draft", func(t *testing.T) {
 		requireGCS(t)
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
@@ -659,7 +662,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 	t.Run("inline body image (content-id-map) is skipped; the PDF is captured", func(t *testing.T) {
 		requireGCS(t)
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
@@ -704,7 +707,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 		// content-id-map. The handler must not treat it as an inline image.
 		requireGCS(t)
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
@@ -745,7 +748,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 	t.Run("with no content-id-map, all real attachments are captured", func(t *testing.T) {
 		requireGCS(t)
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
@@ -776,7 +779,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 	t.Run("attachment-less email (urlencoded body) is accepted; the HTML body is captured", func(t *testing.T) {
 		requireGCS(t)
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID, local := newCaptureOrg(t, ts)
 
@@ -812,7 +815,7 @@ func TestEmailInboxWebhookSignature(t *testing.T) {
 
 	t.Run("attachment-less email with no body is accepted (not 400) and ignored", func(t *testing.T) {
 		ts := newTestServer(t)
-		defer ts.pool.Close()
+		t.Cleanup(func() { ts.pool.Close() })
 
 		orgID, ownerID := newOrgWithOwner(t, ts)
 		local := "alpha-" + orgID[:8]
@@ -905,8 +908,9 @@ func newInboxOrgOwner(t *testing.T, ts *testServer, first, last, orgName string)
 }
 
 func TestEmailInboxAddress(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	t.Run("generates a human-readable, accent-folded address and is idempotent", func(t *testing.T) {

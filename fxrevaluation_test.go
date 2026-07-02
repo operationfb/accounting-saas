@@ -51,7 +51,7 @@ func (s *spyRevaluer) RunRevaluation(ctx context.Context, asOf time.Time) error 
 // that doesn't re-run revaluation is exactly what left 391 stale after the rate moved.
 func TestRateRefreshChainsRevaluation(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	spy := &spyRevaluer{}
 	svc := fxrates.NewService(dbfxrates.New(ts.pool), dbcurrencies.New(ts.pool), emptyRateProvider{}, "GBP", "ecb")
@@ -120,7 +120,7 @@ func cleanupReval(t *testing.T, ts *testServer, invID, currency, day string) {
 // 0.86 → 0.90): the receivable (681) rises and the swing posts to 391, balanced.
 func TestUnrealisedRevaluation_Gain(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	invID := issueInvoice(t, ts, "EUR", "0.86") // native receivable 10320p, due 12000p EUR
@@ -146,7 +146,7 @@ func TestUnrealisedRevaluation_Gain(t *testing.T) {
 // entry (cumulative-supersede) rather than stacking a second one.
 func TestUnrealisedRevaluation_ReplacesNotDoubles(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 
 	invID := issueInvoice(t, ts, "EUR", "0.86")
@@ -175,7 +175,7 @@ func TestUnrealisedRevaluation_ReplacesNotDoubles(t *testing.T) {
 // nets to zero, and the realised gain lives independently in 390 (no double-count).
 func TestUnrealisedRevaluation_FullSettlementReverses(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	ctx := context.Background()
 	userID, orgID := mustUUID(t, devUserID), mustUUID(t, devOrgID)
 

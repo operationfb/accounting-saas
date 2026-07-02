@@ -55,7 +55,7 @@ const navItems: NavItem[] = [
   {
     label: 'Reports',
     children: [
-      { label: 'Dashboard', to: '/dashboards' },
+      { label: 'Dashboards', to: '/dashboards' },
       { label: 'Trial Balance', to: '/reports/trial-balance' },
       { label: 'Account Transactions', to: '/reports/account-transactions' },
     ],

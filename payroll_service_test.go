@@ -134,8 +134,9 @@ func prepareBody(period int) payroll.PreparePayRunRequest {
 // TestPreparePayRunComputesEngine: preparing month 1 snapshots the two employees and
 // computes the reference figures via the DB-loaded rates.
 func TestPreparePayRunComputesEngine(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	orgID, _, auth := prepMonth1Org(t, ts)
 	_ = orgID
 
@@ -189,8 +190,9 @@ func TestPreparePayRunComputesEngine(t *testing.T) {
 // claims_employment_allowance = false, prepare records £0 EA and the full employer NI
 // is due to HMRC (the inverse of the default-claim case).
 func TestPreparePayRunEmploymentAllowanceOptOut(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	orgID, _, auth := prepMonth1Org(t, ts)
 
 	// Opt the org out of the Employment Allowance.
@@ -215,8 +217,9 @@ func TestPreparePayRunEmploymentAllowanceOptOut(t *testing.T) {
 
 // TestSequencingGuard: months must be prepared in order, one draft at a time.
 func TestSequencingGuard(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	_, _, auth := prepMonth1Org(t, ts)
 
 	// Can't start at month 2 (valid month-2 payment date, so this fails on sequencing).
@@ -252,8 +255,9 @@ func TestSequencingGuard(t *testing.T) {
 
 // TestPaymentDateWindow: a payment date outside the tax month is a 422.
 func TestPaymentDateWindow(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	_, _, auth := prepMonth1Org(t, ts)
 
 	body := payroll.PreparePayRunRequest{TaxYear: ptrInt(2026), Period: 1, PaymentDate: "2026-06-15"} // outside Apr6–May5
@@ -265,8 +269,9 @@ func TestPaymentDateWindow(t *testing.T) {
 
 // TestCompleteLocksRun: a completed run can't be edited (its payslips reject edits).
 func TestCompleteLocksRun(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	_, _, auth := prepMonth1Org(t, ts)
 
 	run := decodePayRun(t, payrollReq(t, ts, http.MethodPost, "/api/v1/payroll/periods", auth, prepareBody(1)).Body.Bytes())
@@ -285,8 +290,9 @@ func TestCompleteLocksRun(t *testing.T) {
 
 // TestAuthAdminOnly: a non-admin member is forbidden from payroll.
 func TestPayrollAuthAdminOnly(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	orgID, _, _ := prepMonth1Org(t, ts)
 	memberID := addOrgMember(t, ts, orgID, "member")
 	memberAuth := bearer(t, ts, memberID, orgID)
@@ -302,8 +308,9 @@ func TestPayrollAuthAdminOnly(t *testing.T) {
 
 // TestMultiTenantIsolation: org A cannot read org B's pay run.
 func TestPayrollMultiTenantIsolation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	_, _, authA := prepMonth1Org(t, ts)
 	runA := decodePayRun(t, payrollReq(t, ts, http.MethodPost, "/api/v1/payroll/periods", authA, prepareBody(1)).Body.Bytes())
 
@@ -317,8 +324,9 @@ func TestPayrollMultiTenantIsolation(t *testing.T) {
 
 // TestOverviewYearToDate: the overview rolls up the completed/prepared runs.
 func TestPayrollOverviewYearToDate(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	_, _, auth := prepMonth1Org(t, ts)
 	_ = decodePayRun(t, payrollReq(t, ts, http.MethodPost, "/api/v1/payroll/periods", auth, prepareBody(1)).Body.Bytes())
 
@@ -366,8 +374,9 @@ func setPayrollDates(t *testing.T, ts *testServer, orgID, userID, start, leaving
 // employee who hasn't started yet and one who left before the period, and flag a
 // mid-period leaver's payslip as their final one.
 func TestLeaversAndJoinersExcluded(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 	orgID, ownerID := newOrgWithOwner(t, ts)
 	cleanPayroll(t, ts, orgID)
 	setEmployeePayroll(t, ts, orgID, ownerID, 70000, "employee", "A") // owner: no dates → always in

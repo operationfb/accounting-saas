@@ -83,8 +83,9 @@ func decodeProfile(t *testing.T, body []byte) userauth.UserResponse {
 // TestHandleGetProfile covers GET /api/v1/profile — it returns the caller's OWN
 // row, identified purely by the token (self-scoped).
 func TestHandleGetProfile(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("returns the caller's own profile", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
@@ -123,8 +124,9 @@ func TestHandleGetProfile(t *testing.T) {
 
 // TestHandleUpdateProfile covers PUT /api/v1/profile and its input validation.
 func TestHandleUpdateProfile(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("updates own name → 200, round-trips, persists, re-GET reflects", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
@@ -266,8 +268,9 @@ func TestHandleUpdateProfile(t *testing.T) {
 // self profile: a happy round-trip + DB persistence, normalisation (NINO upper
 // + space-strip), clearing a field to NULL, and the validation 422s.
 func TestProfilePayrollFields(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("set + normalise → round-trips, persists", func(t *testing.T) {
 		orgB, ownerB := newOrgWithOwner(t, ts)
@@ -488,8 +491,9 @@ func switchOrgReq(t *testing.T, ts *testServer, authHeader, orgID string) *httpt
 
 // TestListMyOrganisations covers GET /api/v1/me/organisations.
 func TestListMyOrganisations(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("returns every active membership with its role", func(t *testing.T) {
 		// The user owns orgA (via newOrgWithOwner) and is a plain member of orgB.
@@ -550,8 +554,9 @@ func TestListMyOrganisations(t *testing.T) {
 
 // TestSwitchOrganisation covers POST /api/v1/me/organisations/switch.
 func TestSwitchOrganisation(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("switch to a belonged org re-mints a token scoped to it", func(t *testing.T) {
 		orgA, user := newOrgWithOwner(t, ts)

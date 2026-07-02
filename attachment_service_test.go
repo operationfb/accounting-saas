@@ -217,9 +217,12 @@ func attachmentRowCount(t *testing.T, ts *testServer, expenseID string) int {
 // TestAttachmentUpload_HappyPath uploads a PDF then a PNG and checks the
 // metadata, the first-file-is-primary rule, and that the bytes landed in GCS.
 func TestAttachmentUpload_HappyPath(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
@@ -251,9 +254,12 @@ func TestAttachmentUpload_HappyPath(t *testing.T) {
 // it returns the PRIMARY attachment's real bytes + metadata, skips an oversized
 // file via the metadata guard (before any download), and is org-scoped.
 func TestPrimaryAttachmentForPush(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 	ctx := context.Background()
 
 	// bigEnough exceeds the tiny sample files, so the size guard is a no-op for the
@@ -315,9 +321,12 @@ func TestPrimaryAttachmentForPush(t *testing.T) {
 // TestAttachmentPrimary_SetAndPromote covers changing the primary and the
 // promote-on-delete rule.
 func TestAttachmentPrimary_SetAndPromote(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	a1 := uploadAs(t, ts, devUserID, devOrgID, expenseID, "a1.pdf", samplePDF(), nil)
@@ -350,9 +359,12 @@ func TestAttachmentPrimary_SetAndPromote(t *testing.T) {
 // TestAttachmentList_OptionalEmpty confirms attachments are optional: an expense
 // with no files lists cleanly as empty.
 func TestAttachmentList_OptionalEmpty(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	list, err := ts.attachmentService.ListAttachments(
@@ -372,9 +384,12 @@ func TestAttachmentList_OptionalEmpty(t *testing.T) {
 // TestAttachmentUpload_RejectsBadType covers the content-type allowlist and the
 // magic-byte sniff that defeats a spoofed extension. Neither writes to GCS.
 func TestAttachmentUpload_RejectsBadType(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	caller, org := mustUUID(t, devUserID), mustUUID(t, devOrgID)
@@ -399,9 +414,12 @@ func TestAttachmentUpload_RejectsBadType(t *testing.T) {
 // TestAttachmentUpload_RejectsTooLarge uses a service with a tiny cap so we can
 // trip the limit without building a 20 MiB file.
 func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
@@ -427,9 +445,12 @@ func TestAttachmentUpload_RejectsTooLarge(t *testing.T) {
 // TestAttachment_MultiTenantScoping proves a genuine member of another
 // organisation cannot list, download, or delete this org's attachment.
 func TestAttachment_MultiTenantScoping(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseA := createExpenseAs(t, ts, devUserID, devOrgID)
 	att := uploadAs(t, ts, devUserID, devOrgID, expenseA, "a.pdf", samplePDF(), nil)
@@ -454,9 +475,12 @@ func TestAttachment_MultiTenantScoping(t *testing.T) {
 // TestAttachment_Authorization proves a plain member who is neither the claimant
 // nor an admin cannot read or write another user's attachments.
 func TestAttachment_Authorization(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	att := uploadAs(t, ts, devUserID, devOrgID, expenseID, "a.pdf", samplePDF(), nil)
@@ -483,9 +507,12 @@ func TestAttachment_Authorization(t *testing.T) {
 // TestAttachment_ConnectionLoss checks the service fails gracefully — with no
 // stray metadata row — when the context is cancelled or the DB is unreachable.
 func TestAttachment_ConnectionLoss(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
@@ -553,9 +580,12 @@ func (p *poolClosingStorage) Bucket() string { return p.inner.Bucket() }
 // TestAttachment_OrphanCleanup verifies that when the metadata write fails after
 // the bytes are uploaded, the orphaned object is removed from GCS.
 func TestAttachment_OrphanCleanup(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 
@@ -590,9 +620,12 @@ func TestAttachment_OrphanCleanup(t *testing.T) {
 // exact bytes, and that an unknown id is a 404. It skips if the dev credentials
 // cannot sign (signing needs a service account, not plain user ADC).
 func TestAttachment_DownloadURL(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	att := uploadAs(t, ts, devUserID, devOrgID, expenseID, "r.pdf", samplePDF(), nil)

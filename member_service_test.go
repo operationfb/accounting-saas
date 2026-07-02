@@ -135,8 +135,9 @@ func decodeMemberDetail(t *testing.T, body []byte) members.MemberDetailResponse 
 
 // TestHandleGetMember covers GET /api/v1/members/:id (the admin User Details read).
 func TestHandleGetMember(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("admin reads another member's detail incl payroll fields", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -213,8 +214,9 @@ func TestHandleGetMember(t *testing.T) {
 
 // TestHandleUpdateMember covers PUT /api/v1/members/:id (the admin User Details edit).
 func TestHandleUpdateMember(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("admin updates details + payroll + role + status → persists", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -394,8 +396,9 @@ func loginCode(t *testing.T, ts *testServer, email, password string) int {
 // TestHandleCreateMember covers POST /api/v1/members (an owner/admin adding a new
 // user to the organisation with an initial password).
 func TestHandleCreateMember(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("owner creates a user → active membership + can log in", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)
@@ -529,7 +532,7 @@ func TestHandleCreateMember(t *testing.T) {
 // TestHandleListMembers covers GET /api/v1/members end-to-end through the router.
 func TestHandleListMembers(t *testing.T) {
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("owner sees the org's members", func(t *testing.T) {
 		// Add an ephemeral member to the dev org so the list has more than the
@@ -641,8 +644,9 @@ func TestHandleListMembers(t *testing.T) {
 // already covered by TestHandleGetMember / TestHandleUpdateMember (payroll rides the
 // same methods).
 func TestMemberPayroll(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
 
 	t.Run("admin sets payroll → round-trips, persists as pence", func(t *testing.T) {
 		orgID, ownerID := newOrgWithOwner(t, ts)

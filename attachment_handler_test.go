@@ -115,9 +115,12 @@ func uploadOK(t *testing.T, ts *testServer, authHeader, expenseID, filename stri
 // TestAttachmentHandler_UploadAndList covers POST (multipart, with description)
 // and GET list through the router.
 func TestAttachmentHandler_UploadAndList(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
@@ -169,9 +172,12 @@ func TestAttachmentHandler_UploadAndList(t *testing.T) {
 
 // TestAttachmentHandler_SetPrimaryAndDelete covers PATCH .../primary and DELETE.
 func TestAttachmentHandler_SetPrimaryAndDelete(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
@@ -213,9 +219,12 @@ func TestAttachmentHandler_SetPrimaryAndDelete(t *testing.T) {
 // assertion when the dev credentials can't sign (signing needs a service
 // account), surfaced here as a 500 from the handler.
 func TestAttachmentHandler_Download(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
@@ -251,9 +260,12 @@ func TestAttachmentHandler_Download(t *testing.T) {
 // TestAttachmentHandler_Errors checks the HTTP status mapping for the common
 // failure modes, all driven through the router.
 func TestAttachmentHandler_Errors(t *testing.T) {
+	t.Parallel()
 	requireGCS(t)
 	ts := newTestServer(t)
-	defer ts.pool.Close()
+	t.Cleanup(func() { ts.pool.Close() })
+	// Isolate under a throwaway org so this test is parallel-safe (shadows the shared dev seed).
+	devOrgID, devUserID := newOrgWithOwner(t, ts)
 
 	expenseID := createExpenseAs(t, ts, devUserID, devOrgID)
 	authHeader := bearer(t, ts, devUserID, devOrgID)
