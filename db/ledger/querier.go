@@ -20,9 +20,10 @@ type Querier interface {
 	CreateJournalEntry(ctx context.Context, arg CreateJournalEntryParams) (uuid.UUID, error)
 	CreateJournalLine(ctx context.Context, arg CreateJournalLineParams) error
 	// Write a REVERSING journal header (is_reversal = TRUE + reverses_entry_id), used to
-	// crystallise/back out a prior entry with a full audit trail (vs a silent delete). The
-	// idempotency unique index excludes reversals, so this never collides with the live
-	// (non-reversal) entry for the same source. Lines (negated) are written via CreateJournalLine.
+	// crystallise/back out a prior entry with a full audit trail (vs a silent delete). There is
+	// deliberately NO source-uniqueness index (a source accumulates a chain as history); the
+	// single live (non-reversal) entry is a poster convention, not a DB constraint. Lines
+	// (negated) are written via CreateJournalLine.
 	CreateReversalEntry(ctx context.Context, arg CreateReversalEntryParams) (uuid.UUID, error)
 	// The nominal_code a FIXED control role resolves to, picking the MOST SPECIFIC scope
 	// that matches the caller: org-specific → country-specific → company_type-specific →
@@ -83,6 +84,13 @@ type Querier interface {
 	// different sources proceed in parallel. Auto-released at commit/rollback. A hash
 	// collision merely over-serialises two unrelated sources — it never under-serialises.
 	LockSource(ctx context.Context, sourceKey string) error
+	// The net base-currency balance a single SOURCE has posted to ONE account (by nominal_code),
+	// summed across ALL of that source's journal lines. Backs the FX-revaluation delta model: the
+	// reval reads its own cumulative movement on the FX-unrealised control (391) for an invoice and
+	// posts only the delta to today's target — so re-runs never double up (append-only, no churn).
+	// Includes every entry the source has (there are no reversals on the reval path any more), so it
+	// is the source's TRUE current position on that account.
+	SumSourceAccountBase(ctx context.Context, arg SumSourceAccountBaseParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

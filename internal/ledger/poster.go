@@ -39,11 +39,24 @@ type Poster interface {
 	// exists for the same source it is REVERSED first (append-only — never deleted),
 	// then the fresh entry is posted.
 	PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error
+	// AppendEntry writes a fresh journal entry WITHOUT superseding any prior entry for the
+	// same source — an append-only post (never a reversal). Used by the FX-revaluation delta
+	// model, where a source accumulates a chain of incremental movements rather than one
+	// replaced entry. The source lock is still taken, so concurrent posts serialise.
+	AppendEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error
 	// ReverseEntry posts a REVERSING entry (is_reversal = TRUE) that mirrors the effective
 	// entry's lines with negated amounts, leaving BOTH as an audit trail. Used to UNDO an
-	// event (invoice reopen, receipt delete) or crystallise an FX revaluation. No-op when
-	// there is no effective entry to reverse.
+	// event (invoice reopen, receipt delete). No-op when there is no effective entry to reverse.
 	ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, asOf pgtype.Date, narrative string, createdBy uuid.UUID) error
+	// LockSource exposes the transaction-scoped advisory lock on a source identity so a caller
+	// can lock-before-read atomically: the reval takes this lock, reads the source's current
+	// ledger position (SourceAccountBase), then AppendEntry's the delta — all under one lock, so
+	// two concurrent revaluations of the same invoice can't both read the same stale balance.
+	LockSource(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error
+	// SourceAccountBase returns the net base-currency balance a source has posted to one account
+	// (by nominal_code), summed across all its lines. Backs the delta model's "read current 391,
+	// post only the movement to today's target".
+	SourceAccountBase(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, nominal string) (int64, error)
 }
 
 // Amount is one money component in BOTH the transaction currency and the org's base
@@ -107,7 +120,22 @@ type builtLine struct {
 	rate      pgtype.Numeric // this leg's exchange rate (falls back to ec.ExchangeRate)
 }
 
+// PostEntry writes an event's journal entry with REPLACE semantics: a prior live entry for the
+// same source is reversed first, then the fresh entry is posted (INVOICE, INVOICE_RECEIPT, …).
 func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error {
+	return p.post(ctx, tx, ec, true)
+}
+
+// AppendEntry writes a fresh entry WITHOUT superseding any prior one for the source — the
+// append-only path (the FX-revaluation delta model). See the Poster interface.
+func (p *poster) AppendEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) error {
+	return p.post(ctx, tx, ec, false)
+}
+
+// post is the shared body behind PostEntry (supersede = true) and AppendEntry (supersede =
+// false): lock the source, optionally reverse its prior live entry, then build + insert the
+// fresh entry from the posting rules.
+func (p *poster) post(ctx context.Context, tx pgx.Tx, ec EntryContext, supersede bool) error {
 	lq := p.ledger.WithTx(tx)
 
 	// Serialise concurrent posters for this SAME source (the append-only ledger has no
@@ -118,10 +146,11 @@ func (p *poster) PostEntry(ctx context.Context, tx pgx.Tx, ec EntryContext) erro
 
 	resolver := NewAccounts(p.cats.WithTx(tx), lq, p.auth.WithTx(tx))
 
-	// Append-only: supersede any prior entry for this source by REVERSING it (never a
-	// delete), then post the fresh entry below. The reversal is dated at the new entry's
-	// date, so a prior period is never retroactively mutated.
-	if ec.SourceID != uuid.Nil {
+	// REPLACE semantics (supersede): back out any prior entry for this source by REVERSING it
+	// (never a delete), then post the fresh entry below. The reversal is dated at the new
+	// entry's date, so a prior period is never retroactively mutated. The append-only path
+	// (supersede = false) skips this — it adds an incremental movement, not a replacement.
+	if supersede && ec.SourceID != uuid.Nil {
 		if err := p.reverseLive(ctx, lq, ec.OrganisationID, ec.SourceType, ec.SourceID, ec.EntryDate, "Superseded (re-posted)", ec.CreatedBy); err != nil {
 			return err
 		}
@@ -234,6 +263,27 @@ func (p *poster) ReverseEntry(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, s
 		return err
 	}
 	return p.reverseLive(ctx, lq, orgID, sourceType, sourceID, asOf, narrative, createdBy)
+}
+
+// LockSource exposes the source advisory lock so a caller can lock-before-read (see the Poster
+// interface). Same lock PostEntry/AppendEntry take internally, so it serialises with them.
+func (p *poster) LockSource(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID) error {
+	return p.lockSource(ctx, p.ledger.WithTx(tx), orgID, sourceType, sourceID)
+}
+
+// SourceAccountBase returns the net base-currency balance a source has posted to one account
+// (by nominal_code). Thin wrapper over the SumSourceAccountBase query.
+func (p *poster) SourceAccountBase(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, sourceType string, sourceID uuid.UUID, nominal string) (int64, error) {
+	base, err := p.ledger.WithTx(tx).SumSourceAccountBase(ctx, ledgerdb.SumSourceAccountBaseParams{
+		OrganisationID: orgID,
+		SourceType:     sourceType,
+		SourceID:       pgUUID(sourceID),
+		NominalCode:    nominal,
+	})
+	if err != nil {
+		return 0, kernel.ErrInternal(err)
+	}
+	return base, nil
 }
 
 // lockSource takes a transaction-scoped advisory lock on a source identity so two
